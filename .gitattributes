@@ -1,4 +1,3 @@
-/dist filter=lfs diff=lfs merge=lfs -text
 OBJECT_update/dist/* filter=lfs diff=lfs merge=lfs -text
 OBJECT_reg/dist/* filter=lfs diff=lfs merge=lfs -text
 makeContract/dist/* filter=lfs diff=lfs merge=lfs -text
