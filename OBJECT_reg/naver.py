@@ -551,38 +551,38 @@ class NaverThread(QThread):
             print("홍보확인서선택및의뢰인정보입력() 시작")
             소유자명 = ''
             소유자연락처 = ''        
-            소유자유형 = '본인'  
+            소유자유형 = '본인'
             선택할검증방식 = '홍보확인서 확인'
             print("등기부확인여부:"+등기부확인여부+" 등록된 소유자수:"+str(len(등록된소유자들_arr)))
             if 등기부확인여부=='Y' and len(등록된소유자들_arr) > 0: #등기확인된 소유주
                 print("등록된소유자들:",등록된소유자들)
-                print("master_info:",master_info)
-                if master_info and 'master_name' in master_info: #본인 또는 대표인 접촉자정보존재
+                print("contactor_info:",contactor_info)
+                if contactor_info and 'contactor_name' in contactor_info: #본인 또는 대표인 접촉자정보존재
                     print("1")
-                    if master_info['master_name'] in 등록된소유자들 and master_info['master_type'] == '본인': #소유주정보에 등기확인된 소유주 존재
+                    if contactor_info['contactor_name'] in 등록된소유자들 and contactor_info['contactor_type'] == '본인': #소유주정보에 등기확인된 소유주 존재
                         print("3")
-                        소유자명 = master_info['master_name'] if '이름미확인' not in master_info['master_name'] else ''
-                    elif master_info['master_name'] not in 등록된소유자들:
+                        소유자명 = contactor_info['contactor_name'] if '이름미확인' not in contactor_info['contactor_name'] else ''
+                    elif contactor_info['contactor_name'] not in 등록된소유자들:
                         print("5")
                         
                         if len(등록된소유자들_arr) == 1 :
                             소유자명 = 등록된소유자들 
-                            if master_info['master_type'] == '대표':
-                                소유자유형 = master_info['master_type']
+                            if contactor_info['contactor_type'] == '대표':
+                                소유자유형 = contactor_info['contactor_type']
                             else:
                                 소유자유형 = '직원'
                         else :
                             등록된소유자들_arr[0]
-                            소유자유형 = master_info[0]['master_type']
+                            소유자유형 = contactor_info[0]['contactor_type']
 
                     else:
-                        pyautogui.alert(f"- 등기부상 소유자:  {등록된소유자들}\n\n- 의뢰인:  {master_info['master_name']} ({master_info['master_type']})", "※소유자정보 불일치")
-                    소유자연락처 = master_info['master_phone1']
-                    소유자유형 = master_info['master_type']
-                    소유자통신사 = master_info['telecom']
+                        pyautogui.alert(f"- 등기부상 소유자:  {등록된소유자들}\n\n- 의뢰인:  {contactor_info['contactor_name']} ({contactor_info['contactor_type']})", "※소유자정보 불일치")
+                    소유자연락처 = contactor_info['contactor_phone1']
+                    # 소유자유형 = contactor_info['contactor_type']
+                    소유자통신사 = contactor_info['telecom']
                     fail_msg += "\n- 휴대폰통신사 미확인" if 소유자통신사 == '미확인' else ''
                     print(f"소유자:{소유자명}\n연락처(통신사:{소유자통신사}):{소유자연락처}")
-                    if 소유자연락처 and 소유자통신사 != '미확인':
+                    if 소유자유형 == '본인' and 소유자연락처 and 소유자통신사 != '미확인':
                         선택할검증방식 = '모바일확인V2 (집주인)'
                 else:
                     소유자명 = 등록된소유자들 
@@ -633,18 +633,18 @@ class NaverThread(QThread):
                 # pyautogui.alert("정상?")   
                 연락처입력대상stong_text = '소유자 연락처 (홍보확인서2)'      
             elif 선택할검증방식 == '모바일확인V2 (집주인)':
-                if master_info['master_gender']: 
-                    print(f"소유자성별:{master_info['master_gender']}")
-                    # pyautogui.alert(f"소유자성별:{master_info['master_gender']}")
-                    선택할성별위치 = 1 if master_info['master_gender'] == '남성' else 2
+                if contactor_info['contactor_gender']: 
+                    print(f"소유자성별:{contactor_info['contactor_gender']}")
+                    # pyautogui.alert(f"소유자성별:{contactor_info['contactor_gender']}")
+                    선택할성별위치 = 1 if contactor_info['contactor_gender'] == '남성' else 2
                     특정위치의x번째입력태그찾기('등기부상 소유자 성별', 'radio', 선택할성별위치).click()
-                if master_info['telecom']:
-                    if master_info['telecom'] == 'SKT': 선택할통신사위치 = 1
-                    if master_info['telecom'] == 'KT': 선택할통신사위치 = 2
-                    if master_info['telecom'] == 'LGU+': 선택할통신사위치 = 3
-                    if master_info['telecom'] == '알)SKT': 선택할통신사위치 = 4
-                    if master_info['telecom'] == '알)KT': 선택할통신사위치 = 5
-                    if master_info['telecom'] == '알)LGU+': 선택할통신사위치 = 6
+                if contactor_info['telecom']:
+                    if contactor_info['telecom'] == 'SKT': 선택할통신사위치 = 1
+                    if contactor_info['telecom'] == 'KT': 선택할통신사위치 = 2
+                    if contactor_info['telecom'] == 'LGU+': 선택할통신사위치 = 3
+                    if contactor_info['telecom'] == '알)SKT': 선택할통신사위치 = 4
+                    if contactor_info['telecom'] == '알)KT': 선택할통신사위치 = 5
+                    if contactor_info['telecom'] == '알)LGU+': 선택할통신사위치 = 6
                     연락처입력대상stong_text = '등기부상 소유자 휴대폰번호'     
                     특정위치의x번째입력태그찾기('등기부상 소유자 휴대폰번호', 'radio', 선택할통신사위치).click() 
                 if len(소유자연락처) == 11:
@@ -668,6 +668,9 @@ class NaverThread(QThread):
                 print("등기부등본 첨부에서 두번째 라디오버튼 클릭불가")
                 
             return fail_msg
+        
+
+        
 #변수설정
         print("=== 변수 설정")
         # 현재 날짜와 시간 가져오기
@@ -690,38 +693,38 @@ class NaverThread(QThread):
         fail_msg = ''
 
         client_code = self.data['clientData']['client_code']
-        master_data = self.data['masterData']['master_data']
+        contactor_data = self.data['contactorData']['contactor_data']
         print("client_code:"+client_code)
-        print("master_data:",master_data)
-        master_keys_list = list(master_data.keys())
-        master_info = None  # 초기화
+        print("contactor_data:",contactor_data)
+        contactor_keys_list = list(contactor_data.keys())
+        contactor_info = None  # 초기화
         # 리스트에 요소가 있는지 확인하고 첫 번째 요소에 접근합니다.
         # 조건에 따라 데이터를 필터링하고 첫 번째 항목 선택
-        if master_keys_list:  # 키가 비어있지 않은 경우
-            print("master_keys_list:", master_keys_list)
+        if contactor_keys_list:  # 키가 비어있지 않은 경우
+            print("contactor_keys_list:", contactor_keys_list)
             
-            # '본인' 또는 '대표'이고 'master_phone1'이 있는 데이터 탐색
-            for key in master_keys_list:
-                data = master_data[key]
-                if (data.get('master_type') in ['본인', '대표']) and data.get('master_phone1'):
-                    master_info = data
+            # '본인' 또는 '대표'이고 'contactor_phone1'이 있는 데이터 탐색
+            for key in contactor_keys_list:
+                data = contactor_data[key]
+                if (data.get('contactor_type') in ['본인', '대표']) and data.get('contactor_phone1'):
+                    contactor_info = data
                     break
 
             # 조건에 맞는 데이터가 없는 경우 최근의뢰인의 데이터를 탐색
-            if master_info is None:
-                for key in master_keys_list:
+            if contactor_info is None:
+                for key in contactor_keys_list:
                     if key == client_code:
-                        master_info = master_data[key]
+                        contactor_info = contactor_data[key]
                         break
 
-            # 최종 master_info 출력
-            if master_info:
-                print("Selected master_info:", master_info)
+            # 최종 contactor_info 출력
+            if contactor_info:
+                print("Selected contactor_info:", contactor_info)
             else:
                 print("No matching data found.")
         else:
             # 키 리스트가 비어있는 경우 처리
-            print("master_keys_list: No data available")
+            print("contactor_keys_list: No data available")
             
         # pyautogui.alert("소유자 목록확인")
         등록된소유자들 = self.data['writeData']['master_name']
@@ -1019,6 +1022,7 @@ class NaverThread(QThread):
 #신규등록
         if 네이버매물번호 == '':
             print("신규등록 함수시작")
+            pyautogui.alert(f"등기확인여부:{등기부확인여부}, 등기부상소유자:{등록된소유자들}\n\n- 외국인일 경우\n1.본인명의 휴대폰통신사에 가입된 영문이름\n2.영문이름이 등기수상 한글이름과 발음이 동일(써브문의:02-2087-7300-1-0)","네이버 매물등록 전 주의사항")
             # 확인후 매물등록페이지로 이동
             driver.get('https://ma.serve.co.kr/good/articleRegistManage/')
             
@@ -1098,12 +1102,12 @@ class NaverThread(QThread):
                 elif obinfo_type1 == '오피스텔':
                     단지선택항목 = building_name
                     # 특정위치X번째셀렉트에서선택('단지', 1, 단지선택항목)
-                pyautogui.alert("단지 선택후 확인을 클릭하여 주십시오."+"\n\n"+"※예상단지명: "+단지선택항목, "단지선택")
+                pyautogui.alert("단지 선택후 확인을 클릭하여 주십시오."+"\n\n"+"※예상단지명: "+단지선택항목+", 공급면적:"+basic_area2, "단지선택")
                 
                 #평형선택(전용면적이 포함되어 있는 항목 선택)
                 try:
                     if obinfo_type1 == '아파트':
-                        특정위치X번째셀렉트에서선택('단지', 2, basic_area1)
+                        특정위치X번째셀렉트에서선택('단지', 2, basic_area2)
                         # driver.find_element(By.XPATH, f'//*[@id="app"]/div/div/div[3]/div/div[1]/div[5]/table/tbody/tr[2]/td/div[1]/div[2]').click()
                         # 평형선택항목 = WebDriverWait(driver, 10).until(
                         #     EC.element_to_be_clickable((By.XPATH, f"//div[@class='v-overlay-container']//div[contains(text(), '{basic_area1}')]"))
@@ -1111,7 +1115,7 @@ class NaverThread(QThread):
                         # 평형선택항목.click()
                         # print(f"선택완료:{basic_area1}")
                     elif obinfo_type1 == '오피스텔':
-                        특정위치X번째셀렉트에서선택('단지', 2, basic_area1)
+                        특정위치X번째셀렉트에서선택('단지', 2, basic_area2)
                         # driver.find_element(By.XPATH, f'//*[@id="app"]/div/div/div[3]/div/div[1]/div[5]/table/tbody/tr[2]/td/div[1]/div[2]').click()
                         # 평형선택항목 = WebDriverWait(driver, 10).until(
                         #     EC.element_to_be_clickable((By.XPATH, f"//div[@class='v-overlay-container']//div[contains(text(), '{basic_area1}')]"))
@@ -1555,7 +1559,7 @@ class NaverThread(QThread):
                     if any(keyword in building_purpose for keyword in 공동주택키워드s):
                         건축물용도선택값 = 2
                     elif '숙박시설' in building_purpose:
-                        건축물용도선택값 = 15
+                        건축물용도선택값 = 3
                     elif '2종' in building_purpose:
                         건축물용도선택값 = 4
                     elif '근린생활' in building_purpose:
@@ -1796,7 +1800,10 @@ class NaverThread(QThread):
                     광고상태 = "광고종료"
                     print("광고 종료일이 경과되었습니다. '등록종료리스트'로 이동")
                     driver.get('https://ma.serve.co.kr/good/articleRegistEndList')
-                    # print("통합매물관리페이지로 이동:"+네이버매물번호)                
+                    # print("통합매물관리페이지로 이동:"+네이버매물번호)      
+                    관리자메모입력요소 = 특정위치의x번째입력태그찾기('소유자정보/관리자메모', 'text', 1)
+                    관리자메모입력요소.send_keys(object_code_new)    
+                    관리자메모입력요소.send_keys(Keys.ENTER)      
                 else:
                     광고상태 = "광고중"
                     print("광고가 아직 유효합니다. '등록리스트'로 이동")
@@ -1807,18 +1814,19 @@ class NaverThread(QThread):
                 # driver.get('https://ma.serve.co.kr/good/articleRegistList')
             time.sleep(3)
 
+
             
-            # pyautogui.alert("네이버 선택확인")
-            if 써브매물번호:
-                매물번호입력요소 = 특정위치의x번째입력태그찾기('매물번호', 'text', 1)
-                매물번호입력요소.send_keys(써브매물번호)
-            else:
-                특정위치X번째셀렉트에서선택('매물번호', 1, '네이버')
-                매물번호입력요소 = 특정위치의x번째입력태그찾기('매물번호', 'text', 1)
-                매물번호입력요소.send_keys(네이버매물번호)
+            # # pyautogui.alert("네이버 선택확인")
+            # if 써브매물번호:
+            #     매물번호입력요소 = 특정위치의x번째입력태그찾기('매물번호', 'text', 1)
+            #     매물번호입력요소.send_keys(써브매물번호)
+            # else:
+            #     특정위치X번째셀렉트에서선택('매물번호', 1, '네이버')
+            #     매물번호입력요소 = 특정위치의x번째입력태그찾기('매물번호', 'text', 1)
+            #     매물번호입력요소.send_keys(네이버매물번호)
                 
-            # 매물번호입력요소.send_keys(네이버매물번호)
-            매물번호입력요소.send_keys(Keys.ENTER)
+            # # 매물번호입력요소.send_keys(네이버매물번호)
+            # 매물번호입력요소.send_keys(Keys.ENTER)
 
             # 최대 5초 동안 대기
             # time.sleep(1)

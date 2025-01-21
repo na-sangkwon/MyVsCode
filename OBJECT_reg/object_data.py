@@ -437,7 +437,7 @@ def getData(object_code_new, userid, userpw):
         query = 'SELECT * FROM pr_contactor AS a INNER JOIN pr_client AS b ON a.client_code=b.client_code WHERE a.contactor_del="N" AND a.request_type="내놓기" AND a.request_code = "%s"' % request_code
         # query = 'SELECT * FROM pr_contactor AS a INNER JOIN pr_client AS b ON a.client_code=b.client_code WHERE a.contactor_del="N" AND a.contactor_type IN ("대표","본인") AND a.request_type="내놓기" AND a.request_code = "%s"' % request_code
         cursor.execute(query)
-        master_data = {}  # client_code를 키로 하여 고객의 이름과 연락처를 저장할 딕셔너리
+        contactor_data = {}  # client_code를 키로 하여 고객의 이름과 연락처를 저장할 딕셔너리
         for cont_res in cursor.fetchall():
             client_code = cont_res['client_code']
             contactor_type = cont_res['contactor_type']
@@ -446,20 +446,20 @@ def getData(object_code_new, userid, userpw):
             client_gender = cont_res['client_gender']
             telecom = cont_res['telecom']
             # client_code를 키로 사용하여 이름과 연락처를 딕셔너리에 저장
-            master_data[client_code] = {
-                'master_type': contactor_type,
-                'master_name': client_name,
-                'master_phone1': client_phone1,
-                'master_gender': client_gender,
+            contactor_data[client_code] = {
+                'contactor_type': contactor_type,
+                'contactor_name': client_name,
+                'contactor_phone1': client_phone1,
+                'contactor_gender': client_gender,
                 'telecom': telecom
             }
                 
-        masterData = {
-            'master_data': master_data
+        contactorData = {
+            'contactor_data': contactor_data
         }
-        return_data["masterData"] = masterData 
+        return_data["contactorData"] = contactorData 
 
-        # print("동선확인4",masterData)  
+        # print("동선확인4",contactorData)  
 
         do_path = land_do if land_do != '' else ''
         si_path = '\\'+land_si if land_si != '' else ''
@@ -530,7 +530,7 @@ def getData(object_code_new, userid, userpw):
         print(">>>>>adminData",adminData)
         print(">>>>>adData",return_data['adData'])
         print(">>>>>writeData",writeData)
-        print(">>>>>masterData",masterData)
+        print(">>>>>contactorData",contactorData)
         print(">>>>>clientData",clientData)
         print(">>>>>landCount",landCount)
         print(">>>>>landData",landData)

@@ -490,7 +490,7 @@ def update_start():
             before_target = driver.find_element(By.CSS_SELECTOR, f"#tr_{update_code} > td:nth-child(15) > div").get_attribute('title').split(' ')[0]
             before_date = datetime.datetime.strptime(before_target , '%Y-%m-%d')
             today = datetime.datetime.today()
-            print(f"{update_code} before_date: ", before_date)
+            print(f"----- before_date: ", before_date)
             # print(f"{update_code} today: ", today)
             # if before_date == today:            
 
@@ -505,8 +505,6 @@ def update_start():
                 driver.find_element(By.CSS_SELECTOR, f'#tr_{update_code} > td:nth-child(14) > div:nth-child(1)').click() #관리 클릭
                 print("----- 5-1.관리 클릭")
                 # time.sleep(1)
-                # WebDriverWait(driver, 10).until(EC.presence_of_element_located(By.CSS_SELECTOR, f"#tr_{update_code} > td:nth-child(14) > div:nth-child(1) > a")).click() #관리 클릭
-                # WebDriverWait(driver, 10).until(EC.presence_of_element_located(By.CSS_SELECTOR, f"#tr_{update_code} > td:nth-child(14) > div.dropdown.open > ul > li:nth-child(7) > a")).click() #최신등록일로갱신 클릭
                 driver.find_element(By.CSS_SELECTOR, f'#tr_{update_code} > td:nth-child(14) > div.dropdown.open > ul > li:nth-child(7)').click() #최신등록일로갱신 클릭
                 print("----- 5-2.최신등록일로갱신 클릭")
                 
@@ -558,30 +556,30 @@ def update_start():
             driver.execute_script("arguments[0].setAttribute('class', 'btn btn-gray lock')", element)
             print("----- 5.비공개처리")
             
-            #완료처리
-            status_span = driver.find_elements(By.XPATH, f'//*[@id="tr_{complete_code}"]/td[10]/span')
-            print("status_span 개수: ",str(len(status_span)))
-            span_texts = []
-            for span in status_span: span_texts.append(span.text)
-            if "완료" not in span_texts:
-                driver.execute_script(f"change('is_finished','{complete_code}','1');")
-                print("----- 6.완료라벨 미표시상태 -> 완료라벨 표시")
+            # #완료처리
+            # status_span = driver.find_elements(By.XPATH, f'//*[@id="tr_{complete_code}"]/td[10]/span')
+            # print("status_span 개수: ",str(len(status_span)))
+            # span_texts = []
+            # for span in status_span: span_texts.append(span.text)
+            # if "완료" not in span_texts:
+            #     driver.execute_script(f"change('is_finished','{complete_code}','1');")
+            #     print("----- 6.완료라벨 미표시상태 -> 완료라벨 표시")
                 
-                try:
-                    alert = WebDriverWait(driver, 0.2).until(EC.alert_is_present())
-                    alert.accept()
-                except Exception as e:
-                    print("alert오류", str(e))
-                    pass  # alert 창이 없는 경우, 그냥 넘어갑니다.                
-            else:
-                print("----- 6.완료라벨 표시상태")
-                pass
+            #     try:
+            #         alert = WebDriverWait(driver, 0.2).until(EC.alert_is_present())
+            #         alert.accept()
+            #     except Exception as e:
+            #         print("alert오류", str(e))
+            #         pass  # alert 창이 없는 경우, 그냥 넘어갑니다.                
+            # else:
+            #     print("----- 6.완료라벨 표시상태")
+            #     pass
             end_ok += 1
             complete_count += 1
 
         except Exception as e:
             print("오류:" , str(e))
-            print(f"{complete_code}거래완료 안됨")
+            print(f"{complete_code}비공개처리 안됨")
 
     if popup_message(complete_count, len(금일등록매물), update_ok, end_ok):
         print(" 계속진행합니다.")

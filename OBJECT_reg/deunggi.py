@@ -32,6 +32,7 @@ def macro(data, user):
     driver.get('http://www.iros.go.kr/PMainJ.jsp')
     
     tr_target = data['writeData']['tr_target']
+    master_name = data['writeData']['master_name']
     
     location_lijibun = data['landData'][0]['representing_jibun'] if data['landData'][0]['land_li'] == '' else (data['landData'][0]['land_li'] + ' ' + data['landData'][0]['representing_jibun'])
     location_dongli = (data['landData'][0]['land_dong'] + data['landData'][0]['representing_jibun']) if data['landData'][0]['land_li'] == '' else location_lijibun
@@ -161,7 +162,7 @@ def macro(data, user):
         driver.switch_to.default_content()
         # time.sleep(5)
 
-        pyautogui.alert("부동산과 소유자선택후 확인버튼 클릭시 자동으로 다음단계를 진행합니다.")
+        pyautogui.alert(f"부동산소재지:{address_input}\n소유자:{master_name}\n\n부동산과 소유자선택후 확인버튼 클릭시 자동으로 다음단계를 진행합니다.")
         try:
             # 최상위 아이프레임인 'resultFrame'으로 전환
             WebDriverWait(driver, 10).until(EC.frame_to_be_available_and_switch_to_it((By.ID, "resultFrame")))
