@@ -46,7 +46,7 @@ def macro(data, user):
     # driver.find_element(By.XPATH, '/html/body/div[1]/section/div[1]/div[2]/div[2]/div[1]/form/input[3]').send_keys("dhqkd5555%")
     # driver.find_element(By.XPATH, '/html/body/div[1]/section/div[1]/div[2]/div[2]/div[1]/form/div[2]/button').click()
     driver.get('https://ceo.zigbang.com/')
-    driver.find_element(By.XPATH, '/html/body/div[1]/section/div[1]/div[2]/div[2]/div/div/a[1]').click() #로그인클릭
+    driver.find_element(By.XPATH, '//*[@id="default-content-layout"]/main/div/div/div[2]/div[1]/div[2]/span/button').click() #로그인클릭
     # pyautogui.alert("0go??")
     # driver.get('https://account.zigbang.com/login')
     # pyautogui.alert("1go??")

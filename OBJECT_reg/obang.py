@@ -296,7 +296,7 @@ def macro(data, user, group):
 
     obinfo_type = object_type1
     obinfo_type2 = ''
-    print(f"tr_target:{tr_target}\nobject_type:{object_type}\n방개수:{data['roomData']['room_rcount']}\nobinfo_type:{obinfo_type}\nadd_importants:{add_importants}")
+    # print(f"tr_target:{tr_target}\nobject_type:{object_type}\n방개수:{data['roomData']['room_rcount']}\nobinfo_type:{obinfo_type}\nadd_importants:{add_importants}")
     # pyautogui.alert(f"tr_target:{tr_target}\nobject_type:{object_type}\n방개수:{data['roomData']['room_rcount']}\nobinfo_type:{obinfo_type}\nadd_importants:{add_importants}")
     if tr_target == '층호수':
         object_info_code = room_code
