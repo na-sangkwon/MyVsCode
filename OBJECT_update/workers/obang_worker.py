@@ -530,9 +530,24 @@ class ObangAutomationWorker:
             # self.driver.find_element(By.CSS_SELECTOR, '사이드바매물버튼좌표').click() #사이드바 매물 클릭
             
         사이드바매물버튼좌표 = 'body > div.page-container > div.page-sidebar-wrapper > div > ul > li:nth-child(3) > a > span.title'
-        사이드바매물버튼 = WebDriverWait(self.driver, 5).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, 사이드바매물버튼좌표))
-        )
+        try:
+            # [2026-09-02] 나스(도커) 환경이 로그인 직후 사이트 렌더링에 5초보다 오래 걸리는
+            # 경우가 실제로 있었다(사람이 직접 로그인하면 문제없이 빠르게 뜨는 것과 대조적으로
+            # 확인됨) — 여유를 두어 20초로 늘림. 그래도 실패하면(로그인 자체가 막혔거나 사이트
+            # 구조가 바뀐 경우) 그 순간 화면을 스크린샷으로 남겨 다음에 원인을 바로 알 수 있게 한다.
+            사이드바매물버튼 = WebDriverWait(self.driver, 20).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, 사이드바매물버튼좌표))
+            )
+        except TimeoutException:
+            screenshot_dir = os.path.join('logs', 'screenshots')
+            os.makedirs(screenshot_dir, exist_ok=True)
+            screenshot_path = os.path.join(
+                screenshot_dir,
+                f"obang_login_timeout_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+            )
+            self.driver.save_screenshot(screenshot_path)
+            print(f"🔍 사이드바 매물버튼을 못 찾음 — 실패 화면을 저장했습니다: {screenshot_path}")
+            raise
         사이드바매물버튼.click() #사이드바 매물 클릭
         self.driver.find_element(By.CSS_SELECTOR, '#menu-product-1 > a').click() #매물->매물관리 클릭
 
