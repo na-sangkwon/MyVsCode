@@ -7,6 +7,10 @@
 # - "login" 인자: 자동화를 실행하지 않고 크롬만 당근 로그인 화면으로 띄운 채 대기한다.
 #   VNC(5900) 또는 noVNC 웹뷰어(7900)로 접속해 사람이 직접 당근 로그인(문자/QR 인증)을
 #   완료하면, 그 세션이 daangn_profile 볼륨에 저장되어 이후 무인 실행 때 재사용된다.
+# - "exec" 인자: 뒤에 오는 명령을 그대로 실행하고 끝난다(예: exec python nas_deploy_check.py
+#   check). 나스 코드 반영 폴링 스크립트(nas_deploy_poll.sh)가 이 이미지 안의 pymysql로
+#   운영 DB를 확인/기록할 때 쓴다 — Xvfb 등 다른 준비가 필요 없는 가벼운 작업이라 별도
+#   분기로 뺐다.
 set -e
 
 export DISPLAY=:99
@@ -19,7 +23,10 @@ sleep 1
 export XAUTHORITY=/root/.Xauthority
 touch "$XAUTHORITY"
 
-if [ "$1" = "login" ]; then
+if [ "$1" = "exec" ]; then
+    shift
+    exec "$@"
+elif [ "$1" = "login" ]; then
     echo "=== VNC 로그인 모드 ==="
     echo "브라우저에서 http://<나스IP>:7900 으로 접속해 당근마켓 로그인을 완료하세요."
     echo "로그인이 끝나면 이 컨테이너를 중지(docker compose down)하면 됩니다."

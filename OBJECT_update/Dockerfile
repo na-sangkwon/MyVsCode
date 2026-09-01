@@ -35,6 +35,7 @@ RUN pip install --no-cache-dir -r OBJECT_update/requirements.txt
 
 COPY OBJECT_update/auto.py ./OBJECT_update/auto.py
 COPY OBJECT_update/workers ./OBJECT_update/workers
+COPY OBJECT_update/nas_deploy_check.py ./OBJECT_update/nas_deploy_check.py
 COPY OBJECT_update/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
