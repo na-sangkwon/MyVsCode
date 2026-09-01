@@ -27,7 +27,7 @@ fi
 echo "=== $(date '+%Y-%m-%d %H:%M:%S') 반영 시작 ===" >> "$LOGFILE"
 
 if $DOCKER run --rm --entrypoint sh -v "$REPO:/repo" -w /repo alpine/git \
-    -c "git config --global --add safe.directory /repo && git fetch --filter=blob:none origin main && git checkout -f main && git clean -fd OBJECT_update util" \
+    -c "git config --global --add safe.directory /repo && git fetch --filter=blob:none origin main && git reset --hard origin/main && git clean -fd OBJECT_update util" \
     >> "$LOGFILE" 2>&1; then
     if $DOCKER compose build >> "$LOGFILE" 2>&1; then
         $DOCKER compose run --rm automation exec python nas_deploy_check.py report success "git pull + 이미지 재빌드 완료" >> "$LOGFILE" 2>&1
