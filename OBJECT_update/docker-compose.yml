@@ -1,0 +1,48 @@
+# fileName: OBJECT_update/docker-compose.yml
+#
+# 나스에서 이 자동화를 컨테이너로 돌리기 위한 설정. 2026-08-30 실제 나스에서 build/run까지
+# 전부 검증 완료 (오방+당근 무인 실행 성공).
+#
+# 사용법 요약:
+#   1) 최초 1회 당근 로그인:
+#      docker compose run --rm --service-ports automation login
+#      -> http://<나스IP>:7900 접속해서 로그인 완료 후 Ctrl+C 또는 컨테이너 중지
+#   2) 무인 실행(수동 테스트):
+#      docker compose run --rm automation
+#   3) 실제 예약 실행은 나스 DSM 작업 스케줄러(objectAutoUpdate, root, 매일 05:00)가
+#      run_scheduled.sh를 통해 위 2)번과 동일한 명령을 실행한다.
+#   4) 실행 설정(대상 플랫폼/조회기간/작업모드)은 cafe24 환경설정 화면
+#      (web/settings/settings.php "매물 자동업데이트 설정" 카드, 슈퍼관리자 전용)에서 관리한다.
+#      2026-08-30부로 나스 자체 web_config(Flask) 웹앱은 이 카드 하나로 통일하며 폐기했다.
+
+services:
+  automation:
+    build:
+      context: ..
+      dockerfile: OBJECT_update/Dockerfile
+    container_name: object_update_automation
+    volumes:
+      # 실행 로그 — 사람이 나중에 확인할 유일한 창
+      - ./logs:/app/OBJECT_update/logs
+      # 당근 로그인 세션(쿠키) 영구 저장 — 컨테이너를 새로 만들어도 로그인이 유지되게 함
+      - ./daangn_profile:/app/OBJECT_update/daangn_profile
+      # 2026-08-30 나스 SSH에서 find로 직접 확인함: /volume1/업무자료 맞음.
+      # (Windows PC의 Z:\업무자료 가 가리키던 것과 같은 폴더입니다.)
+      - /volume1/업무자료:/mnt/업무자료:ro
+      # Selenium Manager가 크롬 버전에 맞는 chromedriver를 여기 캐싱한다. docker compose run은
+      # 매번 새 컨테이너를 만들어 이 캐시가 매번 초기화되고, 그때마다 구글 서버에서 새로
+      # 받으려다 일시적 네트워크 문제로 실패하는 걸 실제로 겪었다(2026-08-30). 볼륨으로 고정해
+      # 한 번 받으면 이후로는 재다운로드 없이 재사용하게 한다.
+      - ./selenium_cache:/root/.cache/selenium
+    environment:
+      - PHOTO_ROOT_DIR=/mnt/업무자료
+    ports:
+      - "5900:5900" # VNC — login 모드에서만 사용
+      - "7900:7900" # noVNC 웹 브라우저 뷰어 — login 모드에서만 사용
+    # 크롬이 컨테이너 안에서 SIGTRAP으로 죽는 문제(2026-08-30 실제로 재현) 대응:
+    # 도커 기본 /dev/shm 크기(64MB)가 크롬한테 너무 작고, 도커 기본 seccomp 프로파일이
+    # 크롬 샌드박스가 쓰는 일부 시스템콜을 막아서 생기는 잘 알려진 문제.
+    shm_size: '2gb'
+    security_opt:
+      - seccomp:unconfined
+    restart: "no"

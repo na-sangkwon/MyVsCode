@@ -1,0 +1,12 @@
+# 실행 중에 생기는 로그/캐시 - 코드가 아니라 매번 새로 생기는 산출물이라 추적 불필요
+logs/
+*.log
+
+# 당근부동산 로그인 세션(쿠키) - 나스 컨테이너 최초 로그인 시 생성, 민감정보라 git에 올리면 안 됨
+daangn_profile/
+
+# Selenium Manager가 받아둔 chromedriver 캐시 - 재다운로드 가능한 산출물
+selenium_cache/
+
+# 파이썬 가상환경 (캐시(__pycache__)는 리포 루트 .gitignore에서 전체 공통 처리)
+myenv/
