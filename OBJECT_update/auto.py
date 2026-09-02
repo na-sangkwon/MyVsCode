@@ -469,6 +469,17 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
         # 미리 인자로 지정해서 창 최대화 자체가 필요 없게 우회한다.
         options.add_argument("--window-size=1600,900")
     options.add_experimental_option('useAutomationExtension', False)
+    # [2026-09-02] 이 프로필(daangn_profile)은 원래 당근 로그인 세션 유지용인데 오방
+    # 로그인에도 그대로 재사용된다 — 그 결과 크롬 비밀번호 관리자가 오방 로그인 정보를
+    # 저장해두고 매 실행마다 비동기로 자동완성을 시도했고, 이 자동완성이 obang_worker.py의
+    # 아이디 입력 코드와 타이밍 경쟁을 일으켜 실행마다 성공/실패가 갈리는 원인이었다(실제로
+    # 필드에 아이디가 중복 이어붙어 로그인 자체가 거부되는 현상을 재현/확인함). 타이밍에
+    # 의존하는 재시도 대신, 이 프로필에서 비밀번호 저장·자동완성 자체를 꺼서 경쟁 조건을
+    # 원천 제거한다.
+    options.add_experimental_option("prefs", {
+        "credentials_enable_service": False,
+        "profile.password_manager_enabled": False,
+    })
 
     driver = webdriver.Chrome(options=options)
     driver.implicitly_wait(10)
