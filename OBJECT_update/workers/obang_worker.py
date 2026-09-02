@@ -519,11 +519,21 @@ class ObangAutomationWorker:
             # 확인됨: 아이디가 중복 이어붙여져 로그인이 거부됨) 지우고 입력해야 하는데, 이 폼은
             # 자바스크립트로 값을 관리해서 .clear()가 안 먹는다(이 역시 실제로 확인됨). 이 파일
             # 다른 곳(조회수입력란)에서 이미 쓰고 있는 전체선택 방식이 이런 필드에 안전하다.
+            # [2026-09-02 임시 진단] 2026-09-02 실행에서도 Ctrl+A 방식이 실패해(아이디 중복
+            # 이어붙음 재현) 로그인 자체가 안 됐다 — 어느 시점에 값이 어긋나는지(로드 직후 이미
+            # 채워져 있는지 / Ctrl+A가 선택을 못 하는지 / 크롬 자동완성이 입력 뒤에 비동기로
+            # 끼어드는지) 확정하기 위한 임시 로그. 원인 확인 후 제거 예정.
+            print(f"[진단] 필드 로드 직후 값: {아이디입력창.get_attribute('value')!r}")
             아이디입력창.send_keys(Keys.CONTROL + "a")
+            print(f"[진단] Ctrl+A 직후 값: {아이디입력창.get_attribute('value')!r}")
             아이디입력창.send_keys("nasangkwon@outlook.kr")
+            print(f"[진단] 입력 직후 값: {아이디입력창.get_attribute('value')!r}")
+            time.sleep(1)
+            print(f"[진단] 1초 대기 후 값: {아이디입력창.get_attribute('value')!r}")
             비밀번호입력창 = self.driver.find_element(By.XPATH, '//*[@id="login_form"]/div[2]/div/input')
             비밀번호입력창.send_keys(Keys.CONTROL + "a")
             비밀번호입력창.send_keys('tkdrnjs2@')
+            print(f"[진단] 비밀번호 필드 길이: {len(비밀번호입력창.get_attribute('value') or '')}")
             self.driver.find_element(By.XPATH, '//*[@id="login_form"]/div[3]/button').click()
         except TimeoutException:
             print("🔑 로그인창이 없습니다.")
