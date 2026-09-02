@@ -13,7 +13,7 @@ FROM python:3.11
 # x11vnc + novnc + websockify(당근 최초 로그인 1회를 위한 VNC 웹뷰어)
 # fonts-nanum(오방/당근 화면의 한글이 깨지지 않도록)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    xvfb x11vnc novnc websockify fonts-nanum wget gnupg ca-certificates \
+    xvfb x11vnc novnc websockify fonts-nanum tzdata wget gnupg ca-certificates \
     && wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update \
@@ -22,6 +22,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # 실제로 재현됐다(2026-08-30).
     && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
+
+# [2026-09-02] 베이스 이미지 기본 시간대가 UTC라, auto.py가 datetime.now()로 남기는 실행결과
+# 시각이 pr_log/화면에 9시간 어긋난 채로 표시됐다(예: 실제 한국시간 새벽 5시9분 실행이 오후
+# 8시9분으로 보임 — 사용자가 환경설정 화면에서 실제로 발견). 컨테이너 시간대를 한국시간으로
+# 고정해 소스(기록 시점)에서부터 맞춘다.
+ENV TZ=Asia/Seoul
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 # 콘솔이 연결되지 않은 환경에서 print()의 이모지가 UnicodeEncodeError로 죽는 문제를
 # Windows 작업 스케줄러에서 실제로 겪었다(2026-08-30). 리눅스는 보통 문제없지만,
