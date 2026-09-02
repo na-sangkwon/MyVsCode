@@ -1,4 +1,3 @@
-import os
 from selenium import webdriver
 from selenium.webdriver import ActionChains
 from webdriver_manager.chrome import ChromeDriverManager
@@ -19,8 +18,20 @@ from selenium.webdriver.chrome.options import Options
 import pyautogui 
 import time
 import pyperclip
+import pymysql
+import tkinter as tk
+from tkinter import messagebox
+from datetime import datetime, timedelta
 
 from selenium.webdriver.common.alert import Alert
+
+import os
+import sys
+# 🚀 상위 폴더의 패키지를 인식할 수 있도록 시스템 경로(sys.path)에 추가하는 마법의 코드
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# 이제 공용 함수를 내 파일 안에 있는 것처럼 자유롭게 불러옵니다!
+from util.property_utils import 건축법상건축물용도로변환
+
 # # ChromeDriver 경로 설정
 # driver = webdriver.Chrome('/chromedriver')
 def 페이지완전로딩대기(driver, timeout=10):
@@ -87,26 +98,26 @@ def 리스트선택(driver, li_id, li_text):
 def 라벨텍스트로span입력값넣기(driver, 라벨텍스트, 넣을값):
     try:
         # 넣을값 = str(넣을값)
-        print(f"라벨텍스트로span입력값넣기({driver}, {라벨텍스트}, {넣을값})")
+        # print(f"라벨텍스트로span입력값넣기({driver}, {라벨텍스트}, {넣을값})")
         # '라벨에 해당하는 span 내의 input 요소 찾기
         # pyautogui.alert("여기가 문제??")
         
         span_elements = WebDriverWait(driver, 10).until(
             EC.presence_of_all_elements_located((By.XPATH, "//label[contains(text(), '" + 라벨텍스트 + "')]/following-sibling::span"))
         )
-        print(라벨텍스트+" span요소들:"+ str(len(span_elements)))
+        # print(라벨텍스트+" span요소들:"+ str(len(span_elements)))
         if len(span_elements)==1:
-            print(라벨텍스트+" 입력요소 1개보임")
+            # print(라벨텍스트+" 입력요소 1개보임")
             input_element = WebDriverWait(driver, 10).until(
                 EC.element_to_be_clickable(span_elements[0].find_element(By.XPATH, ".//input"))
             )
             ActionChains(driver).move_to_element(input_element).perform()
             input_element.send_keys(넣을값)
         else:
-            print(라벨텍스트+f" 입력요소 {str(len(span_elements))}개보임")
+            # print(라벨텍스트+f" 입력요소 {str(len(span_elements))}개보임")
             for span in span_elements:
                 # input_element = span.find_element(By.XPATH, ".//input")
-                print("span: ", span)
+                # print("span: ", span)
                 try:
                     input_element = WebDriverWait(driver, 3).until(
                         EC.element_to_be_clickable(span.find_element(By.XPATH, ".//input"))
@@ -118,7 +129,7 @@ def 라벨텍스트로span입력값넣기(driver, 라벨텍스트, 넣을값):
                 if input_element.is_displayed():
                     # JavaScript를 사용하여 값 설정
                     driver.execute_script("arguments[0].value = arguments[1];", input_element, 넣을값)
-                    print("입력값넣기 성공")
+                    # print("입력값넣기 성공")
                     return True
                 else:
                     print(라벨텍스트+" 입력요소 안보임")
@@ -235,7 +246,12 @@ def 그룹별명칭변환(그룹, 대상명칭):
     return 변환사전.get(대상명칭, 대상명칭)
 
 
-
+def 최상단알림창(message, title="알림"):
+    root = tk.Tk()
+    root.withdraw()  # 창 숨기기
+    root.attributes("-topmost", True)  # 항상 위에 있도록 설정
+    messagebox.showinfo(title, message)
+    root.destroy()
 
 
 def macro(data, user):
@@ -246,15 +262,19 @@ def macro(data, user):
     options.add_experimental_option("detach", True) # 창이 자동으로 닫히지 않게 해줌
     options.add_experimental_option("excludeSwitches", ["enable-automation"]) #브라우저에 나타나는 자동화라는 메세지 제거
     options.add_argument("--disable-blink-features=AutomationControlled") #봇으로 인식안하게 하는 옵션
+
+
+    # 현재 날짜와 시간 가져오기
+    현재날짜시간 = datetime.now()
+    현재날짜 = 현재날짜시간.date()
+    # 문자형으로 변환
+    current_date = 현재날짜시간.strftime("%Y-%m-%d")  # 'YYYY-MM-DD' 형식
+    current_time = 현재날짜시간.strftime("%H:%M:%S")  # 'HH:MM:SS' 형식 
     
-    # 현재 날짜 출력
-    import datetime
-    current_date = datetime.date.today()
-    formatted_date = current_date.strftime("%Y-%m-%d")
-    
+    manager_id = data['adminData']['ad_id']
     admin_name = data['adminData']['admin_name']
-    
-    hanbang_code = '' if data['adData']['한방']=='' else data['adData']['한방']
+    print("한방:", data['adData']['한방'])
+    hanbang_code = '' if len(data['adData']['한방'])==0 else data['adData']['한방'][0]['ad_code']
     
     tr_target = data['writeData']['tr_target']
     location_do = data['landData'][0]['land_do']
@@ -305,10 +325,20 @@ def macro(data, user):
     secret_1 = '' if data['writeData']['tr_memo'] == '' else data['writeData']['tr_memo'] + Keys.ENTER
     secret_2 = '' if data['landData'][0]['land_memo'] == '' else data['landData'][0]['land_memo']
     object_detail = '- ' + secret_2 if secret_2 != '' else '' #비밀메모
+    representing_jimok = data['landData'][0]['representing_jimok']#토지주지목
+    representing_purpose = data['landData'][0]['representing_purpose']#토지주용도
     land_totarea = data['landData'][0]['land_totarea']#대지면적
     land_option = data['landData'][0]['land_option']#토지옵션
     representing_use = data['landData'][0]['representing_use']#지목
-    
+    land_adjoiningroad = data['landData'][0]['land_adjoiningroad']#접한도로폭
+    try:
+        # 문자열을 'x'로 분리 후, 정수로 변환하여 큰 수 선택
+        values = [int(x) for x in land_adjoiningroad.split('x')]
+        접한도로폭 = max(values)
+        print(f"접한도로폭: {접한도로폭}")
+    except Exception as e:
+        접한도로폭 = None  # 예외 발생 시 None으로 처리
+        print(f"도로폭 파싱 오류: {e}")        
     # pyautogui.alert("obinfo_type:"+ obinfo_type)
     
     
@@ -333,6 +363,12 @@ def macro(data, user):
         building_option = data['buildingData']['building_option']#건물옵션
         building_option_arr = building_option.split(',')
         tot_options = ",".join([land_option, building_option])
+        direction_stn = '안방'
+        # basic_rcount = '99'
+        # basic_bcount = '99'
+        # if basic_rcount == '99' and basic_bcount == '99':
+        #     object_detail += Keys.ENTER + '- ' + '룸수와 욕실수 확인필요'
+        basic_area1 = building_totarea
 
     if tr_target == '층호수':
         room_num = data['roomData']['room_num']#호실명
@@ -394,8 +430,16 @@ def macro(data, user):
         obinfo_type = '토지'
     else:
         obinfo_type = obinfo_type2
-            
 
+    print(f"obinfo_type:{obinfo_type}, obinfo_type1:{obinfo_type1}, obinfo_type2:{obinfo_type2}")
+
+    def 최상단알림창(message, title="알림"):
+        root = tk.Tk()
+        root.withdraw()  # 창 숨기기
+        root.attributes("-topmost", True)  # 항상 위에 있도록 설정
+        messagebox.showinfo(title, message)
+        root.destroy()
+    
     
     # ChromeDriver 경로 설정
     driver = webdriver.Chrome(options=options)
@@ -509,42 +553,51 @@ def macro(data, user):
             if tr_target == '층호수':
                 if int(basic_floor) < 0 : driver.execute_script("arguments[0].click();", driver.find_element(By.ID, "regDtl01currTopBottom02")) #지하 클릭
                 라벨텍스트로span입력값넣기(driver, '층', basic_floor)
-            if obinfo_type in ['공장','창고','상업용건물']:
+            if obinfo_type in ['공장','창고','상업용건물','단독']:
                 print("지상/지하 층입력 "+obinfo_type)
                 print("building_grndflr:"+str(building_grndflr))
                 print("building_ugrndflr:"+str(building_ugrndflr))
                 #지상/지하
                 if building_grndflr != '':driver.find_element(By.XPATH, '//*[@id="regDtl01topFloor"]').send_keys(building_grndflr)
                 if building_ugrndflr != '':driver.find_element(By.XPATH, '//*[@id="regDtl01bottomFloor"]').send_keys(building_ugrndflr)
-            # pyautogui.alert("올바르게 층 입력되었는지 확인")
+            
             #총층
             라벨텍스트로span입력값넣기(driver, '총 층', int(basic_totflr))
+            # pyautogui.alert("올바르게 층 입력되었는지 확인")
             print("object_type:",object_type)
             # pyautogui.alert("object_type확인: "+object_type)
-            if object_type == '주거용':
+            if obinfo_type in ['원룸']:
                 #공급 면적
                 라벨텍스트로span입력값넣기(driver, '공급 면적', basic_area2)
-            elif object_type in ['상업용', '공업용'] :
-                if obinfo_type in ['상가점포']:
-                    #계약 면적
-                    라벨텍스트로span입력값넣기(driver, '계약 면적', basic_area2)
+            if obinfo_type in ['상가점포']:
+                #계약 면적
+                라벨텍스트로span입력값넣기(driver, '계약 면적', basic_area2)
+            if obinfo_type in ['공장', '창고', '상업용건물', '단독']:
+                #건축 면적
+                라벨텍스트로span입력값넣기(driver, '건축 면적', building_archarea)
+            if obinfo_type in ['공장', '창고', '상업용건물', '단독']:
+                #연 면적
+                라벨텍스트로span입력값넣기(driver, '연 면적', building_totarea)
+            if obinfo_type in ['공장', '창고', '상업용건물', '단독']:
+                #대지 면적
+                라벨텍스트로span입력값넣기(driver, '대지 면적', land_totarea)
+            if obinfo_type in ['상가점포', '공장', '창고']:
+                #전용 면적  
+                라벨텍스트로span입력값넣기(driver, '전용 면적', basic_area1) 
+
+            if tr_target == '건물':
+                최상단알림창("룸수,욕실수 입력후 '확인'을 클릭하세요") 
+            else:
+                #룸 수
                 if obinfo_type in ['공장', '창고']:
-                    #건축 면적
-                    라벨텍스트로span입력값넣기(driver, '건축 면적', building_archarea)
-                if obinfo_type in ['공장', '창고']:
-                    #연 면적
-                    라벨텍스트로span입력값넣기(driver, '연 면적', building_totarea)
-                if obinfo_type in ['공장', '창고']:
-                    #대지 면적
-                    라벨텍스트로span입력값넣기(driver, '대지 면적', land_totarea)
-                if obinfo_type in ['상가점포', '공장', '창고']:
-                    #전용 면적  
-                    라벨텍스트로span입력값넣기(driver, '전용 면적', basic_area1) 
-                if obinfo_type in ['공장', '창고']:
-                    #룸 수
                     basic_rcount = '0' if str(basic_rcount) == '' else str(basic_rcount)
                     라벨텍스트로span입력값넣기(driver, '룸 수', basic_rcount)
-                
+
+                #욕실수
+                if obinfo_type in ['단독']:
+                    라벨텍스트로span입력값넣기(driver, '욕실 수', basic_bcount)
+                elif obinfo_type in ['공장']:
+                    라벨텍스트로span입력값넣기(driver, '욕실 또는 화장실 수', basic_bcount)
 
             # pyautogui.alert("올바르게 계약 입력되었는지 확인")   
 
@@ -566,8 +619,6 @@ def macro(data, user):
             else:
                 if direction_stn=='': direction_stn='안방'
                 라벨텍스트로라디오선택(driver, 'li_regDtl01directionInfo', direction_stn)
-                라벨텍스트로span입력값넣기(driver, '룸 수', basic_rcount)
-                라벨텍스트로span입력값넣기(driver, '욕실 수', basic_bcount)
                 if obinfo_type == '다세대':
                     라벨텍스트로span입력값넣기(driver, '총 세대', building_hhld)
                     리스트선택(driver, 'li_regDtl01stairCd', '계단식') #계단형태
@@ -611,27 +662,44 @@ def macro(data, user):
             print("obinfo_ttype:"+obinfo_ttype)
             #매매가
             라벨텍스트로span입력값넣기(driver, '매매가', obinfo_trading)
-            if obinfo_type == '토지':
-                #접한도로
-                pyautogui.alert("접한도로 폭을 입력하세요~\n계속 진행하시려면 확인클릭!!")
-                # 라벨텍스트로div입력값넣기(driver, '접한 도로', '6')
-                #토지면적
-                라벨텍스트로span입력값넣기(driver, '토지 면적', land_totarea)
-                #지목
-                리스트선택(driver, 'li_regDtl02jimokCd', representing_use)
-                #용도분류
-                # driver.find_element(By.XPATH, '//*[@id="regDtl02recommendUse2_toji-button"]/span').click()
-                용도분류선택 = WebDriverWait(driver, 5).until(
-                    EC.presence_of_element_located((By.XPATH, '//*[@id="regDtl02recommendUse2_toji-button"]'))
-                )
-                driver.execute_script("arguments[0].scrollIntoView(true);", 용도분류선택)
-                용도분류선택.click()
-                pyautogui.alert("용도분류를 선택하세요~\n계속 진행하시려면 확인클릭!!")
+
         else:            
             #월세금    
             라벨텍스트로span입력값넣기(driver, '월세금', obinfo_rent1)
             #보증금    
             라벨텍스트로span입력값넣기(driver, '보증금', obinfo_deposit1)
+
+
+        if obinfo_type == '토지':
+            #접한도로
+            if 접한도로폭:
+                라벨텍스트로div입력값넣기(driver, '접한 도로', 접한도로폭)
+            else:
+                최상단알림창("접한도로 폭을 입력하세요~\n계속 진행하시려면 확인클릭!!")
+            
+            #토지면적
+            라벨텍스트로span입력값넣기(driver, '토지 면적', land_totarea)
+            #지목
+            리스트선택(driver, 'li_regDtl02jimokCd', representing_jimok)
+            #용도분류
+            # driver.find_element(By.XPATH, '//*[@id="regDtl02recommendUse2_toji-button"]/span').click()
+            용도분류선택 = WebDriverWait(driver, 5).until(
+                EC.presence_of_element_located((By.XPATH, '//*[@id="regDtl02recommendUse2_toji-button"]'))
+            )
+            driver.execute_script("arguments[0].scrollIntoView(true);", 용도분류선택)
+            용도분류선택.click()
+            def 지목에따른용도(지목):
+                지목 = str(지목).strip()  # 혹시 모를 공백 제거 및 문자열 처리
+                if 지목 in ['전', '답']:
+                    return '농지'
+                elif 지목  in ['공장', '창고']:
+                    return '공장창고용지'
+                else:
+                    return '기타'
+            용도값 = 지목에따른용도(representing_use)
+            리스트선택(driver, 'regDtl02recommendUse2_toji', 용도값)
+            최상단알림창("용도분류를 선택하세요~\n계속 진행하시려면 확인클릭!!")       
+        else:    
             # print("object_type:"+object_type, "obinfo_type:"+obinfo_type)
             if object_type != '주거용':
                 if obinfo_type in ['상가', '사무실']:
@@ -643,14 +711,14 @@ def macro(data, user):
                     else:
                         라벨텍스트로span입력값넣기(driver, '권리금', '1')
                 if obinfo_type in ['공장','창고']:
-                    pyautogui.alert("층고, 동력, 입지, 공장종류, 공장형태, 진입도로, 건축구조를 선택하세요~\n계속 진행하시려면 확인클릭!!")
+                    최상단알림창("층고, 동력, 입지, 공장종류, 공장형태, 진입도로, 건축구조를 선택하세요~\n계속 진행하시려면 확인클릭!!")
                     #층고
                     #동력
                     #입지
             else:
                 if obinfo_type in {'원룸'}:
                     #발코니
-                    pyautogui.alert("베란다 정보확인")
+                    최상단알림창("베란다 정보확인")
                     if '베란다' in room_important:
                         print("베란다가 존재합니다.")
                         라벨텍스트로라디오선택(driver, 'li_regDtl02balconyCd','유')
@@ -686,8 +754,7 @@ def macro(data, user):
                     else:
                         print("비옵션 선택")
                         라벨텍스트로라디오선택(driver, 'li_regDtl02optionCd','비옵션')
-        
-        if obinfo_type != '토지':    
+                        
             #승강기
             if "엘리베이터" in building_option_arr:
                 print("엘리베이터가 존재합니다.")
@@ -699,44 +766,50 @@ def macro(data, user):
             #난방방식(초기값: 개별난방)
             print(object_type+"난방방식 선택")
             if object_type == '주거용':
-                라벨텍스트로라디오선택(driver, 'li_regDtl02warmCd', 그룹별명칭변환('난방 방식', '개별난방'))
+                if obinfo_type in ['단독']:
+                    라벨텍스트로라디오선택(driver, 'li_regDtl02warmCd-memu', 그룹별명칭변환('난방 방식', '개별난방'))
+                else:
+                    라벨텍스트로라디오선택(driver, 'li_regDtl02warmCd', 그룹별명칭변환('난방 방식', '개별난방'))
             elif object_type== '상업용':
                 리스트선택(driver, 'li_regDtl02warmCd', '개별난방')
                 라벨텍스트로라디오선택(driver, 'li_regDtl02coldCd', '개별냉방')
             # pyautogui.alert("난방방식 확인")
             
-            #추천2
-            리스트선택(driver, 'li_regDtl02recommendUse2', '(선택)안함')
-            
-            #입지 조건 (임의 초기설정)
-            print(object_type+' '+obinfo_type1+' 입지조건 선택')
-            if obinfo_type1 not in ['원룸']:  
-                if object_type == '주거용':    
-                    # print("입지")
-                    리스트선택(driver, 'li_regDtl02sukbakIpjiCd', '주택가')
-                elif obinfo_type1 == '사무실':    
-                    # print("입지")
-                    리스트선택(driver, 'li_regDtl02officeIpjiCd', '주택가')
-                elif obinfo_type1 == '상가점포':    
-                    # print("입지")
-                    리스트선택(driver, 'li_regDtl02gsanggaIpjiCd', '주택가')
-                    #상가구분
-                    리스트선택(driver, 'li_regDtl02gsanggaCd', '근린상가')
-            # pyautogui.alert("입지조건 확인")    
-            #주 용도 (임의 초기설정)
-            print("주용도:", 그룹별명칭변환('주용도', obinfo_type1))
             if tr_target == '층호수':
+                리스트선택(driver, 'li_regDtl02recommendUse2', '(선택)안함')
+            
+                #입지 조건 (임의 초기설정)
+                print(object_type+' '+obinfo_type1+' 입지조건 선택')
+                if obinfo_type1 not in ['원룸']:  
+                    if object_type == '주거용':    
+                        # print("입지")
+                        리스트선택(driver, 'li_regDtl02sukbakIpjiCd', '주택가')
+                    elif obinfo_type1 == '사무실':    
+                        # print("입지")
+                        리스트선택(driver, 'li_regDtl02officeIpjiCd', '주택가')
+                    elif obinfo_type1 == '상가점포':    
+                        # print("입지")
+                        리스트선택(driver, 'li_regDtl02gsanggaIpjiCd', '주택가')
+                        #상가구분
+                        리스트선택(driver, 'li_regDtl02gsanggaCd', '근린상가')
+                # pyautogui.alert("입지조건 확인")    
+                #주 용도 (임의 초기설정)
+                print("주용도:", 그룹별명칭변환('주용도', obinfo_type1))
+            
                 라벨텍스트로라디오선택(driver, 'li_regDtl02storeUseCd', 그룹별명칭변환('주용도', obinfo_type1))
+
             elif tr_target == '건물':
-                pyautogui.alert(f"주용도 선택후 '확인'을 클릭하세요!!\n\n※참고: 건축물대장상 용도는 '{building_purpose}'입니다.")    
+                최상단알림창(f"주용도 선택후 '확인'을 클릭하세요!!\n\n※참고: 건축물대장상 용도는 '{building_purpose}'입니다.")    
                 # 라벨텍스트로라디오선택(driver, 'li_regDtl02officeUseCd', 그룹별명칭변환('주용도', obinfo_type1))
-                # 상가면적/사무실면적/주택면적 초기값0 적용
-                라벨텍스트로span입력값넣기(driver, '상가 면적', '0')
-                라벨텍스트로span입력값넣기(driver, '사무실 면적', '0')
-                라벨텍스트로span입력값넣기(driver, '주택 면적', '0')
+
+                # # 상가면적/사무실면적/주택면적 초기값0 적용
+                # 라벨텍스트로span입력값넣기(driver, '상가 면적', '0')
+                # 라벨텍스트로span입력값넣기(driver, '사무실 면적', '0')
+                # 라벨텍스트로span입력값넣기(driver, '주택 면적', '0')
             
             #주차
-            pyautogui.alert(f"총주차대수 입력후 '확인'을 클릭하세요!!\n\n※참고: 건축물대장상 총주차대수는 '{building_pn}대'입니다.")
+            최상단알림창(f"총주차대수 입력후 '확인'을 클릭하세요!!\n\n※참고: 건축물대장상 총주차대수는 '{building_pn}대'입니다.")
+
             
             # #비목
             # print("관리비내역")
@@ -751,8 +824,20 @@ def macro(data, user):
             #     print(f"오류 발생: {e}")
 
             #건축물용도 regDtl02expensesItemInfo
-            print("건축물용도", 그룹별명칭변환('건축물용도', building_purpose))
-            리스트선택(driver, "li_regDtl02buildUseCd", 그룹별명칭변환('건축물용도', building_purpose))
+            # -------------------------------------------------------------------------
+            # 🎯 [수정] 건축법상 건축물 용도 자동 정제 및 변환 반영
+            # -------------------------------------------------------------------------
+            # 1. 면적(basic_area1)과 원본 용도(building_purpose)를 공용 함수에 전달하여 1차 정제
+            정제된용도 = 건축법상건축물용도로변환(building_purpose, basic_area1)
+            # 2. 공용 함수에서 매칭되지 않았을 경우(None), 기존 그룹별명칭변환 사전을 차선책으로 활용
+            if not 정제된용도:
+                최종용도 = 그룹별명칭변환('건축물용도', building_purpose)
+            else:
+                # 공용 함수가 반환한 값("노유자시설" 등)을 한방 플랫폼의 최종 특수 명칭으로 보정
+                최종용도 = 그룹별명칭변환('건축물용도', 정제된용도)
+            print(f"▶ 건축물용도 매핑완료: 원본({building_purpose}) / 면적({basic_area1}㎡) -> 최종 선택값({최종용도})")
+            # 한방 드롭다운 선택 실행
+            리스트선택(driver, "li_regDtl02buildUseCd", 최종용도)
             # pyautogui.alert("올바르게 건축물용도 선택되었는지 확인")
             
             #사용승인일
@@ -809,8 +894,12 @@ def macro(data, user):
         # driver.execute_script("fn_moveRegDtl('3')") #메모/기타 정보 
         WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="btn_atlfslRegListRegDtl03"]'))).click()
         
-        # #매물 특징
-        driver.find_element(By.XPATH, '//*[@id="regDtl03feature"]').send_keys("oO오방Oo")
+        #매물 특징
+        매물특징값 = "oO오방Oo "
+        if tr_target == '토지':
+            매물특징값 += location_li+" "+representing_purpose+" "
+        매물특징값 += tr_target+obinfo_ttype
+        driver.find_element(By.XPATH, '//*[@id="regDtl03feature"]').send_keys(매물특징값)
         
         #매물 설명
         if obinfo_ttype == '매매':
@@ -858,7 +947,7 @@ def macro(data, user):
         print("고객정보등록 완료")     
     
     def 신규매물등록():
-        # pyautogui.alert("확인 클릭시 신규등록을 시작합니다. :"+obinfo_type)  
+        최상단알림창("확인 클릭시 신규등록을 시작합니다. :"+obinfo_type)  
         
         driver.execute_script("divShowEvent('atlfslRegIntro','매물|등록')") #매물등록 
         driver.execute_script("fn_atlfslRegNew()") #새로내놓기
@@ -894,33 +983,105 @@ def macro(data, user):
             매물번호_text = 매물번호span.text.strip()  # 문자열 앞뒤 공백 제거
             print(f"'{매물번호_text}'가 보임")
             if 매물번호_text.startswith('매물번호 '):
-                매물번호 = 매물번호span.text.replace('매물번호 ', '')  # '매물번호 '를 제거한 나머지 문자열
-                print(f"매물번호: {매물번호}")
+                한방매물번호 = 매물번호span.text.replace('매물번호 ', '')  # '매물번호 '를 제거한 나머지 문자열
+                print(f"매물번호: {한방매물번호}")
                 # 매물번호 클립보드에 복사
-                pyperclip.copy(매물번호)
+                # pyperclip.copy(한방매물번호)
                 #DB에 한방매물번호 업데이트
-                pyautogui.alert(f"한방 매물번호 복사완료!!\n\n등록된 한방매물번호는 '{매물번호}'입니다.") 
+                # pyautogui.alert(f"한방 매물번호 복사완료!!\n\n등록된 한방매물번호는 '{한방매물번호}'입니다.") 
+                def get_ad_dates():
+                    """
+                    광고 시작일과 종료일을 반환합니다.
+                    시작일은 오늘 날짜, 종료일은 30일 후 날짜입니다.
+                    """
+                    start_date = datetime.now().strftime("%Y-%m-%d")  # 오늘 날짜
+                    end_date = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")  # 30일 후 날짜
+                    return start_date, end_date                
+                #한방매물번호 DB에 저장하기
+                def 한방매물번호저장():
+
+                    # DB 연결
+                    conn = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', charset='utf8')
+
+                    # DictCursor 대신 기본 커서 사용
+                    cursor = conn.cursor()
+                    # cursor = conn.cursor(pymysql.cursors.DictCursor)
+                    cursor.execute('USE obangkr;')
+
+                    # 광고 시작일과 종료일 계산
+                    ad_start, ad_end = get_ad_dates()   
+
+                    insert_query = """
+                        INSERT INTO pr_externalad (
+                            admin_id, object_code_new, ad_start, ad_end, ad_site, ad_code, ad_manager, ad_manager_id, ad_udate, ad_utime, ad_wdate, ad_wtime
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """
+
+                    try:
+                        # 쿼리 실행
+                        conn.begin()  # 트랜잭션 시작
+                        cursor.execute(insert_query, (
+                            manager_id, object_code_new, ad_start, ad_end, '한방', 한방매물번호, admin_name, manager_id, current_date, current_time, current_date, current_time
+                        ))
+                        if manager_id and object_code_new and 한방매물번호 :
+                            conn.commit()
+                            print(f"✅ DB에 매물({object_code_new})의 한방 매물번호를 추가 하였습니다.") 
+                            alert_message = f"새 한방 광고 매물이 추가되었습니다.\n\한방매물번호: {한방매물번호}\n\n작업을 종료합니다."
+                        else:
+                            alert_message = f"DB에 등록하기 위한 필수정보가 확인되지 않습니다.\n\manager_id: {manager_id}\nobject_code_new: {object_code_new}\n한방매물번호: {한방매물번호}\n\n작업을 종료합니다."
+                    except Exception as e:
+                        alert_message = f"추가 작업 중 오류가 발생했습니다: {e}"    
+
+                    # 알림창으로 결과 표시
+                    if alert_message : 
+                        print(alert_message)
+                        # pyautogui.alert(alert_message)      
+                        최상단알림창(alert_message)          
+                
+                한방매물번호저장() #한방매물번호저장 실행        
             # pyautogui.alert("정상등록확인") 
         except Exception as e:
             print("등록완료파트 에러:"+ str(e))
-     
+
+
+
+
+
+
+
+
+
+
+
+
         
     # 요소가 클릭 가능할 때까지 대기
     WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="deviceCheck"]/button'))).click() #한방앱/모바일웹 화면선택 팝업닫기
+    print("한방앱/모바일웹 화면선택 팝업닫기")
     driver.find_element(By.XPATH, '//*[@id="mptlFooter"]/div/a[5]').click() #메뉴클릭
+    print("메뉴클릭")
     # WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="component-mainMenu-7755237386019465"]/div[1]/a/div'))).click() #로그인 및 회원가입 클릭
-    # "component-mainMenu-"로 시작하는 아이디를 가진 요소를 찾기
-    element_xpath = "//*[starts-with(@id, 'component-mainMenu-')]/div[1]/a/div"
-    element = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, element_xpath)))
-    element.click()    
+    driver.find_element(By.XPATH, '//*[@id="popAlertExecuteBtnId"]').click() #메뉴클릭
+    print("로그인을 하시겠어요? '예'클릭")
+
+    # # "component-mainMenu-"로 시작하는 아이디를 가진 요소를 찾기
+    # element_xpath = "//*[starts-with(@id, 'component-mainMenu-')]/div[1]/a/div"
+    # element = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, element_xpath)))
+    # element.click()    
+    # print("로그인 및 회원가입 클릭")
     driver.find_element(By.XPATH, '//*[@id="agntLoginTabBtn"]').click() #공인중개사 로그인 클릭
+    print("공인중개사 로그인 클릭")
     driver.find_element(By.XPATH, '//*[@id="userId"]').send_keys('bsleemanse') #아이디 입력
+    print("아이디 입력")
     driver.find_element(By.XPATH, '//*[@id="password"]').send_keys('tkdrnjs1001') #비번 입력
+    print("비번 입력")
     driver.find_element(By.XPATH, '//*[@id="agntLoginBtn"]').click() #로그인 클릭
+    print("로그인 클릭")
     팝업버튼 = WebDriverWait(driver, 20).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="deviceCheck"]/button'))) #한방앱/모바일웹 화면선택 팝업
     # 요소가 보이면 클릭
     if 팝업버튼.is_displayed():
         팝업버튼.click()
+        print("한방앱/모바일웹 화면선택 팝업")
     # pyautogui.alert("확인필요")    
     
     driver.execute_script("fnMmGoViewMove('mamulList')")  # 내 매물 관리
@@ -932,11 +1093,46 @@ def macro(data, user):
         print("검색키워드(주소): "+location_dongli)
         keyword = location_dongli
     search_input.send_keys(keyword)  # 검색어(한방매물번호) 입력
-    search_button = driver.find_element(By.XPATH, '//*[@id="atlfslListSearchBtn2"]')
-    search_button.click()  # 돋보기 클릭
-    time.sleep(1)
     # pyautogui.alert("확인필요")
-    result = driver.find_element(By.ID, "atlfslListTotCnt").text
+    try:
+
+        search_button = driver.find_element(By.XPATH, '//*[@id="atlfslListSearchBtn2"]')
+        search_button.click()  # 돋보기 클릭
+        # 1. 검색 버튼 누르기 전, 현재 자료수(텍스트)를 먼저 저장해둬.
+        # 만약 페이지 로드 시점부터 atlfslListTotCnt가 있다면 초기값을 가져오기 위해 먼저 찾고
+        # 없으면 wait로 찾아서 text를 가져와야겠지? 여기서는 있다고 가정할게!
+        initial_count_element = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.ID, "atlfslListTotCnt"))
+        )
+        initial_count_text = initial_count_element.text
+        print(f"⭐ 검색 전 초기 자료수: {initial_count_text} ⭐")
+
+        # 2. 명시적 대기(Explicit Wait)를 사용해서 자료수가 업데이트될 때까지 기다려!
+        # atlfslListTotCnt의 텍스트가 'initial_count_text'와 달라질 때까지 기다리는 거야.
+        # 최대 10초까지 기다릴게.
+        WebDriverWait(driver, 10).until(
+            # 람다(lambda) 함수로 커스텀 조건을 만들어서, atlfslListTotCnt 요소의 텍스트가
+            # 초기 텍스트랑 달라질 때까지 기다리라고 지시하는 거지.
+            lambda d: d.find_element(By.ID, "atlfslListTotCnt").text != initial_count_text
+        )
+
+        # 3. 텍스트가 업데이트된 후에, 그 값을 가져와!
+        result_element = driver.find_element(By.ID, "atlfslListTotCnt")
+        result = result_element.text
+        print(f"🎉 검색 후 업데이트된 자료수: {result} 🎉")
+
+    except TimeoutException:
+        print("😢 지정된 시간 안에 검색 결과 자료수가 업데이트되지 않았습니다. 😢")
+        # 타임아웃 발생 시, 현재 요소를 다시 찾아서 값을 가져와 볼 수도 있어.
+        # (하지만 이 경우 원하는 업데이트된 값이 아닐 가능성이 높음)
+        current_result = driver.find_element(By.ID, "atlfslListTotCnt").text
+        print(f"현재 atlfslListTotCnt 값 (타임아웃 시점): {current_result}")
+    except Exception as e:
+        print(f"⚠️ 에러 발생: {e} ⚠️")    
+    # time.sleep(1)
+    # search_button = driver.find_element(By.XPATH, '//*[@id="atlfslListSearchBtn2"]')
+    # search_button.click()  # 돋보기 클릭
+    # result = driver.find_element(By.ID, "atlfslListTotCnt").text
     
     # result = "1"
     print(f"검색결과값은 {result}개 입니다.")
@@ -977,6 +1173,8 @@ def macro(data, user):
             # 작업 종료
             driver.quit()
             exit()
+        else:
+            pyautogui.alert("오류확인필요")
 
     else:
         if result != "0":#검색어로 검색된 매물이 존재하는 경우

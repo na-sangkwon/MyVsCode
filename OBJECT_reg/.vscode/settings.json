@@ -1,0 +1,10 @@
+{
+  "code-runner.executorMap": {
+    "python": "D:/241103_nsk98/Documents/repos_python/OBJECT_reg/myenv/Scripts/python.exe -u"
+  },
+  "code-runner.runInTerminal": true,
+  "python.defaultInterpreterPath": "D:/241103_nsk98/Documents/repos_python/OBJECT_reg/myenv/Scripts/python.exe",
+  "code-runner.executorMapByFileExtension": {
+    ".py": "set PYTHONIOENCODING=utf-8 && D:/241103_nsk98/Documents/repos_python/OBJECT_reg/myenv/Scripts/python.exe"
+  }
+}

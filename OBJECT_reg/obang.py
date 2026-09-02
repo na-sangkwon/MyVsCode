@@ -37,6 +37,8 @@ import pyautogui
 import time
 import pymysql
 import traceback
+import tkinter as tk
+from tkinter import messagebox
 
 from PyQt5.QtCore import pyqtSignal, QThread
 from PyQt5.QtWidgets import QMessageBox, QApplication, QMainWindow
@@ -82,8 +84,15 @@ def is_directory_exists(ftp, directory):
         # ftp.cwd('..')
         return True
     except:
-        return False              
- 
+        return False        
+          
+def 최상단알림창(message, title="알림"):
+    root = tk.Tk()
+    root.withdraw()  # 창 숨기기
+    root.attributes("-topmost", True)  # 항상 위에 있도록 설정
+    messagebox.showinfo(title, message)
+    root.destroy()
+
 def 가장용량이작은파일찾기(photo_list, path):
     smallest_file = None
     smallest_size = float('inf')  # 초기화를 무한대로 설정
@@ -139,22 +148,33 @@ def 숫자한글로금액변환(숫자금액):
     if not 변환된금액:
         변환된금액 = "0원"
     return 변환된금액
-           
+
+
+def 메모에마크추가(메모, 마크='-- '):
+    if not 메모:  # 메모가 None 또는 빈 문자열인 경우 예외 처리
+        return ""            
+    # 줄 단위로 나누고, 각 줄에 '-- ' 추가
+    return "<br>".join([f"{마크}{line}" for line in 메모.split("<br>") if line.strip()])       
+    
 def macro(data, user, group):
     # ChromeDriver 경로 설정
     # driver = webdriver.Chrome('/chromedriver', options=options)
     driver = webdriver.Chrome(options=options)
     # driver = webdriver.Chrome(ChromeDriverManager().install())    
     errarr = []
-    
-    obang_id = data['adminData']['obang_id']
-    obang_pw = data['adminData']['obang_pw']
+    # pyautogui.alert(data['adminData'])
+    obang_id = 'omnsk8@gmail.com' if data['adminData']['obang_id'] == '' else data['adminData']['obang_id']
+    obang_pw = 'dhqkd5555%' if data['adminData']['obang_pw'] == '' else data['adminData']['obang_pw']
+    # obang_id = data['adminData']['obang_id']
+    # obang_pw = data['adminData']['obang_pw']
     
     # 현재 날짜 출력
     import datetime
     current_date = datetime.date.today()
     formatted_date = current_date.strftime("%Y-%m-%d")
-    
+
+    I_memo = ''
+
     admin_name = data['adminData']['admin_name']
     # print(ad_email, ad_pw)
     tr_target = data['writeData']['tr_target']
@@ -185,6 +205,10 @@ def macro(data, user, group):
     location_dongli = (data['landData'][0]['land_dong'] + data['landData'][0]['land_jibun']) if data['landData'][0]['land_li'] == '' else location_lijibun
     location_detail = location_dongli
     land_totarea = data['landData'][0]['land_totarea'] #대지면적
+    land_memo = data['landData'][0]['land_memo'] #토지메모
+    land_memo_formatted = 메모에마크추가(land_memo , '· ')
+    if land_memo_formatted:
+        I_memo += ("<br>" if I_memo else "") + land_memo_formatted
     main_area = land_totarea
     main_option = ''
     main_important = ''
@@ -205,31 +229,62 @@ def macro(data, user, group):
 
     obinfo_trading = data['writeData']['trading'] #매매금액    
     obinfo_deposit1 = data['writeData']['deposit1'] #보증금1
-    if obinfo_trading == '' and obinfo_deposit1 == '' :
-        pyautogui.alert("거래금액은 필수입니다. 확인후 다시 시작하세요~")
+    if obinfo_deposit1 == '' :
+        pyautogui.alert("임대료는 필수입니다. 확인후 다시 시작하세요~")
+    # if obinfo_trading == '' and obinfo_deposit1 == '' :
+    #     pyautogui.alert("거래금액은 필수입니다. 확인후 다시 시작하세요~")
         driver.quit()
         return
         # driver.close()
     obinfo_deposit2 = data['writeData']['deposit2'] #보증금2
     obinfo_deposit3 = data['writeData']['deposit3'] #보증금3
-    obinfo_rent1 = data['writeData']['rent1'] #월세1
-    obinfo_rent2 = data['writeData']['rent2'] #월세2
-    obinfo_rent3 = data['writeData']['rent3'] #월세3
-    obinfo_ttype = data['writeData']['object_ttype'] #거래종류
-    if ',' in obinfo_ttype: #쉼표가 있다면 쉼표로 분리후 첫번째 항목을 값으로 지정
-        obinfo_ttype_arr = obinfo_ttype.split(',')
+    obinfo_rent1 = '0' if data['writeData']['rent1'] == '' else data['writeData']['rent1'] #월세1
+    obinfo_rent2 = '0' if data['writeData']['rent2'] == '' else data['writeData']['rent2'] #월세2
+    obinfo_rent3 = '0' if data['writeData']['rent3'] == '' else data['writeData']['rent3'] #월세3
+
+
+    # Step 1: 먼저 기본적인 '전세' 또는 '월세'를 판단합니다.
+    # obinfo_deposit1 은 필수라 가정하고, '0'이면 값이 없는 것으로 간주
+    if obinfo_rent1 != '0':
+        # obinfo_rent1에 값이 있다면 월세 (혹은 전월세의 월세 부분)
+        obang_ttype = "월세"
     else:
-        obinfo_ttype_arr = [obinfo_ttype]
-    # '매매'를 제외한 배열을 생성
-    obinfo_ttype_arr = [item for item in obinfo_ttype_arr if item != '매매']
-    # 조건에 따라 obinfo_ttype 값을 결정
-    obang_ttype = '매매'
-    if '전세' in obinfo_ttype_arr and '월세' in obinfo_ttype_arr:
-        obang_ttype = '전/월세'
-    elif '전세' in obinfo_ttype_arr:
-        obang_ttype = '전세'
-    elif '월세' in obinfo_ttype_arr:
-        obang_ttype = '월세'
+        # obinfo_rent1이 0이면 전세
+        obang_ttype = "전세"
+
+    # Step 2: 이제 '전월세' 여부를 판단합니다.
+    # 유효한 두 번째 이상의 거래 옵션이 있는지 확인 (여기서 obinfo_deposit2,3 또는 obinfo_rent2,3에 의미 있는 값이 있는지)
+    # '0'은 값이 없음을 의미하므로, '0'이 아닌 다른 값이 들어있어야 '전월세'로 간주
+    # obinfo_deposit2/3는 '' 아니면 유효한 값, obinfo_rent2/3는 '0' 아니면 유효한 값
+
+    # Case 1: 이미 '전세'로 분류되었는데, 월세 옵션이 추가로 있는 경우
+    if obang_ttype == "전세" and (obinfo_rent2 != '0' or obinfo_rent3 != '0'):
+        obang_ttype = "전월세"
+    # Case 2: 이미 '월세'로 분류되었는데, 전세 옵션(예: deposit1 외에 deposit2,3에만 값)이나 다른 형태의 월세 옵션이 추가로 있는 경우
+    elif obang_ttype == "월세" and (obinfo_deposit2 != '' or obinfo_deposit3 != '' or obinfo_rent2 != '0' or obinfo_rent3 != '0'):
+        # 보증금2,3이나 월세2,3에 유효한 값이 있다면 전월세로 변경
+        # obinfo_deposit1(필수)과 obinfo_rent1(0이 아님)으로 이미 월세로 분류되었기 때문에
+        # 다른 옵션들이 존재하는지만 보면 됨
+        if obinfo_deposit2 != '' or obinfo_deposit3 != '': # 추가 보증금이 있다면 전월세
+            obang_ttype = "전월세"
+        # 이미 월세인 경우, rent2, rent3가 '0'이 아니면 다른 월세 옵션이 있으니 전월세
+        elif obinfo_rent2 != '0' or obinfo_rent3 != '0':
+            obang_ttype = "전월세"
+    # obinfo_ttype = data['writeData']['object_ttype'] #거래종류
+    # if ',' in obinfo_ttype: #쉼표가 있다면 쉼표로 분리후 첫번째 항목을 값으로 지정
+    #     obinfo_ttype_arr = obinfo_ttype.split(',')
+    # else:
+    #     obinfo_ttype_arr = [obinfo_ttype]
+    # # '매매'를 제외한 배열을 생성
+    # obinfo_ttype_arr = [item for item in obinfo_ttype_arr if item != '매매']
+    # # 조건에 따라 obinfo_ttype 값을 결정
+    # obang_ttype = '매매'
+    # if '전세' in obinfo_ttype_arr and '월세' in obinfo_ttype_arr:
+    #     obang_ttype = '전/월세'
+    # elif '전세' in obinfo_ttype_arr:
+    #     obang_ttype = '전세'
+    # elif '월세' in obinfo_ttype_arr:
+    #     obang_ttype = '월세'
         
 
     basic_manager = data['writeData']['manager'] #관리비 별도/포함/미확인
@@ -255,6 +310,8 @@ def macro(data, user, group):
         basic_totflr = str(int(data['buildingData']['building_grndflr']) + int(data['buildingData']['building_ugrndflr'])) #전체층
         building_ugrndflr = data['buildingData']['building_ugrndflr'] #지하층수
         building_grndflr = data['buildingData']['building_grndflr'] #지상층수
+        building_bolt = data['buildingData']['building_bolt'] #공급전력
+        building_height = data['buildingData']['building_height'] #건물높이
         add_usedate = str(data['buildingData']['building_usedate']) #준공일
         building_options = data['buildingData']['building_option'] #건물옵션
         building_importants = data['buildingData']['building_important'] #건물옵션
@@ -264,6 +321,10 @@ def macro(data, user, group):
         sum_rent = data['buildingData']['sum_rent'] #총월세
         sum_mmoney = data['buildingData']['sum_mmoney'] #총관리비
         sum_etc = data['buildingData']['sum_etc'] #기타비용
+        building_memo = data['buildingData']['building_memo'] #건물메모
+        building_memo_formatted = 메모에마크추가(building_memo , '· ')
+        if building_memo_formatted:
+            I_memo += ("<br>" if I_memo else "") + building_memo_formatted
         secret_3 = '' if data['buildingData']['building_memo'] == '' else data['buildingData']['building_memo'] + Keys.ENTER
         basic_secret += secret_3
         main_area = building_totarea
@@ -285,12 +346,16 @@ def macro(data, user, group):
         basic_floor = data['roomData']['room_floor'] #해당층
         add_importants = data['roomData']['room_important'] #호실특징
         room_options = data['roomData']['room_option'] #옵션선택
+        room_memo = data['roomData']['room_memo'] #호실메모
+        room_memo_formatted = 메모에마크추가(room_memo , '· ')
+        if room_memo_formatted:
+            I_memo += ("<br>" if I_memo else "") + room_memo_formatted
         secret_4 = '' if data['roomData']['room_memo'] == '' else data['roomData']['room_memo'] + Keys.ENTER
         basic_secret += secret_4
         main_area = basic_area1
         main_option += ','+room_options if main_option != '' else room_options
         main_important += ','+add_importants if main_important != '' else add_importants
-    basic_secret = formatted_date+" "+admin_name + Keys.ENTER +" https://obangkr.cafe24.com/web/request/request_view/view_give_request_detail.php?request_code="+request_code
+    basic_secret = f"[새홈{object_code_new}] 수정일:"+formatted_date+" "+admin_name + Keys.ENTER +" https://obangkr.cafe24.com/web/request/request_view/view_give_request_detail.php?request_code="+request_code
     print("등록될 상세주소:", location_detail)
     main_area_pyeong = str(int(float(main_area)/3.305785)) if main_area != '' else ''
 
@@ -337,7 +402,14 @@ def macro(data, user, group):
             obinfo_type = '공장/창고'
     elif tr_target == '건물':
         object_info_code = building_code
-        obinfo_type = '통건물'
+        if object_type == '공업용':
+            obinfo_type = '공장/창고'
+        else:
+            obinfo_type = '통건물'
+            if object_type == '주거용':
+                obinfo_type2 = '다가구주택'
+            elif object_type == '상업용':
+                obinfo_type2 = '상업용건물'
     elif tr_target == '토지':
         object_info_code = land_code
         obinfo_type = '토지'
@@ -429,15 +501,15 @@ def macro(data, user, group):
             query = f'SELECT object_ori_img FROM pr_object WHERE object_code_new="{object_code_new}"'
             cursor.execute(query)
             result = cursor.fetchone() 
-            object_ori_img = result['object_ori_img'].decode('utf-8')
+            object_ori_img = result['object_ori_img']
             print("result:",result)
-            print("object_ori_img:",object_ori_img)
+            # print("object_ori_img:",object_ori_img)
             if result and object_ori_img == 'N':
-                print("object_ori_img 값은 'N'입니다.") 
+                # print("object_ori_img 값은 'N'입니다.") 
                 update_query = f'UPDATE pr_object SET object_ori_img="Y" WHERE object_code_new="{object_code_new}"'
                 cursor.execute(update_query)
                 conn.commit()
-                 
+                print("object_ori_img 값을 'Y'로 업데이트 완료!!") 
             # ftp_directory = 'web/object/'+object_code_new
             ftp_directory = 'img/web/object/object_img/'+object_info_code
 
@@ -512,6 +584,57 @@ def macro(data, user, group):
 
 
 
+    # #테스트용--------------------------------------------------------------------------------------
+    # keywords = [location_dongli, location_building]
+    # if tr_target == '층호수':
+    #     keywords.append('location_room')
+    # print("keywords:",keywords)
+    # try:
+    #     time.sleep(0.2)
+    #     rows = driver.find_elements(By.CSS_SELECTOR, '#search-items tr.admin_column')
+    #     print("rows 개수:"+str(len(rows)))
+    #     if len(rows) == 0:
+    #         pyautogui.alert("리스트의 목록개수 0??")
+    # except Exception as e:
+    #     print("rows 조회에러:", e)
+    # # for row in rows:
+    # for i in range(len(rows)):
+    #     try:
+    #         # 각 요소에 대해 명시적 대기 적용
+    #         # 매번 새로 요소를 찾아서 작업
+    #         row = driver.find_elements(By.CSS_SELECTOR, '#search-items tr.admin_column')[i]                            
+    #         time.sleep(0.5)
+    #         print('--')
+    #         row구조 = driver.execute_script("return arguments[0].outerHTML;", row)
+    #         # row구조 = row.get_attribute('outerHTML')
+    #         # pyautogui.alert(f"row구조:{row구조}")
+    #         # 주소가 포함된 'help-block' 클래스를 가진 div 찾기
+    #         address_div = row.find_element(By.CLASS_NAME, 'help-block')
+    #         print(f"0")
+    #         address_text = address_div.text.strip()  # 주소 텍스트 추출            
+    #         print(f"모든 키워드가 포함된 텍스트: {address_text}")
+    #         # 모든 키워드가 텍스트에 포함되어 있는지 확인
+    #         if all(keyword in address_text for keyword in keywords):
+    #             print(f"모든 키워드포함")
+    #             # tr의 두 번째 td 안에 있는 <strong> 태그의 텍스트 추출
+    #             second_td = row.find_elements(By.TAG_NAME, 'td')[1]  # 두 번째 td
+    #             print(f"1")
+    #             strong_tag = second_td.find_element(By.TAG_NAME, 'strong')  # <strong> 태그 찾기
+    #             print(f"2")
+    #             등록된오방번호 = strong_tag.text  # 텍스트 저장
+    #             print(f"등록된오방번호: {등록된오방번호}")    
+    #             break            
+    #         else:
+    #             print(f"키워드가 누락된 텍스트: {address_text}")
+    #     # except IndexError:
+    #     #     # 만약 td나 div가 없으면 예외 발생을 방지하고 넘어감
+    #     #     print("해당 요소가 없습니다.")    
+    #     except Exception as e:
+    #         print("row 처리 중 오류:", e)                    
+    # pyautogui.alert(', '.join(keywords)+f"\n\n등록된오방번호:{등록된오방번호}","찾는 keywords:") 
+
+
+
 
     if obang_code == '' :
         print('오방 신규등록과정 시작')
@@ -554,16 +677,19 @@ def macro(data, user, group):
                 driver.find_element(By.XPATH, '//*[@id="keyword"]').send_keys(location_room)
             elif tr_target == '건물':
                 driver.find_element(By.XPATH, '//*[@id="search_option"]/th[5]/div/button').click() #매물종류버튼 클릭
-                driver.find_element(By.XPATH, '//*[@id="search_option"]/th[5]/div/ul/li[18]/a/label').click() #통건물 체크
+                if object_type == '공업용':
+                    driver.find_element(By.XPATH, '//*[@id="search_option"]/th[5]/div/ul/li[16]/a/label').click() #공장/창고 체크
+                else:
+                    driver.find_element(By.XPATH, '//*[@id="search_option"]/th[5]/div/ul/li[18]/a/label').click() #통건물 체크
                 # pyautogui.alert("통건물 계속진행?")
             driver.find_element(By.XPATH, '//*[@id="sido"]').send_keys(location_do)
             # time.sleep(0.5)
             driver.find_element(By.XPATH, '//*[@id="gugun"]').send_keys(location_si)
             # time.sleep(0.5)
             driver.find_element(By.XPATH, '//*[@id="dong"]').send_keys(location_dong)
-            lijibun = location_lijibun.replace(" ", "") #리+지번 공백제거
-            driver.find_element(By.XPATH, '//*[@id="bunzi_start"]').send_keys(lijibun)
-        
+            # lijibun = location_lijibun.replace(" ", "") #리+지번 공백제거
+            driver.find_element(By.XPATH, '//*[@id="bunzi_start"]').send_keys(location_lijibun)
+            # pyautogui.alert("검색어가 정상적으로 입력됨?")
         #jibun데이터가 번지수 형식이 아닐경우
         else:
             print('직접입력형식의 주소입니다.')
@@ -770,10 +896,18 @@ def macro(data, user, group):
                 driver.find_element(By.XPATH, '//*[@id="bld_area"]').send_keys(building_archarea) #건축면적
                 #연면적
                 driver.find_element(By.XPATH, '//*[@id="bld_sum_area"]').send_keys(building_totarea) #연면적
-                #지하층
-                driver.find_element(By.XPATH, '//*[@id="current_floor"]').send_keys(building_ugrndflr) #지하층수
-                #지상층
-                driver.find_element(By.XPATH, '//*[@id="total_floor"]').send_keys(building_grndflr) #지상층수   
+                if object_type == '주거용':
+                    #지하층
+                    driver.find_element(By.XPATH, '//*[@id="current_floor"]').send_keys(building_ugrndflr) #지하층수
+                    #지상층
+                    driver.find_element(By.XPATH, '//*[@id="total_floor"]').send_keys(building_grndflr) #지상층수   
+                elif object_type == '공업용':
+                    #전기
+                    if building_bolt: driver.find_element(By.XPATH, '//*[@id="factory_section"]/div[2]/input').send_keys(building_bolt)
+                    print(f"전기: {building_bolt}KW")
+                    #층고(높이)
+                    if building_height: driver.find_element(By.XPATH, '//*[@id="add_section_item"]/div[1]/div[2]/input').send_keys(building_height)
+                    print(f"층고(높이): {building_height}M")
             if tr_target == '토지':
                 #대지면적
                 driver.find_element(By.XPATH, '//*[@id="land_area"]').send_keys(land_totarea) #대지면적                
@@ -783,7 +917,7 @@ def macro(data, user, group):
                 print("준공일:", add_usedate)    
             # driver.find_element(By.XPATH, '//*[@id="enter_year"]').send_keys('즉시입주') # 입주일
             # pyautogui.alert("준공일 차례")
-            if obinfo_type not in ['상가/사무실','토지']:
+            if obinfo_type not in ['상가/사무실','토지','공장/창고']:
                 print("난방방식:") 
                 if driver.find_element(By.XPATH, '//*[@id="heating"]'):driver.find_element(By.XPATH, '//*[@id="heating"]').send_keys("개별가스난방") # 난방                
                 if driver.find_element(By.XPATH, '//*[@name="build_year"]').is_displayed() :driver.find_element(By.XPATH, '//*[@name="build_year"]').send_keys(add_usedate) # 준공일
@@ -805,9 +939,17 @@ def macro(data, user, group):
 
 
 
-    
+
+
+
+
+
+
+
+
+
     else:
-        print('오방 등록수정과정 시작')
+        print('오방('+obang_code+') 등록수정과정 시작')
         try:
             # import datetime
 
@@ -828,31 +970,85 @@ def macro(data, user, group):
                 driver.quit()  # 브라우저 닫기
                 return
             else:
-                print('검색매물수.text') 
+                print('검색 매물 수 :'+검색매물수.text+'건') 
             
 
             #업데이트 실행
-            driver.find_element(By.CSS_SELECTOR, f'#tr_{obang_code} > td:nth-child(14) > div:nth-child(1)').click() #관리 클릭
-            
-            # id="search-items"인 tbody 안에 첫 번째 tr의 14번째 td를 찾기
-            관리_td = driver.find_element(By.XPATH, '//tbody[@id="search-items"]/tr[1]/td[14]')
-            # 해당 td 안의 모든 li 태그 내의 a 태그를 찾기
-            관리내항목 = 관리_td.find_elements(By.XPATH, './/li/a')
 
-            # "수정" 텍스트가 포함된 항목이 있는지 확인
-            수정_있음 = False  # "수정" 텍스트를 찾았는지 여부를 추적하는 플래그
-            for 항목 in 관리내항목:
-                if "수정" in 항목.text:
-                    수정_있음 = True
-                    print(f'찾은 항목: {항목.text}')  # "수정" 텍스트를 포함하는 항목 출력
+            #공개전환
+            공개모드요소 = driver.find_element(By.XPATH, f'//*[@id="tr_{obang_code}"]/td[3]/div/label')
+            공개모드상태 = 공개모드요소.text #공개:on / 비공개:off
+            if 공개모드상태 == 'off':
+                공개모드요소.click() #비공개상태 클릭하여 공개로 전환
+            # pyautogui.alert("공개모드상태:"+공개모드상태)
+
+            def 관리내항목확인():
+                driver.find_element(By.CSS_SELECTOR, f'#tr_{obang_code} > td:nth-child(14) > div:nth-child(1)').click() #관리 클릭
+                
+                # id="search-items"인 tbody 안에 첫 번째 tr의 14번째 td를 찾기
+                관리_td = driver.find_element(By.XPATH, '//tbody[@id="search-items"]/tr[1]/td[14]')
+                # 해당 td 안의 모든 li 태그 내의 a 태그를 찾기
+                관리내항목 = 관리_td.find_elements(By.XPATH, './/li/a')
+                수정_있음 = False  # "수정" 텍스트를 찾았는지 여부를 추적하는 플래그
+                완료해제_있음 = False  # "거래완료 해제" 텍스트를 찾았는지 여부를 추적하는 플래그
+                관리내수정위치 = None
+                관리내해제위치 = None
+                for 항목 in 관리내항목:
+                    print(f'관리 항목: {항목.text}')
+                    if "수정" in 항목.text:
+                        수정_있음 = True
+                        관리내수정위치 = 항목
+                        # print(f'찾은 항목: {항목.text}')
+                    if "거래완료 해제" in 항목.text:
+                        완료해제_있음 = True
+                        관리내해제위치 = 항목
+                        # print(f'찾은 항목: {항목.text}')
+                return 수정_있음,관리내수정위치,완료해제_있음,관리내해제위치
+            
+            수정_있음,관리내수정위치,완료해제_있음,관리내해제위치 = 관리내항목확인()
+
+            if 완료해제_있음:
+                관리내해제위치.click() # 거래완료해제시 목록이 초기화됨
+                def 알림창끄기():
+                    try:
+                        WebDriverWait(driver, 3).until(EC.alert_is_present())  # 최대 3초 대기
+                        alert = driver.switch_to.alert
+                        print(f"📢 확인창 내용: {alert.text}")
+                        alert.accept()  # "확인" 클릭
+                        print("✅ '확인' 버튼 클릭 완료")
+                    except:
+                        print("⏩ 확인창 없음 (confirm 창 미출현)")                    
+                알림창끄기() #확인메세지창이 뜨면 닫기
+                driver.find_element(By.CSS_SELECTOR, "#search_id").send_keys(obang_code) #매물번호입력창에 매물번호 입력
+
+                수정_있음,관리내수정위치,완료해제_있음,관리내해제위치 = 관리내항목확인()
+                # driver.find_element(By.CSS_SELECTOR, f'#tr_{obang_code} > td:nth-child(14) > div.dropdown.open > ul > li:nth-child(13)').click() #수정 클릭   
+            # pyautogui.alert(f"{obang_code} 거래완료 해제 확인")   
+                
             if not 수정_있음:
                 print("텍스트 '수정'을 포함하는 항목이 없습니다.")
                 pyautogui.alert("등록된 매물의 담당자를 확인해주세요~")
                 driver.quit()
                 return
-            # pyautogui.alert("확인")           
-            # time.sleep(1)
-            driver.find_element(By.CSS_SELECTOR, f'#tr_{obang_code} > td:nth-child(14) > div.dropdown.open > ul > li:nth-child(1)').click() #수정 클릭
+            else:
+                try:        
+                    관리내수정위치.click() #수정 클릭
+                except Exception as e:
+                    print(f"⚠️ 수정버튼 클릭 중 오류: {e}")
+                    최상단알림창(f"오류로 수정버튼이 클릭되지 않았습니다.\n\n{e}")
+                    driver.close()          
+    
+
+            # try:        
+            #     관리_수정항목 = WebDriverWait(driver, 10).until(
+            #         EC.element_to_be_clickable((By.CSS_SELECTOR, f'#tr_{obang_code} > td:nth-child(14) > div.dropdown.open > ul > li:nth-child(1)'))
+            #     )
+            #     time.sleep(0.3)
+            #     관리_수정항목.click() #수정 클릭
+            # except Exception as e:
+            #     print(f"⚠️ 수정버튼 클릭 중 오류: {e}")
+            #     최상단알림창(f"오류로 수정버튼이 클릭되지 않았습니다.\n\n{e}")
+            #     driver.close()  
             print("6 완료")
             if re.match('^[0-9-]+$', data['landData'][0]['land_jibun']) or re.match('^산[0-9-]+$', data['landData'][0]['land_jibun']):
                 print("location_lijibun:", location_lijibun)
@@ -886,16 +1082,77 @@ def macro(data, user, group):
                         # 조건에 맞지 않는 요소에서는 "active" 클래스 제거
                         driver.execute_script("arguments[0].classList.remove('active');", a)
                         print(a.text + "에서 'active' 클래스 제거!!!")                    
-            # pyautogui.alert("소분류확인")                      
-            #전세보증금
-            if obinfo_deposit1 != '' : modify_item(driver, "#full_rent_price", obinfo_deposit1)
-            #보증금1
-            if obinfo_deposit1 != '' : modify_item(driver, "#monthly_rent_deposit", obinfo_deposit1)
-            #월세1
-            if obinfo_rent1 != '' : modify_item(driver, "#monthly_rent_price", obinfo_rent1)
-            #매매
-            # print("obinfo_trading: "+obinfo_trading)
-            if obinfo_trading != '' : modify_item(driver, "#sell_price", obinfo_trading)
+            # pyautogui.alert("소분류확인")    
+            # 거래종류
+            print(f"obang_ttype:{obang_ttype}")
+            # obang_ttype에 쉼표가 있는지 확인
+            if ',' in obang_ttype:
+                거래종류값 = '전/월세' if '전세' in obang_ttype and '월세' in obang_ttype else obang_ttype
+            else:
+                거래종류값 = obang_ttype
+            print(f"거래종류값:{거래종류값}")
+            # 거래종류 설정
+            form_groups = driver.find_elements(By.CLASS_NAME, 'form-group')
+            for group in form_groups:
+                try:
+                    label = group.find_element(By.CLASS_NAME, 'control-label')
+                    if '거래종류' in label.text:
+                        print("✅ '거래종류' 섹션 찾음")
+
+                        # 거래 버튼 div들 찾기
+                        button_divs = group.find_elements(By.XPATH, './/div[contains(@class, "btn-group")]//div[contains(@class, "btn")]')
+                        for btn in button_divs:
+                            if 거래종류값 in btn.text.strip():
+                                print(f"🟢 '{거래종류값}' 버튼 클릭")
+                                btn.click()
+                                break
+                        break
+                except Exception as e:
+                    print(f"⚠️ 거래종류 설정 중 오류: {e}")
+            # pyautogui.alert(f"거래종류값 선택확인:{거래종류값}")   
+            # 거래종류값이 '전/월세'일 경우, 전세와 월세를 적절하게 처리
+            if 거래종류값 == '전/월세':
+                # 전세와 월세에 대한 정보를 쌍으로 처리
+                deposit_rent_pairs = [(obinfo_deposit1, obinfo_rent1), (obinfo_deposit2, obinfo_rent2), (obinfo_deposit3, obinfo_rent3)]
+
+                # 첫 번째 월세만을 사용하여 입력하기
+                first_deposit = None
+                first_rent = None
+                for deposit, rent in deposit_rent_pairs:
+                    deposit_val = int(deposit or 0)
+                    rent_val = int(rent or 0)
+                    print(f"============>보증금:{deposit_val}, 월세:{rent_val}")
+                    
+                    if deposit_val > 0 and rent_val == 0:
+                        print(f"전세 입력: {deposit_val}")
+                        modify_item(driver, "#full_rent_price", deposit_val)  # 전세 금액 입력란
+
+                    elif rent_val > 0 and first_deposit is None:
+                        first_deposit = deposit_val
+                        first_rent = rent_val
+                        print(f"첫 번째 월세 입력: 보증금 {first_deposit}, 월세 {first_rent}")
+                        modify_item(driver, "#monthly_rent_deposit", first_deposit)  # 월세 보증금
+                        modify_item(driver, "#monthly_rent_price", first_rent)       # 월세
+
+            else:
+                # 거래종류값이 '전/월세'가 아닐 경우, 기존 로직대로 처리
+                if obinfo_deposit1 != '':
+                    modify_item(driver, "#full_rent_price", obinfo_deposit1)  # 전세금액
+                if obinfo_deposit1 != '':
+                    modify_item(driver, "#monthly_rent_deposit", obinfo_deposit1)  # 보증금1
+                if obinfo_rent1 != '':
+                    modify_item(driver, "#monthly_rent_price", obinfo_rent1)  # 월세1
+                if obinfo_trading != '':
+                    modify_item(driver, "#sell_price", obinfo_trading)  # 매매
+            # #전세보증금
+            # if obinfo_deposit1 != '' : modify_item(driver, "#full_rent_price", obinfo_deposit1)
+            # #보증금1
+            # if obinfo_deposit1 != '' : modify_item(driver, "#monthly_rent_deposit", obinfo_deposit1)
+            # #월세1
+            # if obinfo_rent1 != '' : modify_item(driver, "#monthly_rent_price", obinfo_rent1)
+            # #매매
+            # # print("obinfo_trading: "+obinfo_trading)
+            # if obinfo_trading != '' : modify_item(driver, "#sell_price", obinfo_trading)
 
             #관리비
             if basic_manager=='별도':
@@ -941,15 +1198,23 @@ def macro(data, user, group):
                 if basic_floor != '' : modify_item(driver, "#current_floor", basic_floor)
                 # 입주일
                 driver.find_element(By.XPATH, '//*[@id="enter_year"]').clear() 
-                driver.find_element(By.XPATH, '//*[@id="enter_year"]').send_keys('즉시입주') 
+                #거주자가 있으면 '입주협의', 그외 '즉시입주'
+                if '사용' in room_status:
+                    입주일값 = '입주협의'
+                else:
+                    입주일값 = '즉시입주'
+                driver.find_element(By.XPATH, '//*[@id="enter_year"]').send_keys(입주일값) 
             #전체층
             # print("전체층: ", type(basic_totflr))
             # pyautogui.alert("전체층: ", basic_totflr)
             # modify_item(driver, "#total_floor", basic_totflr)
 
             print("비밀메모:", basic_secret)
+            # 수정시 비밀메모를 갱신
+            secret_box = driver.find_element(By.XPATH, '//*[@id="info_base"]/div[2]/div[13]/div[2]/textarea')
+            secret_box.clear()  # 기존 내용을 지우고
+            secret_box.send_keys(basic_secret) # 비밀메모
             # # 수정시 비밀메모를 추가
-            # secret_box = driver.find_element(By.XPATH, '//*[@id="info_base"]/div[2]/div[13]/div[2]/textarea')
             # # if len(secret_box.text)>0:
             # if len(secret_box.get_attribute("value"))>0:
             #     print("기존비밀메모:"+secret_box.get_attribute("value"))
@@ -993,8 +1258,8 @@ def macro(data, user, group):
                     "가스렌지": "가스레인지",
                     "지상주차장": "주차장",
                     "지하주차장": "주차장",
-                    "벽걸이에어컨": "에어컨",
-                    "천정형에어컨": "에어컨",
+                    "냉방기": "에어컨",
+                    # "천정형에어컨": "에어컨",
                     "건물CCTV": "CCTV",
                     "전자렌지": "전자레인지",
                     "구분공간": "내실",
@@ -1060,24 +1325,25 @@ def macro(data, user, group):
             #설명
             object_detail = '[ 매 물 기 본 정 보 ]'
             # print("obinfo_trading:"+obinfo_trading, "obinfo_deposit1:"+obinfo_deposit1)        
-            if obinfo_trading != '':
-                object_detail += '<p>' + f'● 매매금액: {숫자한글로금액변환(obinfo_trading)}</p>' 
-                if sum_deposit == '':
-                    print("보증금이 공백입니다.")
-                else:
-                    print("보증금이 존재합니다.")
-                object_detail += ('<p>' + f'● 총보증금: {숫자한글로금액변환(sum_deposit)}</p>') if str(sum_deposit) != '' else '' 
-                if sum_rent != '':
-                    object_detail += ('<p>' + f'● 총월세: {숫자한글로금액변환(sum_rent)}</p>') if str(sum_rent) != '' else ''             
+            
+            # if obinfo_trading != '':
+            #     object_detail += '<p>' + f'● 매매금액: {숫자한글로금액변환(obinfo_trading)}</p>' 
+            #     if sum_deposit == '':
+            #         print("보증금이 공백입니다.")
+            #     else:
+            #         print("보증금이 존재합니다.")
+            #     object_detail += ('<p>' + f'● 총보증금: {숫자한글로금액변환(sum_deposit)}</p>') if str(sum_deposit) != '' else '' 
+            #     if sum_rent != '':
+            #         object_detail += ('<p>' + f'● 총월세: {숫자한글로금액변환(sum_rent)}</p>') if str(sum_rent) != '' else ''             
                  
-            elif obinfo_deposit1 != '':
-                object_detail += '<p>' + f'● 보증금: {obinfo_deposit1}만원</p>' 
-                if obinfo_rent1 != '':
-                    object_detail += '<p>' + f'● 월세: {obinfo_rent1}만원</p>'
-                if basic_manager == '별도':
-                    if basic_mmoney != '':
-                        if float(basic_mmoney) > 0:
-                            object_detail += '<p>' + f'● 관리비: {basic_mmoney}만원</p>'
+            # elif obinfo_deposit1 != '':
+            #     object_detail += '<p>' + f'● 보증금: {obinfo_deposit1}만원</p>' 
+            #     if obinfo_rent1 != '':
+            #         object_detail += '<p>' + f'● 월세: {obinfo_rent1}만원</p>'
+            #     if basic_manager == '별도':
+            #         if basic_mmoney != '':
+            #             if float(basic_mmoney) > 0:
+            #                 object_detail += '<p>' + f'● 관리비: {basic_mmoney}만원</p>'
                 # if premium_exist == '있음' & premium > 0:
                 #     object_detail += f'● 권리금: {premium}만원'
             print("확인2")   
@@ -1093,11 +1359,11 @@ def macro(data, user, group):
             object_detail += ('<p>' + f'● 건물옵션:{building_options}</p>') if (building_options != '' and tr_target != '토지') else ''
             if tr_target == '층호수':
                 object_detail += ('<p>' + f'● 호실옵션:{room_options}</p>') if (room_options != '' and tr_target == '층호수') else ''
-            object_detail += '<p>' + f'● 위치: </p>'
-            
-            object_detail += '<p>' + '<br>' + '[ 매 물 주 요 특 징 ]</p>'
-            object_detail += '<p>' + 'ㅇ </p>'
-            object_detail += '<p>' + 'ㅇ </p>'
+            # object_detail += '<p>' + f'● 위치: </p>'
+            if I_memo != '':
+                object_detail += '<p>' + '<br>' + '[ 매 물 주 요 특 징 ]</p>'
+                object_detail += '<p>' + I_memo + '</p>'
+            # object_detail += '<p>' + I_memo + '</p>'
             
             print("object_detail: " + object_detail)
             detail = ''
@@ -1259,37 +1525,65 @@ def macro(data, user, group):
             print("등록완료 종료")
             # pyautogui.alert(f"{location_detail}\n\n등록완료 확인!! land_code:{land_code} building_code:{building_code} room_code:{room_code}")
             
-            # 검색초기화 필요시
-            driver.get('https://osanbang.com/adminproduct/clean/')
-            
-            keywords = [location_dongli, location_building, location_room]
+
+            # time.sleep(1)
+            # # 검색초기화 필요시
+            # driver.get('https://osanbang.com/adminproduct/clean/')
+            # print("검색초기화")
+            # WebDriverWait(driver, 10)
+            # print("로딩대기 10초")
+
+
+            keywords = [location_dongli, location_building]
+            if tr_target == '층호수':
+                keywords.append(location_room)
+            print("keywords:",keywords)
             등록된오방번호 = ''
+            # time.sleep(3)
+            # pyautogui.alert(', '.join(keywords)+f"\n\n등록된오방번호:{등록된오방번호}","찾는 keywords:") 
             # tbody 내의 모든 tr 요소 찾기
-            rows = driver.find_elements(By.CSS_SELECTOR, '#search-items tr.admin_column')
-            for row in rows:
+            try:
+                time.sleep(0.2)
+                rows = driver.find_elements(By.CSS_SELECTOR, '#search-items tr.admin_column')
+                print("rows 개수:"+str(len(rows)))
+                if len(rows) == 0:
+                    pyautogui.alert("리스트의 목록개수 0??")
+            except Exception as e:
+                print("rows 조회에러:", e)
+            # for row in rows:
+            for i in range(len(rows)):
                 try:
-                    # # 9번째 td에서 모든 텍스트 찾기
-                    # address_td = row.find_elements(By.TAG_NAME, 'td')[8]  # 0-based 인덱스이므로 9번째는 [8]
-                    # address_text = address_td.text.strip()  # 주소 텍스트 추출
-                    
+                    # 각 요소에 대해 명시적 대기 적용
+                    # 매번 새로 요소를 찾아서 작업
+                    row = driver.find_elements(By.CSS_SELECTOR, '#search-items tr.admin_column')[i]                            
+                    time.sleep(0.5)
+                    print('--')
+                    # row구조 = driver.execute_script("return arguments[0].outerHTML;", row)
+                    # row구조 = row.get_attribute('outerHTML')
+                    # pyautogui.alert(f"row구조:{row구조}")
                     # 주소가 포함된 'help-block' 클래스를 가진 div 찾기
                     address_div = row.find_element(By.CLASS_NAME, 'help-block')
+                    print(f"0")
                     address_text = address_div.text.strip()  # 주소 텍스트 추출            
-                    
+                    print(f"모든 키워드가 포함된 텍스트: {address_text}")
                     # 모든 키워드가 텍스트에 포함되어 있는지 확인
                     if all(keyword in address_text for keyword in keywords):
-                        print(f"모든 키워드가 포함된 텍스트: {address_text}")
+                        print(f"모든 키워드포함")
                         # tr의 두 번째 td 안에 있는 <strong> 태그의 텍스트 추출
                         second_td = row.find_elements(By.TAG_NAME, 'td')[1]  # 두 번째 td
+                        print(f"1")
                         strong_tag = second_td.find_element(By.TAG_NAME, 'strong')  # <strong> 태그 찾기
+                        print(f"2")
                         등록된오방번호 = strong_tag.text  # 텍스트 저장
                         print(f"등록된오방번호: {등록된오방번호}")    
                         break            
-                    # else:
-                    #     print(f"키워드가 누락된 텍스트: {address_text}")
-                except IndexError:
-                    # 만약 td나 div가 없으면 예외 발생을 방지하고 넘어감
-                    print("해당 요소가 없습니다.")    
+                    else:
+                        print(f"키워드가 누락된 텍스트: {address_text}")
+                # except IndexError:
+                #     # 만약 td나 div가 없으면 예외 발생을 방지하고 넘어감
+                #     print("해당 요소가 없습니다.")    
+                except Exception as e:
+                    print("row 처리 중 오류:", e)                    
             # pyautogui.alert(', '.join(keywords)+f"\n\n등록된오방번호:{등록된오방번호}","찾는 keywords:") 
             
             #등록된 오방매물번호 DB에 등록
@@ -1305,9 +1599,11 @@ def macro(data, user, group):
                 # pyautogui.alert(f"매물번호 업데이트오류: 새홈[{object_code_new}] => 오방번호[{등록된오방번호}]") 
             # pyautogui.alert(f"새홈[{object_code_new}]의 등록된오방번호[ {등록된오방번호} ]")
         except Exception as e:
+            pyautogui.alert("등록완료시키기 에러발생:", str(e))
             print("등록완료시키기 에러발생:", str(e))
     else: #수정등록시 종료확인
-        pyautogui.alert(f"새홈매물번호: {object_code_new}\n{location_detail} \n\n작업을 종료하시겠습니까?")
+        # pyautogui.alert(f"새홈매물번호: {object_code_new}\n{location_detail} \n\n작업을 종료하시겠습니까?")
+        최상단알림창(f"새홈매물번호: {object_code_new}\n{location_detail} \n\n작업을 종료하시겠습니까?",'작 업 종 료')   
   
     conn.close()  
     cursor.close()

@@ -13,6 +13,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.chrome.options import Options
 
 import pyautogui 
+import tkinter as tk
+from tkinter import messagebox
 import time
 import os
 
@@ -21,6 +23,15 @@ options = Options()
 options.add_argument("--disable-blink-features=AutomationControlled")
 
 def macro(data, user):
+    
+
+    def 최상단알림창(message, title="알림"):
+        root = tk.Tk()
+        root.withdraw()  # 창 숨기기
+        root.attributes("-topmost", True)  # 항상 위에 있도록 설정
+        messagebox.showinfo(title, message)
+        root.destroy()
+
     def 그룹별명칭변환(그룹, 대상명칭):
         # 변환 매핑
         변환사전 = {}
@@ -294,8 +305,11 @@ def macro(data, user):
     request_code = data['writeData']['request_code'] #의뢰번호
     object_code_new = data['writeData']['object_code_new'] #새홈매물번호
     
+    first_trade = data['writeData']['first_trade']
     object_type = data['writeData']['object_type']
+    object_type1 = data['writeData']['object_type1']
     object_type2 = data['writeData']['object_type2']
+    object_ttype = data['writeData']['object_ttype']
     tr_target = data['writeData']['tr_target']
     tr_range = data['writeData']['tr_range']
     trading = data['writeData']['trading'] #매매금액    
@@ -418,11 +432,12 @@ def macro(data, user):
         #     print(room['bri_sequence'])
         # pyautogui.alert(f"확인 float(trading):{str(float(trading))} len(brData):{str(len(brData))}")
         r_count = 0
-        if float(trading) > 0 and len(brData)>0:
-            for room in brData:
-                if room['bri_type'] in ['원룸', '투룸', '쓰리룸+']:
-                    r_count += 1
-            # pyautogui.alert("확인:"+str(r_count))    
+        if first_trade == 'sell':
+            if float(trading) > 0 and len(brData)>0:
+                for room in brData:
+                    if room['bri_type'] in ['원룸', '투룸', '쓰리룸+']:
+                        r_count += 1
+                # pyautogui.alert("확인:"+str(r_count))    
             
     if tr_target == '층호수':
         location_room = '' if data['roomData']['room_num'] == '' else ' ' + data['roomData']['room_num']
@@ -479,12 +494,12 @@ def macro(data, user):
     #매물 등록할지 수정할지 결정(새홈번호 6자리=>매물등록, 5자리=>매물수정)
     if len(object_code_new) != 5:
         print("신규매물등록 시작")
+
         driver.get('https://osan-bns.com/admin_item/insert') #매물등록화면으로 전환
         time.sleep(1)
         #주소검색
         from selenium.common.exceptions import TimeoutException, NoSuchElementException
         # iframe으로 스위치
-
 
         def switch_to_nested_iframe(driver):
             """
@@ -513,6 +528,23 @@ def macro(data, user):
             except Exception as e:
                 print(f"Unexpected error while switching to nested iframes: {e}")
                 return False
+
+        # data_id값으로 물건종류선택(상가점포용2,주거용1,사무실3,공장창고용4,토지용5,숙박용7,건물매매용8,경매용9)
+        def click_by_js(data_id):
+            try:
+                # 1. CSS Selector로 클릭할 요소를 먼저 찾습니다.
+                element = driver.find_element(By.CSS_SELECTOR, f'.form_type [data-id="{data_id}"]')
+                
+                # 2. 자바스크립트를 실행하여 해당 요소를 강제 클릭합니다.
+                driver.execute_script("arguments[0].click();", element)
+                print(f"data-id='{data_id}' 영역을 자바스크립트로 클릭했습니다.")
+                
+            except Exception as e:
+                print(f"클릭 실패: {e}")
+
+        # # 실행 예시 (data-id="3"인 '사무실용' 클릭)
+        # click_by_js("1")
+        # pyautogui.alert("확인")
 
 
         # 주소 검색 및 결과 처리
@@ -571,194 +603,6 @@ def macro(data, user):
             print(f"예상치 못한 오류 발생: {e}")
 
 
-
-        # def find_and_switch_to_target_iframe(driver, iframe_title):
-        #     """
-        #     모든 iframe을 탐색하여 title이 iframe_title과 일치하는 iframe으로 전환.
-        #     중첩된 iframe 구조도 지원.
-        #     """
-        #     try:
-        #         # 현재 페이지의 모든 iframe 가져오기
-        #         iframes = driver.find_elements(By.TAG_NAME, "iframe")
-        #         print(f"모든 iframes 개수: {len(iframes)}")
-
-        #         for index, iframe in enumerate(iframes):
-        #             iframe_title_attr = iframe.get_attribute("title")
-        #             print(f"iframe {index + 1} - Title: {iframe_title_attr}")
-
-        #             # 현재 iframe으로 전환
-        #             driver.switch_to.frame(iframe)
-        #             print(f"iframe {index + 1}로 전환 완료.")
-
-        #             # 현재 iframe이 대상인지 확인
-        #             if iframe_title_attr == iframe_title:
-        #                 print(f'Found and switched to iframe with title "{iframe_title}"')
-        #                 return True
-
-        #             # 하위 iframe 탐색
-        #             if find_and_switch_to_target_iframe(driver, iframe_title):
-        #                 return True
-
-        #             # 상위 문서로 복귀
-        #             driver.switch_to.parent_frame()
-        #             print(f"iframe {index + 1}에서 상위로 복귀.")
-
-        #         driver.switch_to.default_content()
-        #         return False
-
-        #     except Exception as e:
-        #         print(f"Error while searching for iframe: {e}")
-        #         driver.switch_to.default_content()
-        #         return False
-
-        # try:
-        #     # 대상 iframe 찾기 및 전환
-        #     if find_and_switch_to_target_iframe(driver, "우편번호 검색 프레임"):
-        #         print("우편번호 검색 프레임으로 전환 성공!")
-
-        #         # iframe 내부에서 주소 입력 및 검색 실행
-        #         try:
-        #             # 주소 입력 필드 찾기
-        #             search_box = WebDriverWait(driver, 10).until(
-        #                 EC.presence_of_element_located((By.ID, "region_name"))
-        #             )
-        #             print("주소 입력 필드를 찾았습니다.")
-        #             search_box.send_keys("판교역로 166")
-        #             search_box.send_keys(Keys.ENTER)
-        #             print("주소 검색을 실행했습니다.")
-
-        #             # 검색 결과 대기
-        #             ul_element = WebDriverWait(driver, 15).until(
-        #                 EC.presence_of_element_located((By.CLASS_NAME, "list_post"))
-        #             )
-        #             print("검색 결과가 로드되었습니다.")
-
-        #             # 검색 결과 출력
-        #             total_count = int(ul_element.get_attribute("data-totalcount"))
-        #             print(f"검색 결과 개수: {total_count}")
-
-        #             if total_count == 1:
-        #                 # 첫 번째 li 안의 dd 태그 클릭
-        #                 li_element = ul_element.find_element(By.TAG_NAME, "li")
-        #                 dd_element = li_element.find_element(By.CLASS_NAME, "info_address")
-        #                 print("dd 태그를 클릭합니다.")
-        #                 dd_element.click()
-        #             else:
-        #                 print("여러 개의 검색 결과가 있습니다. 직접 선택하세요.")
-        #                 pyautogui.alert("여러 개의 검색 결과가 있습니다. 직접 선택하세요.")
-
-        #         except TimeoutException:
-        #             print("검색 결과를 찾지 못했습니다. iframe 내부에서 확인하세요.")
-
-        #         # 기본 문서로 복귀
-        #         driver.switch_to.default_content()
-        #     else:
-        #         print("우편번호 검색 프레임을 찾을 수 없습니다.")
-
-        # except TimeoutException:
-        #     print("iframe이나 요소를 찾기 오류: TimeoutException")
-        # except NoSuchElementException:
-        #     print("요소를 찾기 오류: NoSuchElementException")
-        # except Exception as e:
-        #     print(f"예상치 못한 오류 발생: {e}")
-
-
-        
-        # def find_and_switch_to_target_iframe(driver, iframe_title):
-        #     """
-        #     모든 iframe을 탐색하여 title이 iframe_title과 일치하는 iframe으로 전환.
-        #     중첩된 iframe 구조도 지원.
-        #     """
-        #     try:
-        #         # 현재 페이지의 모든 iframe 가져오기
-        #         iframes = driver.find_elements(By.TAG_NAME, "iframe")
-        #         print(f"모든 iframes 개수: {len(iframes)}")
-
-        #         for index, iframe in enumerate(iframes):
-        #             print(f"iframe {index + 1} 탐색 중...")
-
-        #             # iframe 속성 확인
-        #             iframe_id = iframe.get_attribute("id")
-        #             iframe_class = iframe.get_attribute("class")
-        #             iframe_title_attr = iframe.get_attribute("title")
-        #             print(f"iframe {index + 1} - ID: {iframe_id}, Class: {iframe_class}, Title: {iframe_title_attr}")
-
-        #             # iframe으로 전환
-        #             driver.switch_to.frame(iframe)
-        #             print(f"iframe {index + 1}로 전환 완료.")
-
-        #             # 현재 iframe의 title 속성 확인
-        #             if iframe_title_attr == iframe_title:
-        #                 print(f'Found target iframe with title "{iframe_title}"')
-        #                 return True  # 대상 iframe 찾음
-
-        #             # 현재 iframe 내부의 하위 iframe 탐색
-        #             if find_and_switch_to_target_iframe(driver, iframe_title):
-        #                 return True
-                    
-        #             # 상위 문서로 복귀
-        #             driver.switch_to.parent_frame()
-        #             print(f"iframe {index + 1}에서 상위로 복귀.")
-
-        #         # 대상 iframe을 찾지 못한 경우
-        #         driver.switch_to.default_content()
-        #         return False
-
-        #     except Exception as e:
-        #         print(f"Error while searching for iframe: {e}")
-        #         driver.switch_to.default_content()
-        #         return False
-
-        # try:
-        #     # 대상 iframe 찾기 및 전환
-        #     if find_and_switch_to_target_iframe(driver, "우편번호 검색 프레임"):
-        #         print("우편번호 검색 프레임으로 전환 성공!")
-
-        #         # iframe 내부에서 주소 입력 및 검색 실행
-        #         try:
-        #             # 주소 입력 필드 찾기
-        #             search_box = WebDriverWait(driver, 10).until(
-        #                 EC.presence_of_element_located((By.ID, "region_name"))
-        #             )
-        #             print("주소 입력 필드를 찾았습니다.")
-        #             search_box.send_keys("판교역로 166")
-        #             search_box.send_keys(Keys.ENTER)
-        #             print("주소 검색을 실행했습니다.")
-
-        #             # 검색 결과 대기
-        #             ul_element = WebDriverWait(driver, 15).until(
-        #                 EC.presence_of_element_located((By.CLASS_NAME, "list_post"))
-        #             )
-        #             print("검색 결과가 로드되었습니다.")
-
-        #             # 검색 결과 출력
-        #             total_count = int(ul_element.get_attribute("data-totalcount"))
-        #             print(f"검색 결과 개수: {total_count}")
-
-        #             if total_count == 1:
-        #                 # 첫 번째 li 안의 dd 태그 클릭
-        #                 li_element = ul_element.find_element(By.TAG_NAME, "li")
-        #                 dd_element = li_element.find_element(By.CLASS_NAME, "info_address")
-        #                 print("dd 태그를 클릭합니다.")
-        #                 dd_element.click()
-        #             else:
-        #                 print("여러 개의 검색 결과가 있습니다. 직접 선택하세요.")
-        #                 pyautogui.alert("여러 개의 검색 결과가 있습니다. 직접 선택하세요.")
-
-        #         except TimeoutException:
-        #             print("검색 결과를 찾지 못했습니다. iframe 내부에서 확인하세요.")
-
-        #         # 기본 문서로 복귀
-        #         driver.switch_to.default_content()
-        #     else:
-        #         print("우편번호 검색 프레임을 찾을 수 없습니다.")
-
-        # except TimeoutException:
-        #     print("iframe이나 요소를 찾기 오류: TimeoutException")
-        # except NoSuchElementException:
-        #     print("요소를 찾기 오류: NoSuchElementException")
-        # except Exception as e:
-        #     print(f"예상치 못한 오류 발생: {e}")
 
 
 
@@ -821,32 +665,63 @@ def macro(data, user):
         
         
         if object_type != '토지':
-            pyautogui.alert(f"{location_detail}\n\n건물 선택후 확인버튼을 눌러주세요")
+            #건물추가단계
+            # ================= [건물 자동 선택 및 알림 조건 로직] =================
+            try:
+                # 건물 목록(tr)이 화면에 나타날 때까지 최대 5초간 대기합니다.
+                WebDriverWait(driver, 5).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, '#building_tbody tr'))
+                )
+                # 현재 생성된 건물 목록의 행(tr)들을 모두 가져옵니다.
+                building_rows = driver.find_elements(By.CSS_SELECTOR, '#building_tbody tr')
+                building_count = len(building_rows)
+            except Exception:
+                # 타임아웃이 나거나 목록이 없는 경우 0개로 처리
+                building_count = 0
+
+            if building_count == 1:
+                print("건물 목록이 1개 확인되어 자동으로 '선택' 버튼을 클릭합니다.")
+                try:
+                    # 첫 번째 행(tr) 내부에 있는 클래스명이 'building_btn'인 선택 버튼을 찾습니다.
+                    select_btn = building_rows[0].find_element(By.CSS_SELECTOR, '.building_btn')
+                    # 안전하게 자바스크립트로 강제 클릭을 수행합니다.
+                    driver.execute_script("arguments[0].click();", select_btn)
+                    time.sleep(1)  # 클릭 후 데이터가 화면에 반영될 수 있도록 1초 대기
+                except Exception as e:
+                    print(f"자동 선택 클릭 실패: {e}")
+                    최상단알림창(f"{location_detail}\n\n자동 선택 실패! 건물을 직접 선택 후 확인버튼을 눌러주세요.")
+            else:
+                # 건물 목록이 2개 이상이거나, 로딩되지 않아 0개인 경우 기존처럼 알림창 호출
+                최상단알림창(f"{location_detail}\n\n건물 선택후 확인버튼을 눌러주세요")
+
             #등록폼 선택
+            data_id = 0
             if object_type == '상업용': #//*[@id="form_item"]/div[1]/div[1]/div/div[2]
-                driver.find_element(By.XPATH, '//*[@id="form_item"]/div[1]/div[1]/div/div[1]').click()
+                if object_type1 == '상가/점포':
+                    data_id = 3
+                else:
+                    data_id = 2
             elif object_type == '주거용':
-                driver.find_element(By.XPATH, '//*[@id="form_item"]/div[1]/div[1]/div/div[2]').click() 
+                data_id = 1
             elif object_type == '공업용':
-                driver.find_element(By.XPATH, '//*[@id="form_item"]/div[1]/div[1]/div/div[4]').click()         
+                data_id = 4
+            
+
         else:
             if object_type == '토지':
-                driver.find_element(By.XPATH, '//*[@id="form_item"]/div[1]/div[1]/div/div[5]').click()     
+                data_id = 5 
             driver.find_element(By.XPATH, '//*[@id="form_location_info"]/div[2]/div/div[1]/div[4]/div/div[2]/div[1]/label[3]').click()  #상세주소 표시방법으로 위치숨기기 선택
+            최상단알림창(f"{location_detail}\n\n토지등록 프로세스")
+        
+        if data_id == 0:
+            최상단알림창(f"물건종류('{object_type}')값이 올바르지 않습니다.\n물건종류를 선택하세요!!")
+        else:
+            click_by_js(data_id)
         
 #매물정보
         # pyautogui.alert('등록폼선택 시도'+' tr_target:'+tr_target+' object_type:'+object_type)
-        if tr_target == '층호수' and room_status == '공실' :
-            new카테고리별_텍스트_찾기('form_table_box_wrap category_op_box', '매물 공개 여부', 'checkbox', '공실')
-        elif tr_target == '건물':
-            if object_type == '공업용':
-                매물종류1차값 = '공장창고'
-            else:
-                매물종류1차값 = '통건물'
-            카테고리별_텍스트_찾기('detail_title', '''
-													매물 종류													''', 'radio', 매물종류1차값) #1차그룹 통건물 클릭
-            카테고리별_텍스트_찾기('detail_title', '''
-													매물 종류													''', 'radio', object_type2) #2차그룹
+
+
         #매물종류
         if tr_target == '토지':
             # click_item_in_group('1차 그룹', '토지')
@@ -862,24 +737,39 @@ def macro(data, user):
             그룹1선택값 = '통건물'
             if object_type2 == '다가구':
                 그룹2선택값 = '다가구주택'
+            elif object_type2 == '다세대':
+                그룹2선택값 = '다세대주택'
             else :
                 그룹2선택값 = object_type2
         elif tr_target == '층호수':
             #1차그룹
-            if float(room_rcount) >= 3:
-                그룹1선택값 = '쓰리룸+'
-                if float(room_rcount) == 3:
-                    그룹2선택값 = '쓰리룸'
-                elif float(room_rcount) == 4:
-                    그룹2선택값 = '포룸'
-            else:
-                그룹1선택값 = '원투룸'
-                if float(room_rcount) >= 2:
-                    그룹2선택값 = '투룸'
-                elif float(room_rcount) > 1 and float(room_rcount) < 2:
-                    그룹2선택값 = '1.5룸'
-                elif float(room_rcount) == 1:
-                    그룹2선택값 = '원룸'
+            if object_type == '주거용':
+                if float(room_rcount) >= 3:
+                    그룹1선택값 = '쓰리룸+'
+                    if float(room_rcount) == 3:
+                        그룹2선택값 = '쓰리룸'
+                    elif float(room_rcount) == 4:
+                        그룹2선택값 = '포룸'
+                else:
+                    그룹1선택값 = '원투룸'
+                    if float(room_rcount) >= 2:
+                        그룹2선택값 = '투룸'
+                    elif float(room_rcount) > 1 and float(room_rcount) < 2:
+                        그룹2선택값 = '1.5룸'
+                    elif float(room_rcount) == 1:
+                        그룹2선택값 = '원룸'
+            elif object_type == '상업용':
+                그룹1선택값 = '상가·사무실'
+                #추천테마에 '전용사무실'이 포함되어 있으면 2차그룹을 '사무실'로 선택, 그외 '상가점포'선택
+                if '전용사무실' in optionImportant:
+                    그룹2선택값 = '사무실'
+                else:
+                    그룹2선택값 = '상가점포'
+            elif object_type == '공업용':
+                그룹1선택값 = '공장창고'
+                그룹2선택값 = '공장'            
+            
+
             #2차그룹    
         
         new카테고리별_텍스트_찾기('item_type_box_wrap first_category_box', '1차 그룹', 'radio', 그룹1선택값)
@@ -923,17 +813,21 @@ def macro(data, user):
                     카테고리별_텍스트_찾기('input_month_rent', '월세', 'text', rent1) #월세
                     if object_type == '상업용': #부가세 포함/별도
                         if surtax == 'N':
-                            driver.find_element(By.XPATH, '//*[@id="form_item"]/div[2]/div[1]/div[3]/div[2]/table/tbody/tr/td/div/div[2]/table/tbody/tr/th[2]/div/div[1]/div/div/label[1]').click()
-                        else :
-                            driver.find_element(By.XPATH, '//*[@id="form_item"]/div[2]/div[1]/div[3]/div[2]/table/tbody/tr/td/div/div[2]/table/tbody/tr/th[2]/div/div[1]/div/div/label[2]').click()
+                            driver.find_element(By.XPATH, '//*[@id="form_price_info"]/div[2]/div/div[5]/div[1]/div[2]/div/label[1]').click()
+                        else :                            
+                            driver.find_element(By.XPATH, '//*[@id="form_price_info"]/div[2]/div/div[5]/div[1]/div[2]/div/label[2]').click()
                 else :
                     driver.find_element(By.XPATH, '//*[@id="form_item"]/div[2]/div[1]/div[3]/div[2]/table/tbody/tr/td/div/div[2]/table/tbody/tr/th[1]/div/div[2]/div/label[2]').click() #전세버튼
                     driver.find_element(By.XPATH, '//*[@id="form_item"]/div[2]/div[1]/div[3]/div[2]/table/tbody/tr/td/div/div[2]/table/tbody/tr/th[2]/div/div[2]/div[9]/input').send_keys(deposit1) #전세보증금
         
         if premium_exist == '있음': 
-            driver.find_element(By.XPATH, '//*[@id="form_item"]/div[2]/div[1]/div[3]/div[2]/table/tbody/tr/td/div/div[4]/div[1]/div[2]/div[1]/label[1]').click() #권리금버튼
-            driver.find_element(By.XPATH, '//*[@id="form_item"]/div[2]/div[1]/div[3]/div[2]/table/tbody/tr/td/div/div[4]/div[1]/div[2]/div[2]/input').send_keys(premium) #권리금
-            driver.find_element(By.XPATH, '//*[@id="form_item"]/div[2]/div[1]/div[3]/div[2]/table/tbody/tr/td/div/div[4]/div[1]/div[2]/div[4]/input').send_keys(premium_content) #권리금 내역
+            # pyautogui.alert("권리금버튼 확인")
+            driver.find_element(By.XPATH, '//*[@id="form_price_info"]/div[2]/div/div[11]/div/div[2]/div[1]/label[1]').click() #권리금버튼
+            driver.find_element(By.XPATH, '//*[@id="form_price_info"]/div[2]/div/div[11]/div/div[2]/div[2]/div/input').send_keys(premium) #권리금
+            driver.find_element(By.XPATH, '//*[@id="form_price_info"]/div[2]/div/div[11]/div/div[2]/div[3]/input').send_keys(premium_content) #권리금 내역
+            # driver.find_element(By.XPATH, '//*[@id="form_item"]/div[2]/div[1]/div[3]/div[2]/table/tbody/tr/td/div/div[4]/div[1]/div[2]/div[1]/label[1]').click() #권리금버튼
+            # driver.find_element(By.XPATH, '//*[@id="form_item"]/div[2]/div[1]/div[3]/div[2]/table/tbody/tr/td/div/div[4]/div[1]/div[2]/div[2]/input').send_keys(premium) #권리금
+            # driver.find_element(By.XPATH, '//*[@id="form_item"]/div[2]/div[1]/div[3]/div[2]/table/tbody/tr/td/div/div[4]/div[1]/div[2]/div[4]/input').send_keys(premium_content) #권리금 내역
         if manager == '별도' and tr_target == '층호수': 
             # driver.find_element(By.XPATH, '//*[@id="form_item"]/div[2]/div[1]/div[3]/div[2]/table/tbody/tr/td/div/div[4]/div[2]/div[2]/div[1]/label[1]').click() #관리비버튼
             카테고리별_텍스트_찾기('form_table_box_manage', '''
@@ -942,7 +836,7 @@ def macro(data, user):
             # driver.find_element(By.XPATH, '//*[@id="form_item"]/div[2]/div[1]/div[3]/div[2]/table/tbody/tr/td/div/div[4]/div[2]/div[2]/div[2]/div/input').send_keys(mmoney) #관리비
             카테고리별_텍스트_찾기('form_table_box_manage', '''
 														관리비
-														''', 'text', mmoney)   
+														''', 'text', mmoney*10000)   
             # driver.find_element(By.XPATH, '//*[@id="form_item"]/div[2]/div[1]/div[3]/div[2]/table/tbody/tr/td/div/div[4]/div[2]/div[2]/div[3]/input').send_keys(mmemo) #관리비메모
             # 카테고리별_텍스트_찾기('form_table_box_manage', '''
 			# 											관리비
@@ -978,7 +872,10 @@ def macro(data, user):
         #방수와 욕실수
         if tr_target == '층호수':
             카테고리별_텍스트_찾기('roombath1', '방', 'number', room_rcount) 
-            카테고리별_텍스트_찾기('roombath2', '욕실', 'number', room_bcount)
+            if object_type == '주거용':
+                카테고리별_텍스트_찾기('roombath2', '욕실', 'number', room_bcount)
+            elif object_type == '상업용':
+                카테고리별_텍스트_찾기('roombath2', '화장실', 'number', room_bcount)
             clickList('#form_basic_info > div.form_table > div:nth-child(3) > div.form_table_box.direction.hide_auctions > div.form_table_box_cnt > div.select_boxs.select_box_direction > div > button', room_direction) #방향
             # print('direction_stn:'+direction_stn)
             # 카테고리별_텍스트_찾기('방수', 'text', direction_stn) #방향기준 
@@ -1082,7 +979,7 @@ def macro(data, user):
 #건물정보
             
             #건물방향
-            print('building_direction:',building_direction)
+            if building_direction: print('building_direction:',building_direction)
             # span_element = driver.find_element(By.XPATH, '//*[@id="form_item"]/div[2]/div[1]/div[6]/div[1]/span[2]')
             # if 'arch_open_btn on' in span_element.get_attribute('class'):
             #     print("현재 'arch_open_btn on' 상태입니다.")
@@ -1097,21 +994,36 @@ def macro(data, user):
             jibun_list = [jibun.strip() for jibun in land_jibung.split(',')]   
             jibun_num = len(jibun_list)
             if jibun_num > 1 :
-                for _ in range(jibun_num-1):
-                    driver.find_element(By.XPATH, '//*[@id="form_toji_info"]/div[1]/div[1]/div/span[1]/span').click()
+                land_count = 0
+                대표지번을제외한지번들 = [jibun for jibun in jibun_list if jibun != location_lijibun] #jibun_list에서 대표지번(location_lijibun)을 제외한 리스트생성
                 extend_search_btns = driver.find_elements(By.XPATH, '//*[@id="form_toji_info"]/div[2]/div[1]/span')
-                print("확장된 토지정보의 검색버튼의 개수:", len(extend_search_btns))
-            land_count = 0
-            for i in range(len(jibun_list)):
-                if jibun_list[i] != location_lijibun :
-                    jibun = jibun_list[i]
-                    #거래대상필지 별로 정보입력
-                    donglijibun = location_dongli+' '+jibun
-                    print("동+지번:", donglijibun)
-                    driver.find_element(By.XPATH, f'//*[@id="field_address_{land_count}"]').send_keys(donglijibun) #동+지번 입력
-                    extend_search_btns[land_count].click()
-                    # pyautogui.alert(f'//*[@id="field_address_{i}"]')
+                for i in range(jibun_num-1):
                     land_count += 1
+                    # pyautogui.alert(f'필지추가버튼')
+                    driver.find_element(By.XPATH, '//*[@id="form_toji_info"]/div[1]/div[1]/div/span[1]/span').click() #필지추가버튼 클릭
+                    
+                    추가할지번 = 대표지번을제외한지번들[i]
+                    donglijibun = location_dongli+' '+추가할지번
+                    # pyautogui.alert(f'동+지번 입력 donglijibun:{donglijibun}, land_count:{land_count}')
+                    driver.find_element(By.XPATH, f'//*[@id="field_address_{land_count}"]').send_keys(donglijibun) #동+지번 입력
+                    # pyautogui.alert(f'검색버튼 i:{i}')
+                    extend_search_btns[0].click() #검색버튼 클릭
+                    
+
+                
+                print("확장된 토지정보의 검색버튼의 개수:", len(extend_search_btns))
+            # pyautogui.alert("check!!") 
+            # land_count = 0
+            # for i in range(len(jibun_list)):
+            #     if jibun_list[i] != location_lijibun :
+            #         jibun = jibun_list[i]
+            #         #거래대상필지 별로 정보입력
+            #         donglijibun = location_dongli+' '+jibun
+            #         print("동+지번:", donglijibun)
+            #         # pyautogui.alert(f'//*[@id="field_address_{i}"]')
+            #         driver.find_element(By.XPATH, f'//*[@id="field_address_{land_count}"]').send_keys(donglijibun) #동+지번 입력
+            #         extend_search_btns[land_count].click()
+            #         land_count += 1
             
             # pyautogui.alert("check!!") 
             # print("토지면적:", land_totarea)  
@@ -1158,7 +1070,7 @@ def macro(data, user):
                 # class가 'rental_status_table rental_status_table_floor'인 table 내의 모든 tr 요소 찾기
                 tr_rows = driver.find_elements(By.CSS_SELECTOR, ".rental_status_table.rental_status_table_floor tbody tr:has(td)")
                 current_rows_length = len(tr_rows)
-                print(f"현재행개수:{len(tr_rows)}")     
+                print(f"현재행개수:{len(tr_rows)}")   
                 sequence_index = 0        
                 for room in brData:
                     bri_sequence = room['bri_sequence'] #순번
@@ -1168,7 +1080,7 @@ def macro(data, user):
                     r_price_deposit = room['bri_deposit'] #보증금
                     r_price_month_rent = room['bri_rent'] #월세
                     r_price_manage = room['bri_mmoney'] #관리비
-                    r_remark = room['bri_remark'] #비고
+                    r_etc = room['bri_remark'] #비고
                     print(f"1 bri_sequence:{room['bri_sequence']}, len(tr_rows):{str(len(tr_rows))}")
                     print("bri_num:",room['bri_num'])
                     
@@ -1209,7 +1121,7 @@ def macro(data, user):
                         "r_price_deposit[]": r_price_deposit,
                         "r_price_month_rent[]": r_price_month_rent,
                         "r_price_manage[]": r_price_manage,
-                        "r_remark[]": r_remark
+                        "r_etc[]": r_etc
                     }  
                     
                     print(f"sequence_index:{sequence_index} bri_sequence:{bri_sequence} data_mapping:",data_mapping) 
@@ -1226,10 +1138,23 @@ def macro(data, user):
                     sequence_index += 1               
                     # pyautogui.alert(f'{bri_sequence}번째행 입력완료 sequence_index:{sequence_index} len(tr_rows):{str(len(tr_rows))}')
                 # pyautogui.alert(f'{sequence_index}개 호실정보 입력완료')
+#제목
+        
+        기본제목값 = location_si+object_type2+object_ttype
+        제목입력영역 = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.XPATH, f'//*[@id="form_detail_info"]/div[2]/div[1]/div[1]/div[2]/input'))
+        )
+        제목입력영역.send_keys(기본제목값)
+        # driver.find_element(By.CSS_SELECTOR, '#form_detail_info > div.form_table > div.form_table_box_wrap.form_table_box_wrap_two > div.form_table_box.detail_title > div.form_table_box_cnt > input').send_keys(기본제목값)
 #상세정보
+        def 메모에마크추가(메모, 마크='-- '):
+            if not 메모:  # 메모가 None 또는 빈 문자열인 경우 예외 처리
+                return ""            
+            # 줄 단위로 나누고, 각 줄에 '-- ' 추가
+            return "\n".join([f"{마크}{line}" for line in 메모.split("\n") if line.strip()])
         object_detail = '[ 매 물 기 본 정 보 ]'
         if trading != '':
-            object_detail += '<p>' + f'● 매매금액: {숫자한글로금액변환(trading)}'  + '</p>'
+            # object_detail += '<p>' + f'● 매매금액: {숫자한글로금액변환(trading)}'  + '</p>'
             if tr_target == '건물':
                 object_detail += '<p>' + f'● 건물 주용도: {building_purpose}'  + '</p>'
                 object_detail += '<p>' + f'● 건물 준공일: {building_usedate}'  + '</p>'
@@ -1239,17 +1164,16 @@ def macro(data, user):
                     print("보증금이 존재합니다.")
                 object_detail += ('<p>' + f'● 총보증금: {숫자한글로금액변환(sum_deposit)}' + '</p>') if str(sum_deposit) != '' else '' 
                 if sum_rent != '':
-                    object_detail += ('<p>' + f'● 총월세: {숫자한글로금액변환(sum_rent)}' + '</p>') if str(sum_rent) != '' else ''     
-            object_detail += '<p>' + f'● 용도지역: {representing_purpose}'  + '</p>'        
+                    object_detail += ('<p>' + f'● 총월세: {숫자한글로금액변환(sum_rent)}' + '</p>') if str(sum_rent) != '' else ''  
             if main_area : object_detail += ('<p>' + f'● 대지면적: {land_totarea}㎡ (약{changeToPyeong(land_totarea)}평)' + '</p>') if float(main_area) > 0 else ''
-            object_detail += ('<p>' + f'● 대표지목: {representing_jimok}' + '</p>') if representing_jimok != '' else ''
                 
-        elif deposit1 != '':
-            object_detail += '<p>' + f'● 보증금: {deposit1}만원' + '</p>'
-            if rent1 != '':
-                object_detail += '<p>' + f'● 월세: {rent1}만원' + '</p>'
-            if manager == '별도' and float(mmoney) > 0:
-                object_detail += '<p>' + f'● 관리비: {mmoney}만원' + '</p>'
+        # elif deposit1 != '':
+        #     object_detail += '<p>' + f'● 보증금: {deposit1}만원' + '</p>'
+        #     if rent1 != '':
+        #         object_detail += '<p>' + f'● 월세: {rent1}만원' + '</p>'
+        #     if manager == '별도' and float(mmoney) > 0:
+        #         object_detail += '<p>' + f'● 관리비: {mmoney}만원' + '</p>'
+                
             # if premium_exist == '있음' & premium > 0:
             #     object_detail += f'● 권리금: {premium}만원'
         if object_type == '주거용' and tr_target == '층호수':
@@ -1268,7 +1192,7 @@ def macro(data, user):
                 # pyautogui.alert(object_detail)
         
         object_detail += ('<p>' + f'● 옵션: {main_option}' + '</p>') if main_option != '' else ''
-        object_detail += '<p>' + f'● 위치: ' + '</p>'
+        # object_detail += '<p>' + f'● 위치: ' + '</p>'
         
         object_detail += '<p>&nbsp</p>' + '<p>' + '[ 매 물 주 요 특 징 ]' + '</p>'
         
@@ -1276,15 +1200,16 @@ def macro(data, user):
             return text.replace('\n', '<br>') if text else ''
         object_detail += ('<p>' + f'ㅇ {nl2br(land_memo)}' + '</p>') if land_memo else ''
         if tr_target != '토지':
-            object_detail += ('<p>' + f'ㅇ {nl2br(building_trmemo)}' + '</p>') if building_trmemo else ''
-            object_detail += ('<p>' + f'ㅇ {nl2br(building_memo)}' + '</p>') if building_memo else ''
+            # object_detail += ('<p>' + f'ㅇ {nl2br(building_trmemo)}' + '</p>') if building_trmemo else ''
+            object_detail += ('<p>' + nl2br(메모에마크추가(building_memo, 'ㅇ ')) + '</p>') if building_memo else ''
         if tr_target == '층호수':
-            object_detail += ('<p>' + f'ㅇ {nl2br(room_memo)}' + '</p>') if room_memo else ''
+            object_detail += ('<p>' + nl2br(메모에마크추가(room_memo, 'ㅇ ')) + '</p>') if room_memo else ''
 
 
-        object_detail += '<p>' + 'ㅇ&nbsp;' + '</p>'
-        object_detail += '<p>' + 'ㅇ&nbsp;' + '</p>'
+        # object_detail += '<p>' + 'ㅇ&nbsp;' + '</p>'
+        # object_detail += '<p>' + 'ㅇ&nbsp;' + '</p>'
         
+        object_detail += '<p>&nbsp</p>'
         print("object_detail: " + object_detail)
         # 상세정보 문자열을 HTML 포맷으로 조작
         detail = '<p></p>'  # 시작을 위한 빈 <p> 태그
@@ -1339,18 +1264,221 @@ def macro(data, user):
         except:
             print('폴더열기 에러')        
         
-        
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     else:
         print(f"오부사{object_code_new} 매물수정 시작")
         driver.get(f'https://osan-bns.com/admin_item/edit/{object_code_new}?page=1') #매물등록화면으로 전환
+        time.sleep(1)
+        # pyautogui.alert('작업 시작?')
+        try:
+
+
+            매매가입력란 = driver.find_element(By.CSS_SELECTOR,'#p_sell_price')
+            융자금입력란 = driver.find_element(By.CSS_SELECTOR,'#p_lease_price')
+            대출금리입력란 = driver.find_element(By.NAME, "p_lease_rate")
+            기보증금입력란 = driver.find_element(By.CSS_SELECTOR,'#p_gi_deposit')
+            총월세입력란 = driver.find_element(By.CSS_SELECTOR,'#p_total_rent_price')
+            총관리비입력란 = driver.find_element(By.CSS_SELECTOR,'#p_total_mgr_price')    
+        except Exception as e:
+            print("요소찾기 오류")
+            pyautogui.alert('요소찾기 오류') 
+        
+
+
+#금액정보
+        if tr_target != '층호수' and tr_target != '토지' : 카테고리별_텍스트_찾기('no_toji', '거래범위', 'radio', '건물 전체') #거래범위 전체선택
+        # pyautogui.alert(tr_target) 
+        #거래유형
+        if trading != '' and trading != '0' :
+            카테고리별_텍스트_찾기('price_box', '''
+														거래형태													''', 'radio', '매매') #매매버튼
+            카테고리별_텍스트_찾기('input_sell building_shows', '매매가', 'text', trading) #매매가
+            # pyautogui.alert("272 go?")
+            if tr_target == '건물': 
+                if building_loan:
+                    if int(building_loan) > 0: 카테고리별_텍스트_찾기('input_loan building_shows', '융자금', 'radio', '있음')
+                    카테고리별_텍스트_찾기('input_loan building_shows', '융자금', 'text', str(building_loan)) #융자금
+                # pyautogui.alert("528 go?")
+                if sum_deposit != '':
+                    카테고리별_텍스트_찾기('input_deposit_hold building_hides', '기보증금', 'text', str(sum_deposit)) #총보증금
+                    # driver.find_element(By.CSS_SELECTOR, '#form_item > div.form_box > div.box_contents > div:nth-child(3) > div.form_table > table > tbody > tr > td > div > div.con_box.con_box_wrap.no_villa_box.price_box > table > tbody > tr > th:nth-child(2) > div > div.contents_g_contents > div.input-group.m-b-xs.input_deposit_hold > input').send_keys(str(sum_deposit)) #총보증금
+                    # pyautogui.alert("349?")     
+                    카테고리별_텍스트_찾기('input_month_rent_total', '총월세', 'text', str(sum_rent)) #총월세  
+                    카테고리별_텍스트_찾기('form_table_box input_rent_hold building_hides', '기월세', 'text', str(sum_rent)) #기월세                           
+                    # driver.find_element(By.CSS_SELECTOR, '#form_item > div.form_box > div.box_contents > div:nth-child(3) > div.form_table > table > tbody > tr > td > div > div.con_box.con_box_wrap.no_villa_box.price_box > table > tbody > tr > th:nth-child(2) > div > div.contents_g_contents > div.input-group.m-b-xs.input_rent_hold > input').send_keys(str(sum_rent)) #총월세
+        else :
+            if deposit1 != '' and deposit1 != '0' :
+                if rent1 != '' and rent1 != '0':
+                    카테고리별_텍스트_찾기('price_box', '''
+														거래형태													''', 'radio', '월세')
+                    # driver.find_element(By.CSS_SELECTOR, '#form_item > div.form_box > div.box_contents > div:nth-child(3) > div.form_table > table > tbody > tr > td > div > div.con_box.con_box_wrap.no_villa_box.price_box > table > tbody > tr > th.price_types > div > div:nth-child(2) > div > label.btn.btn-default.btn_type.btn_month_rent.active').click() #월세버튼
+                    # pyautogui.alert("ㄱㄱ?")
+                    카테고리별_텍스트_찾기('input_month_deposit', '보증금', 'text', deposit1) #월세보증금
+                    카테고리별_텍스트_찾기('input_month_rent', '월세', 'text', rent1) #월세
+                    if object_type == '상업용': #부가세 포함/별도
+                        if surtax == 'N':
+                            driver.find_element(By.XPATH, '//*[@id="form_price_info"]/div[2]/div/div[5]/div[1]/div[2]/div/label[1]').click()
+                        else :                            
+                            driver.find_element(By.XPATH, '//*[@id="form_price_info"]/div[2]/div/div[5]/div[1]/div[2]/div/label[2]').click()
+                else :
+                    driver.find_element(By.XPATH, '//*[@id="form_item"]/div[2]/div[1]/div[3]/div[2]/table/tbody/tr/td/div/div[2]/table/tbody/tr/th[1]/div/div[2]/div/label[2]').click() #전세버튼
+                    driver.find_element(By.XPATH, '//*[@id="form_item"]/div[2]/div[1]/div[3]/div[2]/table/tbody/tr/td/div/div[2]/table/tbody/tr/th[2]/div/div[2]/div[9]/input').send_keys(deposit1) #전세보증금
+        
+        if premium_exist == '있음': 
+            # pyautogui.alert("권리금버튼 확인")
+            driver.find_element(By.XPATH, '//*[@id="form_price_info"]/div[2]/div/div[11]/div/div[2]/div[1]/label[1]').click() #권리금버튼
+            driver.find_element(By.XPATH, '//*[@id="form_price_info"]/div[2]/div/div[11]/div/div[2]/div[2]/div/input').send_keys(premium) #권리금
+            driver.find_element(By.XPATH, '//*[@id="form_price_info"]/div[2]/div/div[11]/div/div[2]/div[3]/input').send_keys(premium_content) #권리금 내역
+            # driver.find_element(By.XPATH, '//*[@id="form_item"]/div[2]/div[1]/div[3]/div[2]/table/tbody/tr/td/div/div[4]/div[1]/div[2]/div[1]/label[1]').click() #권리금버튼
+            # driver.find_element(By.XPATH, '//*[@id="form_item"]/div[2]/div[1]/div[3]/div[2]/table/tbody/tr/td/div/div[4]/div[1]/div[2]/div[2]/input').send_keys(premium) #권리금
+            # driver.find_element(By.XPATH, '//*[@id="form_item"]/div[2]/div[1]/div[3]/div[2]/table/tbody/tr/td/div/div[4]/div[1]/div[2]/div[4]/input').send_keys(premium_content) #권리금 내역
+        if manager == '별도' and tr_target == '층호수': 
+            # driver.find_element(By.XPATH, '//*[@id="form_item"]/div[2]/div[1]/div[3]/div[2]/table/tbody/tr/td/div/div[4]/div[2]/div[2]/div[1]/label[1]').click() #관리비버튼
+            카테고리별_텍스트_찾기('form_table_box_manage', '''
+														관리비
+														''', 'radio', '있음')   
+            # driver.find_element(By.XPATH, '//*[@id="form_item"]/div[2]/div[1]/div[3]/div[2]/table/tbody/tr/td/div/div[4]/div[2]/div[2]/div[2]/div/input').send_keys(mmoney) #관리비
+            카테고리별_텍스트_찾기('form_table_box_manage', '''
+														관리비
+														''', 'text', mmoney*10000)   
+            # driver.find_element(By.XPATH, '//*[@id="form_item"]/div[2]/div[1]/div[3]/div[2]/table/tbody/tr/td/div/div[4]/div[2]/div[2]/div[3]/input').send_keys(mmemo) #관리비메모
+            # 카테고리별_텍스트_찾기('form_table_box_manage', '''
+			# 											관리비
+			# 											''', 'text', mmemo)   
+   
+            # mItem_elements = driver.find_elements(By.XPATH, '//*[@id="form_item"]/div[2]/div[1]/div[3]/div[2]/table/tbody/tr/td/div/div[4]/div[3]/div[2]/div')
+            # for mItem in mItem_elements:
+            #     label_tag = mItem.find_element(By.TAG_NAME, 'label')
+            #     mlist_items = mlist.split(',')
+            #     for item in mlist_items:
+            #         if item == 'E/V관리': item = '엘리베이터' #연관 항목명으로 변경
+            #         if item == label_tag.text: label_tag.click() #관리비에 포함된 항목 체크
+            카테고리별_텍스트_찾기('management_price', '관리비 포함내역', 'checkbox', 목록_변환('관리비포함내역', mlist))
+        else:
+            카테고리별_텍스트_찾기('form_table_box_manage', '''
+														관리비
+														''', 'radio', '없음')            
+        # pyautogui.alert('315 gogo?')                  
         
         # 수익률정보
-        #건물수익률이 선택된 상태(active존재유무)인지 확인하기
-        structure_label = driver.find_element_by_css_selector('label[data-type="structure"]')
-        # 'active' 클래스가 있는지 확인
-        is_active = 'active' in structure_label.get_attribute('class').split()
-        print("Is 'active' class present:", is_active)    
-    
+        if trading != '':
+            if tr_target == '건물' and len(brData)>0:
+                print("건물수익률 선택")
+                #건물수익률이 선택된 상태(active존재유무)인지 확인하기 
+                structure_label = driver.find_element(By.CSS_SELECTOR,'label[data-type="structure"]')
+                # 'active' 클래스가 있는지 확인
+                is_active = 'active' in structure_label.get_attribute('class').split()
+                print("Is 'active' class present:", is_active)    
+                # pyautogui.alert('작업 시작?')
+                if not is_active:
+                    structure_label.click()
+                    #임대차정보 등록      
+                else:          
+                    #임대차정보 갱신
+                    매매가입력란.clear()
+                    융자금입력란.clear()
+                    대출금리입력란.clear()
+                    기보증금입력란.clear()
+                    총월세입력란.clear()
+                    총관리비입력란.clear()
+
+                if trading : 매매가입력란.send_keys(str(trading)) #매매가 
+                if building_loan : 융자금입력란.send_keys(str(building_loan)) #융자금
+                if building_loan_rate : 대출금리입력란.send_keys(building_loan_rate) #대출금리
+                if sum_deposit : 기보증금입력란.send_keys( str(sum_deposit)) #기보증금
+                if sum_rent : 총월세입력란.send_keys(str(sum_rent)) #총월세
+                if sum_mmoney : 총관리비입력란.send_keys(str(sum_mmoney)) #총관리비
+
+                # class가 'rental_status_table rental_status_table_floor'인 table 내의 모든 tr 요소 찾기
+                tr_rows = driver.find_elements(By.CSS_SELECTOR, ".rental_status_table.rental_status_table_floor tbody tr:has(td)")
+                current_rows_length = len(tr_rows)
+                print(f"현재행개수:{len(tr_rows)}")   
+                # pyautogui.alert('임대차정보 입력시작?')    
+                sequence_index = 0        
+                for room in brData:
+                    bri_sequence = room['bri_sequence'] #순번
+                    r_floor = room['bri_num'] #호수
+                    r_area = room['bri_area'] #면적
+                    r_sangho = room['bri_nmemo'] #상호
+                    r_price_deposit = room['bri_deposit'] #보증금
+                    r_price_month_rent = room['bri_rent'] #월세
+                    r_price_manage = room['bri_mmoney'] #관리비
+                    r_etc = room['bri_remark'] #비고
+                    print(f"1 bri_sequence:{room['bri_sequence']}, len(tr_rows):{str(len(tr_rows))}")
+                    print("bri_num:",room['bri_num'])
+                    
+                    
+                    if bri_sequence > len(tr_rows):
+                        print(f"{bri_sequence}번째 행추가")
+                        # pyautogui.alert(f'{bri_sequence}번째 행추가 버튼위치index:{sequence_index}')
+                        행추가버튼 = driver.find_element(By.CSS_SELECTOR, f".rental_status_table.rental_status_table_floor tbody tr td span[class='btn btn_plus']")
+                        행추가버튼.click()
+                        # 최신 tr_rows를 다시 가져옴
+                        tr_rows = driver.find_elements(By.CSS_SELECTOR, ".rental_status_table.rental_status_table_floor tbody tr:has(td)")
+                        print(f"2 bri_sequence:{room['bri_sequence']}, len(tr_rows):{str(len(tr_rows))}")                     
+                    # else:
+                    #     # pyautogui.alert(f'{bri_sequence}번째 입력행이 존재합니다.')
+                    #     입력행 = tr_rows[bri_sequence-1]
+                        
+
+                    
+                    # # 현재 행에 데이터 입력
+                    # if bri_sequence > current_rows_length:
+                    #     input_index = int((current_rows_length+(len(tr_rows)-current_rows_length)/2) - 1)
+                    # else:
+                    #     input_index = bri_sequence - 1
+                    input_index = bri_sequence - 1    
+                    print(f"bri_sequence:{bri_sequence} 입력행의 input_index:{input_index}")
+                    입력행 = tr_rows[input_index]
+                    # 데이터 입력 매핑
+                    data_mapping = {
+                        "r_floor[]": r_floor,
+                        "r_area[]": r_area,
+                        "r_sangho[]": r_sangho,
+                        "r_price_deposit[]": r_price_deposit,
+                        "r_price_month_rent[]": r_price_month_rent,
+                        "r_price_manage[]": r_price_manage,
+                        "r_etc[]": r_etc
+                    }  
+                    
+                    print(f"sequence_index:{sequence_index} bri_sequence:{bri_sequence} data_mapping:",data_mapping) 
+                    for key, value in data_mapping.items():
+                        try:
+                            input_element = 입력행.find_element(By.CSS_SELECTOR, f"td input[name='{key}']")
+                            input_element.clear()
+                            if value:
+                                
+                                input_element.send_keys(value)
+                                print(f"{bri_sequence}번째 Data for {key} ({value}) successfully entered.")
+                                if key == 'r_etc[]' and '공실' in r_etc:
+                                    입력행.find_element(By.CSS_SELECTOR, f"td input[class='r_is_gongsil']").click()
+                                    print("공실 체크박스 클릭")
+                        except Exception as e:
+                            print(f"Input field for {key} not found in sequence {bri_sequence}.")   
+                    # 마지막입력행 = 입력행
+                    sequence_index += 1               
+                    # pyautogui.alert(f'{bri_sequence}번째행 입력완료 sequence_index:{sequence_index} len(tr_rows):{str(len(tr_rows))}')
+                # pyautogui.alert(f'{sequence_index}개 호실정보 입력완료')            
+        # pyautogui.alert('작업종료 할래?')
     
     
 

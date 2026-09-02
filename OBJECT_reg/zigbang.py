@@ -12,9 +12,12 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.chrome.options import Options
 
 import pyautogui 
-from datetime import datetime, date
+import tkinter as tk
+from tkinter import messagebox
+from datetime import datetime, date, timedelta
 import time
 import os
+import pymysql
 
 options = Options()
 options.add_argument("--disable-blink-features=AutomationControlled")
@@ -60,6 +63,12 @@ def macro(data, user):
     
     driver.implicitly_wait(2)   
     
+    def 최상단알림창(message, title="알림"):
+        root = tk.Tk()
+        root.withdraw()  # 창 숨기기
+        root.attributes("-topmost", True)  # 항상 위에 있도록 설정
+        messagebox.showinfo(title, message)
+        root.destroy()
     
     def change_window(target: str):
         if target == 'parent':
@@ -99,7 +108,11 @@ def macro(data, user):
     
     def selectOption(select_xpath, value):
         time.sleep(0.3)
-        driver.find_element(By.XPATH, f'{select_xpath}').click() #선택 클릭
+        try:
+            driver.find_element(By.XPATH, f'{select_xpath}').click() #선택 클릭
+        except Exception as e:
+            print("선택 클릭 오류:", str(e))
+        
         
         select_element = driver.find_element(By.XPATH, f'{select_xpath}')
         
@@ -281,15 +294,7 @@ def macro(data, user):
                     # print(f"Found 대분류div 태그: {대분류div.get_attribute('outerHTML')}")
                     # 모든 소분류
                     all_소분류div_elements = 대분류div.find_elements(By.XPATH, ".//div/div[1]")  #대분류div 내에서 모든 하위 div 중 첫 번째 자식 div 요소들을 찾기
-                    # //*[@id="item_form"]/section[2]/div/div[1]/div[1]
-                    # //*[@id="item_form"]/section[2]/div/div[2]/div[1]
-                    # //*[@id="item_form"]/section[2]/div/div[3]/div/div[1]
-                    # //*[@id="item_form"]/section[2]/div/div[4]/div[1]/div[1]
-                    # //*[@id="item_form"]/section[2]/div/div[5]/div[1]
-                    # //*[@id="item_form"]/section[2]/div/div[6]/div[1]
-                    # //*[@id="item_form"]/section[2]/div/div[7]/div[1]
-                    # //*[@id="item_form"]/section[2]/div/div[8]/div[1]
-                    
+
                     # visible_소분류div_elements = [소분류div for 소분류div in all_소분류div_elements if 소분류div.is_displayed()]
                     # print(f"all_소분류div_elements 개수: {len(all_소분류div_elements)}개")
                     for 소분류div in all_소분류div_elements: 
@@ -337,26 +342,6 @@ def macro(data, user):
                                     # else:
                                     #     print("요소가 안보임")
                                     #     # print(f"{tag_type} element is not displayed: {elem.get_attribute('outerHTML')}")     
-                                                           
-
-                            
-                            # //*[@id="item_form"]/section[2]/div/div[1]/div[2]/div/div[1]/div/label[1]/input
-                            # //*[@id="item_form"]/section[2]/div/div[1]/div[2]/div/div[1]/div/label[2]/input
-                            # //*[@id="item_form"]/section[2]/div/div[2]/div[2]/div[1]/div[1]/div/label[1]/input
-                            # //*[@id="item_form"]/section[2]/div/div[2]/div[2]/div[1]/div[1]/div/label[2]/input
-                            # //*[@id="item_form"]/section[2]/div/div[3]/div/div[2]/div[1]/div[1]/div/div/input
-                            # //*[@id="item_form"]/section[2]/div/div[3]/div/div[2]/div[1]/div[2]/div/div/input
-                            # //*[@id="item_form"]/section[2]/div/div[3]/div/div[2]/label/input
-                            # //*[@id="item_form"]/section[2]/div/div[4]/div[1]/div[2]/div[1]/div[1]/div/div/div/select
-                            # //*[@id="item_form"]/section[2]/div/div[4]/div[1]/div[2]/div[1]/div[2]/div/div/div/select
-                            # //*[@id="item_form"]/section[2]/div/div[4]/div[2]/div/div[1]/div/div/div/div/select
-                            # //*[@id="item_form"]/section[2]/div/div[5]/div[2]/div[1]/div[1]/div/div/input
-                            # //*[@id="item_form"]/section[2]/div/div[5]/div[2]/div[1]/div[2]/div/div/input
-                            # //*[@id="item_form"]/section[2]/div/div[6]/div[2]/div[1]/div[1]/div/label[1]/input
-                            # //*[@id="item_form"]/section[2]/div/div[6]/div[2]/div[1]/div[1]/div/label[2]/input
-                            # //*[@id="item_form"]/section[2]/div/div[6]/div[2]/div[1]/div[2]/div/select
-                            # //*[@id="item_form"]/section[2]/div/div[7]/div[2]/div[1]/select
-                            # //*[@id="item_form"]/section[2]/div/div[8]/div[2]/div[1]/div/input
 
                             print(f"visible_elements 개수: {len(visible_elements)}개")
                             # pyautogui.alert("함수 확인")
@@ -469,79 +454,137 @@ def macro(data, user):
         except Exception as e:
             print(f"An error occurred: {e}")
             return None   
-        
+
     def 팝업창닫기():
         print("팝업창닫기()")
-
         try:
-            while True:  # 팝업창이 더 이상 나타나지 않을 때까지 반복
-                print("루프시작")
+            while True:
+                닫힘처리됨 = False  # 닫기가 한번이라도 성공했는지
+
+                # [1] alertdialog 처리
+                alertdialogs = driver.find_elements(By.XPATH, '//div[@role="alertdialog"]')
+                visible_alerts = [el for el in alertdialogs if el.is_displayed()]
+
+                if visible_alerts:
+                    print('✅ [1] role="alertdialog" 팝업 처리')
+                    alert = visible_alerts[0]
+                    try:
+                        # ✅ [추가] 체크박스 체크
+                        체크라벨 = alert.find_elements(By.XPATH, './/label[contains(text(), "오늘 하루 보")]')
+                        for label in 체크라벨:
+                            # 체크박스 = label.find_element(By.XPATH, './../button[@role="checkbox"]')
+                            체크박스 = label.find_element(By.XPATH, './/preceding-sibling::button[@role="checkbox"]')
+                            if 체크박스 and not 체크박스.is_selected():
+                                label.click()
+                                print("✅ '오늘 하루 보지 않기' 체크박스 체크 완료")
+
+                        # ✅ '닫기' 버튼 클릭
+                        close_btn = alert.find_element(By.XPATH, './/*[contains(text(), "닫기") and (self::button or self::span or self::div)]')
+                        if close_btn.is_displayed() and close_btn.is_enabled():
+                            # pyautogui.alert("함수 확인")
+                            close_btn.click()
+                            print("✅ alertdialog '닫기' 클릭 완료")
+                            닫힘처리됨 = True
+                            time.sleep(0.3)
+                            break
+                    except Exception as e:
+                        print("⚠️ alertdialog 내 '닫기' 또는 체크박스 없음:", str(e))
+
+                # [2] notice_layer 처리
                 try:
-                    # 특정 div 요소를 3초 동안 시도하여 찾기
-                    popup_elements = WebDriverWait(driver, 2).until(
-                        EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'div.notice_layer.common_layer.on'))
-                    )
-                    print("popup_elements 개수:"+str(len(popup_elements)))
-                except:
-                    # 요소를 찾지 못하면 함수 종료
-                    print("팝업창이 없거나 찾을 수 없습니다. 함수 종료.")
-                    return
+                    notices = driver.find_elements(By.CLASS_NAME, "notice_layer")
+                    visible_notices = [el for el in notices if el.is_displayed() and "on" in el.get_attribute("class")]
 
-                if not popup_elements:
-                    # 요소가 없으면 함수 종료
-                    print("팝업창이 없거나 찾을 수 없습니다. 함수 종료.")
-                    return
+                    if visible_notices:
+                        print('✅ [2] class="notice_layer common_layer on" 팝업 처리')
+                        try:
+                            # # ✅ [추가] 체크박스 체크
+                            # 체크라벨 = alert.find_elements(By.XPATH, './/label[contains(text(), "오늘 하루 보")]')
+                            # for label in 체크라벨:
+                            #     # 체크박스 = label.find_element(By.XPATH, './../button[@role="checkbox"]')
+                            #     체크박스 = label.find_element(By.XPATH, './/preceding-sibling::button[@role="checkbox"]')
+                            #     if 체크박스 and not 체크박스.is_selected():
+                            #         label.click()
+                            #         print("✅ '오늘 하루 보지 않기' 체크박스 체크 완료") 
 
-                # popup_div 요소 가져오기 (목록에서 첫 번째 요소 선택)
-                popup_div = popup_elements[0]
-                print("popup_div 찾음")
-                
-                # 요소의 display 속성값 가져오기
-                display_value = popup_div.value_of_css_property('display')
-                print("popup_div 요소의 display 속성값 가져오기")      
-               
-                # display 값이 block인지 확인
-                if display_value == 'block':
-                    print("팝업창이 보입니다.")
-                    
-                    # 활성화된 모든 팝업창 닫기
-                    window_handles = driver.window_handles  # 현재 열린 모든 창의 핸들을 가져옴
-                    print("활성화된 창의 개수: " + str(len(window_handles)))
-                    
-                    for handle in window_handles:  # 메인 창을 제외한 모든 팝업 창을 닫음
-                        if handle != driver.current_window_handle:
-                            pyautogui.alert("popup go??")
-                            driver.switch_to.window(handle)
-                            driver.close()
-                        
-                    # '오늘하루보이지않음' 체크박스를 기다림
-                    waitbox = WebDriverWait(driver, 2).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, "body > div.notice_layer.common_layer.on > div.item_check.has_link > label"))
-                    )
-                    print("'오늘하루보이지않음' 체크박스를 기다림")
-                    waitbox.click()  # '오늘하루보이지않음' 체크
-                    
-                    # '닫기버튼'을 기다림
-                    closebtn = WebDriverWait(driver, 2).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, "body > div.notice_layer.common_layer.on > div.item_check.has_link > button"))
-                    )
-                    # pyautogui.alert("'닫기버튼' 클릭")
-                    closebtn.click()
-                    print("팝업창 닫기클릭")
-                    
-                else:
-                    print("팝업창이 보이지 않습니다.")
-                    return  # 더 이상 팝업창이 없으면 함수 종료
-                
+                            close_btn = visible_notices[0].find_element(By.XPATH, './/*[contains(text(), "닫기") and (self::button or self::span or self::div)]')
+                            if close_btn.is_displayed() and close_btn.is_enabled():
+                                # pyautogui.alert("함수 확인")
+                                close_btn.click()
+                                print("✅ notice_layer '닫기' 클릭 완료")
+                                닫힘처리됨 = True
+                                time.sleep(0.3)
+                                break
+                        except Exception as e:
+                            print("⚠️ notice_layer 내 '닫기' 또는 체크박스 없음:", str(e))
+                except Exception as e:
+                    print("❌ notice_layer 처리 중 오류:", str(e))
+
+
+                if not 닫힘처리됨:
+                    print("⏩ 더 이상 처리할 팝업창 없음. 종료.")
+                    break
+
         except Exception as e:
-            print(f"팝업창을 찾을 수 없거나 오류가 발생했습니다: {e}")        
+            print(f"❌ 팝업 처리 전체 오류: {e}")
+
+
+    # def 팝업창닫기():
+    #     print("팝업창닫기()")
+
+    #     try:
+    #         while True:  # 팝업창이 더 이상 나타나지 않을 때까지 반복
+    #             print("루프시작")
+    #             try:
+    #                 # 1. 모든 alertdialog div 요소 찾기
+    #                 alertdialogs = driver.find_elements(By.XPATH, '//div[@role="alertdialog"]')
+
+    #                 # 2. 보이는 alertdialog만 필터링
+    #                 visible_alertdialogs = [el for el in alertdialogs if el.is_displayed()]
+
+    #                 # 3. 보이는 alertdialog가 정확히 하나일 때 처리
+    #                 if len(visible_alertdialogs) == 1:
+    #                     alert = visible_alertdialogs[0]
+
+    #                     try:
+    #                         # alertdialog 내부에서 텍스트가 '닫기'인 버튼 또는 클릭 가능한 span 찾기
+    #                         close_btn = alert.find_element(By.XPATH, './/*[contains(text(), "닫기") and (self::button or self::span)]')
+                            
+    #                         # 클릭 가능하면 클릭
+    #                         if close_btn.is_displayed() and close_btn.is_enabled():
+    #                             close_btn.click()
+    #                             print("✅ '닫기' 버튼 클릭 완료")
+    #                         else:
+    #                             print("⚠️ '닫기' 버튼이 비활성 상태입니다.")
+    #                     except Exception as e:
+    #                         print("❌ '닫기' 버튼을 찾을 수 없습니다:", str(e))
+    #                         return
+    #                 else:
+    #                     print(f"⚠️ 보이는 alertdialog 개수: {len(visible_alertdialogs)} (처리 대상 아님)")
+    #                     return
+
+    #             except:
+    #                 # 요소를 찾지 못하면 함수 종료
+    #                 print("팝업창이 없거나 찾을 수 없습니다. 함수 종료.")
+    #                 return
+
+                
+    #     except Exception as e:
+    #         print(f"팝업창을 찾을 수 없거나 오류가 발생했습니다: {e}")        
 
     
-    # 현재 날짜 출력
-    current_date = date.today()
-    formatted_date = current_date.strftime("%Y-%m-%d")
+
+    # 현재 날짜와 시간 가져오기
+    현재날짜시간 = datetime.now()
+    현재날짜 = 현재날짜시간.date()
+    # 문자형으로 변환
+    current_date = 현재날짜시간.strftime("%Y-%m-%d")  # 'YYYY-MM-DD' 형식
+    current_time = 현재날짜시간.strftime("%H:%M:%S")  # 'HH:MM:SS' 형식    
     
+    manager_id = data['adminData']['ad_id']
     admin_name = data['adminData']['admin_name']
+
+    object_code_new = data['writeData']['object_code_new'] #새홈매물번호
     zigbang_tag = data['adminData']['zigbang_tag']
     request_code = data['writeData']['request_code'] #의뢰번호
     object_type = data['writeData']['object_type']
@@ -549,6 +592,8 @@ def macro(data, user):
     location_do = data['landData'][0]['land_do']
     location_si = data['landData'][0]['land_si']
     location_dong = data['landData'][0]['land_dong']
+
+    land_jibun = data['landData'][0]['land_jibun']
 
     location_lijibun = (data['type_path'] + data['landData'][0]['land_jibun']) if data['landData'][0]['land_li'] == '' else (data['landData'][0]['land_li'] + data['type_path'] + data['landData'][0]['land_jibun'])
     location_dongli = (data['landData'][0]['land_dong'] + data['type_path'] + data['landData'][0]['land_jibun']) if data['landData'][0]['land_li'] == '' else location_lijibun
@@ -593,18 +638,266 @@ def macro(data, user):
     room_option = room_option.replace('가스렌지','가스레인지')
     room_option = room_option.replace('벽걸이에어컨','에어컨')
     rdate = str(data['writeData']['rdate']) #입주일
-    secret_memo = "https://obangkr.cafe24.com/web/request/request_view/view_give_request_detail.php?request_code="+request_code
+    secret_memo = f"새홈[{object_code_new}] "+"https://obangkr.cafe24.com/web/request/request_view/view_give_request_detail.php?request_code="+request_code
     
 
     print("데이터확인:", building_purpose)
     
     팝업창닫기()
+    # pyautogui.alert("go??")
+
+
+    #매물번호 추출
+    
+    def 매물리스트에서주소로매물번호추출():
+        print("매물리스트에서주소로매물번호추출()")
+        print(f"동({location_dong}),번지({land_jibun}),호실명({room_num}),방개수({room_rcount})")
+
+        # 매물리스트 열기(원룸:30세대 미만의 오피스텔/도시형 생활주택포함 방개수1, 빌라/투룸+: 30세대 미만의 오피스텔/도시형 생활주택포함 방개수2개이상)
+        if float(room_rcount) < 2:
+            driver.get('https://ceo.zigbang.com/items/list/oneroom')
+        else:
+            driver.get('https://ceo.zigbang.com/items/list/villa')
+        try:
+            # 매물 정보 div 리스트 전체 가져오기
+            # 매물들주소위치 = driver.find_elements(By.XPATH, '//*[@id="react-root"]/article/div[1]/div[4]/div//div/div[1]/div[1]/div[2]/p')
+
+            매물div들 = driver.find_elements(By.XPATH, '//*[@id="react-root"]/article/div[1]/div[4]/div/div')
+            # //*[@id="react-root"]/article/div[1]/div[4]/div/div[6]
+            # //*[@id="react-root"]/article/div[1]/div[4]/div/div[1]/div[1]/div[1]/div[2]/p[1]
+            매물개수 = len(매물div들)
+            print(f"총 매물 개수: {len(매물div들)}")
+            # pyautogui.alert(f"총 매물 개수: {len(매물div들)}")
+            count = 0
+            for 매물div in 매물div들:
+                try:
+                    count += 1
+                    주소요소 = 매물div.find_element(By.XPATH, './div[1]/div[1]/div[2]/p[1]')
+                    매물주소 = 주소요소.text
+                    if location_dong in 매물주소 and land_jibun in 매물주소 and room_num in 매물주소:
+                        print(f"{count}. 매물주소: {매물주소}")
+                        매물번호전체텍스트 = 매물div.find_element(By.XPATH, './div[2]/div[1]').text
+                        # pyautogui.alert(f"매물번호전체텍스트: {매물번호전체텍스트}")
+                        매물번호 = 매물번호전체텍스트.split()[-1]  # 마지막 단어만 추출
+                        print(f"{count}. 매물번호: {매물번호}")
+                        return 매물번호
+                    # print(f"{count}. 매물주소: {매물주소}")
+                except Exception as e:
+                    print(f"주소 추출 실패: {e}")
+
+        except Exception as e:
+            print("매물 리스트를 가져오는 중 오류 발생:", str(e))
+
+    def 매물번호저장(직방매물번호):
+        print(f"저장({직방매물번호})")
+
+        def get_ad_dates():
+            """
+            광고 시작일과 종료일을 반환합니다.
+            시작일은 오늘 날짜, 종료일은 30일 후 날짜입니다.
+            """
+            start_date = datetime.now().strftime("%Y-%m-%d")  # 오늘 날짜
+            end_date = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")  # 30일 후 날짜
+            return start_date, end_date
+
+        # 광고 시작일과 종료일 계산
+        ad_start, ad_end = get_ad_dates()   
+
+        # DB 연결
+        conn = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', charset='utf8')
+
+        # 변수 확인
+        print(f"INSERT 쿼리에 사용될 변수:")
+        # print(f"광고 담당자 아이디 (manager_id): {manager_id}")
+        print(f"새홈 매물번호 (object_code_new): {object_code_new}")
+
+        try:
+            # if 직방종료일 and 직방종료일 > 현재날짜:
+            #     광고상태 = "광고중"
+            # else:
+            #     광고상태 = "광고종료"
+            # pyautogui.alert(f"광고상태:{광고상태}")     
+            try:
+                # DictCursor 대신 기본 커서 사용
+                cursor = conn.cursor()
+                # cursor = conn.cursor(pymysql.cursors.DictCursor)
+                cursor.execute('USE obangkr;')
+
+                # 직방 광고 여부 확인 쿼리
+                check_query = """
+                    SELECT *
+                    FROM pr_externalad
+                    WHERE object_code_new = %s AND ad_site = '직방'
+                """
+                cursor.execute(check_query, (object_code_new))
+                # check_query = """
+                #     SELECT *
+                #     FROM pr_externalad
+                #     WHERE admin_id = %s AND object_code_new = %s AND ad_site = '직방'
+                # """
+                # cursor.execute(check_query, (admin_id, object_code_new))
+                existing_record = cursor.fetchone()
+
+                if existing_record:
+                    # 기본 커서 결과를 컬럼별로 매핑
+                    columns = [desc[0] for desc in cursor.description]
+                    existing_record = dict(zip(columns, existing_record))                    
+                    print('광고 정보가 있는 경우 - 수정 작업 수행')
+                    # 기존 매물번호와 새 매물번호 비교
+                    current_ad_code = existing_record['ad_code']
+                    print(f"기존 매물번호 (ad_code): {current_ad_code}")
+                    print(f"새 매물번호 (직방매물번호): {직방매물번호}")  
+                    if current_ad_code == 직방매물번호:
+                        alert_message = "담당자가 이미 동일한 직방 광고 매물번호를 사용하고 있습니다."
+                    else:
+                    
+                        # 기본 UPDATE 쿼리 구성
+                        update_query = """
+                            UPDATE pr_externalad
+                            SET ad_code = %s, ad_udate = %s, ad_utime = %s, ad_memo = %s
+                        """
+                        # 광고중이 아닌 경우 시작일과 종료일 추가
+                        if 광고상태 != "광고중":
+                            update_query += ", ad_start = %s, ad_end = %s"
+                        # WHERE 절 추가
+                        update_query += """
+                            WHERE admin_id = %s AND object_code_new = %s AND ad_site = '직방'
+                        """
+
+                        # 쿼리에 사용할 변수 생성
+                        query_params = [직방매물번호, current_date, current_time, ad_memo]
+
+                        # 광고중이 아닌 경우 시작일과 종료일 파라미터 추가
+                        if 광고상태 != "광고중":
+                            query_params.extend([ad_start, ad_end])
+                        # WHERE 절에 사용할 파라미터 추가
+                        query_params.extend([manager_id, object_code_new])
+                        
+                        # ad_memo 값 처리
+                        existing_ad_memo = existing_record.get('ad_memo', '')  # 기존 ad_memo 값 가져오기
+                        new_ad_memo_part = f"써브:"
+                        new_ad_memo = f"{existing_ad_memo}, {new_ad_memo_part}".strip(', ') if existing_ad_memo else new_ad_memo_part
+        
+                        # 변수 확인
+                        print(f"UPDATE 쿼리에 사용될 변수:")
+                        print(f"ad_memo 업데이트 값: {new_ad_memo}")   
+
+                        # # 알림창을 띄우고 테스트를 위해 중단
+                        # pyautogui.alert(f"""
+                        # 변수 값 확인:
+                        # - 새 매물번호: {직방매물번호}
+                        # - 기존 매물번호: {current_ad_code}
+                        # - 담당자 아이디: {manager_id}
+                        # - 새홈 매물번호: {object_code_new}
+                        # 쿼리를 실행하지 않고 중단합니다. 확인 후 진행해주세요.
+                        # """)    
+                        #  
+                        query_preview = f"""
+                        UPDATE pr_externalad
+                        SET ad_code = '{직방매물번호}', ad_start = '{ad_start}', ad_end = '{ad_end}', ad_udate = '{current_date}', ad_utime = '{current_time}', 
+                            ad_memo = '{new_ad_memo}'
+                        WHERE admin_id = '{manager_id}' AND object_code_new = '{object_code_new}' AND ad_site = '직방';
+                        """
+                        # pyautogui.alert(f"실행될 쿼리문:\n{query_preview}")
+                        try:
+                            # 쿼리 실행
+                            cursor.execute(update_query, tuple(query_params))
+                            
+                            # 영향을 받은 행의 수 확인
+                            affected_rows = cursor.rowcount
+
+                            if affected_rows > 0:
+                                if manager_id and object_code_new and 직방매물번호 : 
+                                    conn.commit()    
+                                    print(f"✅ DB에서 매물({object_code_new})의 직방 매물번호를 업데이트 하였습니다.") 
+                                    등록방식 = '단일매물등록'
+                                    if 등록방식 == '단일매물등록':
+                                        alert_message = f"업데이트를 완료하였습니다. {affected_rows}개의 행이 변경되었습니다."
+                            else:                      
+                                alert_message = "업데이트할 내용이 없습니다. 기존 매물번호와 동일한 매물번호일 수 있습니다."
+
+                        except Exception as e:
+                            alert_message = f"쿼리 실행 중 오류가 발생했습니다: {e}"
+                
+                
+                else:
+                    print('광고 정보가 없는 경우 - 추가 작업 수행')
+                    # ad_memo 구성
+                    ad_memo = f"{admin_name} 등록"
+                    print(f"ad_memo 업데이트 값: {ad_memo}")                    
+                    print(f"{manager_id}, {object_code_new}, {ad_start}, {ad_end}, 직방, {직방매물번호}, {current_date}, {current_time}")
+                    # pyautogui.alert(f"변수확인\n\n{manager_id}, {object_code_new}, {ad_start}, {ad_end}, 직방, {직방매물번호}, {current_date}, {current_time}, {ad_memo}")
+                    insert_query = """
+                        INSERT INTO pr_externalad (
+                            admin_id, object_code_new, ad_start, ad_end, ad_site, ad_code, ad_udate, ad_utime, ad_memo, ad_wdate, ad_wtime
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """
+
+
+                    # 알림창으로 쿼리 확인
+                    query_preview = f"""
+                    INSERT INTO pr_externalad (
+                        admin_id, object_code_new, ad_start, ad_end, ad_site, ad_code, ad_udate, ad_utime, ad_memo
+                    ) VALUES (
+                        '{manager_id}', '{object_code_new}', '{ad_start}', '{ad_end}', '직방', '{직방매물번호}', '{current_date}', '{current_time}', '{ad_memo}'
+                    );
+                    """
+                    # pyautogui.alert(f"실행될 쿼리문:\n{query_preview}")
+
+                    try:
+                        # 쿼리 실행
+                        conn.begin()  # 트랜잭션 시작
+                        cursor.execute(insert_query, (
+                            manager_id, object_code_new, ad_start, ad_end, '직방', 직방매물번호, current_date, current_time, ad_memo, current_date, current_time
+                        ))
+                        if manager_id and object_code_new and 직방매물번호 :
+                            conn.commit()
+                            print(f"✅ DB에 매물({object_code_new})의 직방 매물번호를 추가 하였습니다.") 
+                            alert_message = f"새 직방 광고 매물이 추가되었습니다.\n\n직방부동산: {직방매물번호}\n\n작업을 종료합니다."
+                        else:
+                            alert_message = f"DB에 등록하기 위한 필수정보가 확인되지 않습니다.\n\manager_id: {manager_id}\nobject_code_new: {object_code_new}\n직방매물번호: {직방매물번호}\n\n작업을 종료합니다."
+                    except Exception as e:
+                        alert_message = f"추가 작업 중 오류가 발생했습니다: {e}"
+
+                # 알림창으로 결과 표시
+                if alert_message : 
+                    print(alert_message)
+                    pyautogui.alert(alert_message)
+
+                # if not self.wait_for_confirmation("1단계 작업이 완료되었습니다. 계속 진행할까요?"):
+                #     self.finished.emit(False)
+                #     return
+
+                # # 다른 단계에서도 활용
+                # if not self.wait_for_confirmation("2단계 작업을 진행할까요?"):
+                #     self.finished.emit(False)
+                #     return
+
+                print("모든 작업 완료")
+                # self.finished.emit(True)
+            except Exception as e:
+                conn.rollback()  # 오류 시 롤백
+                pyautogui.alert(f"오류 발생: {e}")
+        except Exception as e:
+            pyautogui.alert(f"오류 발생: {e}", "오류")  
+            driver.close()     
+
+
+    # 매물번호 = 매물리스트에서주소로매물번호추출()
+    # pyautogui.alert(f"go??:{매물번호}")
+    # 매물번호저장(매물번호)
+
+
+
+
+
+
 
     # 확인후 이동
     driver.get('https://ceo.zigbang.com/items/list/oneroom')
     # pyautogui.alert("go??")
     # # 닫기_버튼_클릭()
-    
+    팝업창닫기()
     print('담당자:', admin_name)
     # pyautogui.alert("담당자:"+admin_name)
     # selectOption('//*[@id="react-root"]/article/div[1]/div[1]/div/select', '이은선') #테스트용 담당자 선택
@@ -630,6 +923,7 @@ def macro(data, user):
     # pyautogui.alert("go??")
     # WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, '/html/body/div[4]/div[2]/button'))).click() #어떤요소를 클릭하는가?
     
+    팝업창닫기()
     # 닫기_버튼_클릭()
     # pyautogui.alert("go??")
     #건물형태
@@ -638,10 +932,13 @@ def macro(data, user):
 
     time.sleep(0.5)  
     # '주소찾기' 버튼 클릭
-    button = WebDriverWait(driver, 10).until(
-        EC.element_to_be_clickable((By.XPATH, '//*[@id="item_form"]/section[1]/div/div/div[2]/div[1]/button'))
-    )
-    button.click()
+    try:
+        button = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, '//*[@id="item_form"]/section[1]/div/div/div[2]/div[1]/button'))
+        )
+        button.click()
+    except Exception as e:
+        pyautogui.alert("'주소찾기' 버튼 클릭 오류")
 
     # # iframe으로 전환
     # iframe = WebDriverWait(driver, 10).until(
@@ -669,10 +966,13 @@ def macro(data, user):
     input_box = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, '//*[@id="region_name"]')))
     input_box.send_keys(total_location)
     input_box.send_keys(Keys.ENTER)
+
+    try:
+        driver.find_element(By.XPATH, '/html/body/div[1]/div/div[2]/ul/li/dl/dd[2]/span/button[1]/span[1]').click() #검색된 첫번째 지번주소 클릭
+    except Exception as e:
+        pyautogui.alert("검색된 첫번째 지번주소 클릭 오류")    
     
-    driver.find_element(By.XPATH, '/html/body/div[1]/div/div[2]/ul/li/dl/dd[2]/span/button[1]/span[1]').click() #검색된 첫번째 지번주소 클릭
     driver.switch_to.window(handles[0])
-    
     print("팝업창 닫히고 활성화된 창" ,driver.title, driver.current_window_handle)
     
     
@@ -691,6 +991,7 @@ def macro(data, user):
 
     time.sleep(1) 
     print(f"건물종류:{building_purpose}") #건물종류
+    # pyautogui.alert(f"building_purpose:{building_purpose}")
     if '단독주택' in building_purpose:
         if 지정태그('기본정보', '건물 종류', 'radio', 1): 지정태그('기본정보', '건물 종류', 'radio', 1).click()
         # driver.find_element(By.XPATH, '//*[@id="item_form"]/section[2]/div/div[1]/div[2]/div/div[1]/div/label[1]/span').click() #단독주택 클릭
@@ -803,7 +1104,7 @@ def macro(data, user):
     
     if building_parking == '있음' : 
         지정태그('추가정보', '주차', 'radio', 1).click()
-        지정태그('추가정보', '주차', 'text', 1).send_keys(building_pn)
+        
         # if building_purpose == '단독주택':
         #     #일반건물 #item_form > section:nth-child(10) > div > div:nth-child(2) > div.sc-csuQGl.hdlHHX > div > div:nth-child(1) > div
         #     clickLabel('#item_form > section:nth-child(10) > div > div:nth-child(2) > div:nth-child(2) > div > div:nth-child(1) > div', '가능')
@@ -813,6 +1114,7 @@ def macro(data, user):
         #     clickLabel('#item_form > section:nth-child(10) > div > div:nth-child(1) > div:nth-child(2) > div > div:nth-child(1) > div', '가능')
     else:
         print(f"주차대수 (building_pn:{building_pn})")
+    지정태그('추가정보', '주차', 'text', 1).send_keys(building_pn)
     # pyautogui.alert('주차 확인?')        
 
 
@@ -978,10 +1280,11 @@ def macro(data, user):
                 #JavaScript를 사용한 클릭
                 element = driver.find_element(By.CSS_SELECTOR, 'div:nth-child(2) label input[value="즉시 입주"]')
                 driver.execute_script("arguments[0].click();", element)
-              
-        
+
+    #위반건축물 여부(해당없음 고정)
+    if 지정태그('추가정보', '위반 건축물 여부', 'radio', 2): 지정태그('추가정보', '엘리베이터', 'radio', 2).click()
     
-    
+    #제목
     
     #설명
     
@@ -1007,8 +1310,28 @@ def macro(data, user):
     print(path_dir)
     try:
         os.startfile(path_dir)
+        #경로복사
+        import pyperclip
+        pyperclip.copy(path_dir) # 쉼표로 연결된 문자열 생성
+        #사진등록버튼 클릭
+        사진등록버튼 = driver.find_element(By.ID, 'pickfiles')
+        driver.execute_script("arguments[0].click();", 사진등록버튼)   
+        최상단알림창('사진폴더 경로가 복사되었습니다. \n\n사진등록후 나머지 등록정보가 올바른지 검토해주세요.','사진 등록후 확인')   
     except Exception as e:
         print('폴더열기 에러', str(e))
   
-    pyautogui.alert('직방 매물등록을 마치셨습니까?')
+    최상단알림창('- 직방 매물번호 추출과정이 남았습니다. \n\n등록후 매물리스트창에서 현재 알림창의 "확인"버튼을 누르시면 매물번호가 추출됩니다.', '매물번호 추출전 알림창')
+    # pyautogui.alert('직방 매물등록을 마치셨습니까?')
+
+    #매물등록버튼
+
+    매물번호 = 매물리스트에서주소로매물번호추출()
+    if 매물번호 == None:
+        pyautogui.alert(f"매물리스트에서 생성된 매물번호를 확인할 수 없습니다.\n\n프로그램을 종료합니다.")
+    else:
+        # pyautogui.alert(f"go??:{매물번호}")
+        #추출된 매물번호 DB에 기록
+        매물번호저장(매물번호)
+
+
     driver.quit()

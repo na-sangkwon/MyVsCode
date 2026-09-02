@@ -20,6 +20,8 @@ import tkinter as tk
 from tkinter import simpledialog
 from tkinter import messagebox
 
+import pyperclip
+
 userid = '상가팀원' #brst4517
 userpw = '1234' #ljs13466!
 # 데이터베이스 연결 및 기타 초기 설정
@@ -35,7 +37,7 @@ def 데이터베이스_데이터_가져오기(cursor):
 
         while True:
             # 간단한 대화 상자를 통해 사용자 입력 받기
-            user_input = simpledialog.askstring("..", "업데이트할 데이터 개수\n\n최근수정된 데이터 기준\n\n예시)\n50 => 최근수정된 50개데이터", initialvalue="50")
+            user_input = simpledialog.askstring("..", "업데이트할 데이터 개수\n\n최근수정된 데이터 기준\n\n예시)\n50 => 최근수정된 500개데이터", initialvalue="500")
             # 사용자가 취소를 누른 경우
             if user_input is None:
                 break
@@ -44,12 +46,13 @@ def 데이터베이스_데이터_가져오기(cursor):
         # 입력된 값 반환
         return user_input
     limit_value = get_user_input()
-    query = f'SELECT object_code_new,tr_target,land_code,building_code,room_code FROM pr_object WHERE object_del="N" AND object_out_img="N"'
+    query = f'SELECT object_code_new,tr_target,land_code,building_code,room_code FROM pr_object WHERE object_del="N"'
     # query = f'SELECT object_code_new,tr_target,land_code,building_code,room_code FROM pr_object WHERE object_del="N" AND object_m="N"'
     if limit_value >= 100000:
         query += f' AND object_code_new="{limit_value}"'
     else:
-        query += ' ORDER BY object_udate DESC, object_utime DESC'
+        query += ' AND object_out_img="Y" ORDER BY object_udate DESC, object_utime DESC'
+        # query += ' AND object_out_img="N" ORDER BY object_udate DESC, object_utime DESC'
         query += f' LIMIT {limit_value}'
     # query = f'SELECT object_code_new,tr_target,land_code,building_code,room_code FROM pr_object WHERE object_del="N" AND object_m="Y" AND object_ori_img="N"'
     cursor.execute(query)
@@ -57,7 +60,6 @@ def 데이터베이스_데이터_가져오기(cursor):
     
 # 기존 파일 제거
 def remove_existing_files(ftp, directory):
-    print('directory:', directory)
     try:
         file_list = ftp.nlst()  # 현재 디렉토리의 파일 목록 가져오기
     except Exception as e:
@@ -99,15 +101,36 @@ def 가장용량이작은파일찾기(photo_list, path):
     # print(f"Smallest file is {smallest_file} with size {smallest_size}")  # 가장 작은 파일과 그 크기 출력
     return smallest_file
 
+from PIL import Image
+def 이미지크기변환(input_path, output_path, size=(100, 70)):
+    """
+    이미지 크기를 지정된 크기로 조정하고 새로운 파일로 저장하는 함수.
+
+    Args:
+        input_path (str): 원본 이미지 파일의 경로.
+        output_path (str): 리사이즈된 이미지를 저장할 경로.
+        size (tuple): 리사이즈할 이미지의 (가로, 세로) 크기 (기본값: (100, 70)).
+    """
+    try:
+        with Image.open(input_path) as img:
+            # 이미지 크기 조정
+            resized_img = img.resize(size, Image.LANCZOS)
+            # 리사이즈된 이미지 저장
+            resized_img.save(output_path, quality=90) # JPEG 품질을 90으로 설정
+            print(f"✅ 이미지 크기 조정 성공: {input_path} -> {output_path}")
+            return True
+    except Exception as e:
+        print(f"❌ 이미지 리사이즈 중 오류 발생: {e}")
+        return False
 
 
 # 가져온 데이터를 처리하는 함수
 def 데이터_처리(cursor, row):
-    object_code_new = row['object_code_new'].decode('utf-8')
-    tr_target = row['tr_target'].decode('utf-8')
-    land_code = row['land_code'].decode('utf-8')
-    building_code = row['building_code'].decode('utf-8')
-    room_code = row['room_code'].decode('utf-8')
+    object_code_new = row['object_code_new']
+    tr_target = row['tr_target']
+    land_code = row['land_code']
+    building_code = row['building_code']
+    room_code = row['room_code']
 
     if ((tr_target=='층호수' and room_code=='') or (tr_target=='건물' and building_code=='')): return
     room_query = f'SELECT room_floor FROM pr_room WHERE room_code="{room_code}" AND room_del="N"'
@@ -121,6 +144,9 @@ def 데이터_처리(cursor, row):
     time.sleep(0.1)
     # getData 함수 호출
     result_data = object_data.getData(object_code_new, userid, userpw)
+    if not result_data:
+        print("조회된 result_data 없음")
+        return
     # 리턴된 데이터 사용
     adminData = result_data.get("adminData")
     writeData = result_data.get("writeData")
@@ -133,7 +159,8 @@ def 데이터_처리(cursor, row):
     변환폴더생성일모음 = [] #변환된 사진폴더의 년월일을 담을 빈 리스트
     try:
         #물건의 원본사진폴더에 이미지가 존재하는지
-        main_dir = 'Z:\\업무자료\\4사진자료&이미지자료(외부유출금지)\\1주거용물건, 상업용물건\\'
+        main_dir = r'\\nasangkwon.synology.me@SSL@5006\\업무자료\\4사진자료&이미지자료(외부유출금지)\\1주거용물건, 상업용물건\\'
+        # main_dir = 'Z:\\업무자료\\4사진자료&이미지자료(외부유출금지)\\1주거용물건, 상업용물건\\'
         path_dir = main_dir + folderPath #'경기도\\오산시\\궐동\\654-9\\썬플라워\\1층\\1층'
         # main_dir = Path('Z:/업무자료/4사진자료&이미지자료(외부유출금지)/1주거용물건, 상업용물건/')
         # path_dir = main_dir / folderPath #'경기도\\오산시\\궐동\\654-9\\썬플라워\\1층\\1층'
@@ -186,7 +213,7 @@ def 데이터_처리(cursor, row):
             
             #pr_object의 object_ori_img값 수정
             if result:
-                object_ori_img = result['object_ori_img'].decode('utf-8')
+                object_ori_img = result['object_ori_img']
                 print("object_ori_img:", object_ori_img)
                 if object_ori_img == 'N':
                     print(f"매물({object_code_new})의 object_ori_img 값은 'N'입니다.") 
@@ -206,7 +233,10 @@ def 데이터_처리(cursor, row):
         # 사진
         # filePath = driver.find_element(By.XPATH, '//*[@id="product_form"]/div[1]/div[9]/div[2]/div[1]/div/div').get_attribute("outerHTML").split('<input id="')[1].split('" t')[0]
         
-    if len(변환폴더생성일모음) == 0 and len(원본사진들) : pyautogui.alert(f"해당매물({object_code_new})은 원본사진만 존재합니다. 변환작업을 해주세요~")
+    if len(변환폴더생성일모음) == 0 and len(원본사진들) : 
+        #매물번호복사
+        pyperclip.copy(object_code_new) 
+        pyautogui.alert(f"해당매물({object_code_new})은 원본사진만 존재합니다. 변환작업을 해주세요~\n\n※매물번호가 복사되었습니다.")
         
     if len(변환폴더생성일모음)>0:
         try:
@@ -216,48 +246,99 @@ def 데이터_처리(cursor, row):
 
             photo_list = [] #변환된 최근사진을 담을 빈 리스트
             for file in os.listdir(path):
-                if file.lower().endswith(('.jpeg', '.gif', '.png', '.jpg')):
+                if not file.startswith('temp_') and file.lower().endswith(('.jpeg', '.gif', '.png', '.jpg')): # 'temp_' 접두어가 붙은 파일은 제외
                     photo_list.append(file)
             print("photo_list:",photo_list)
             print('사진갯수:', len(photo_list))
             
-            ftp_directory = 'img/web/object/object_img/'+object_info_code
+            ftp_directory = '/www/img/web/object/object_img/'+object_info_code
 
             
-            with FTP('obangkr.cafe24.com', 'obangkr', 'Ddhqkd!1') as ftp:
-                # ftp.set_debuglevel(2)  # 디버깅 레벨 설정
-                if not is_directory_exists(ftp, ftp_directory):
-                    print("신규등록시 디렉토리생성:", ftp_directory)  
-                    ftp.mkd(ftp_directory)     
-                else:
-                    print("신규등록시 디렉토리가 이미 존재합니다.")  
-                    print(f"The FTP directory is: {ftp_directory}")  # ftp_directory 변수 값 확인
-                    remove_existing_files(ftp, ftp_directory) # 기존 파일 제거                                                  
+            # with FTP('obangkr.cafe24.com', 'obangkr', 'Ddhqkd!1') as ftp:
+            #     # ftp.set_debuglevel(2)  # 디버깅 레벨 설정
+            #     if not is_directory_exists(ftp, ftp_directory):
+            #         print("신규등록시 디렉토리생성:", ftp_directory)  
+            #         ftp.mkd(ftp_directory)     
+            #     else:
+            #         print("신규등록시 디렉토리가 이미 존재합니다.")  
+            #         print(f"The FTP directory is: {ftp_directory}")  # ftp_directory 변수 값 확인
+            #         remove_existing_files(ftp, ftp_directory) # 기존 파일 제거                                                  
             
             #매물의 기존 대표이미지정보 삭제후 최신정보 저장 
             query = f'DELETE FROM pr_object_img WHERE object_info_code="{object_info_code}"'
             cursor.execute(query)
             index = 0
-            
-            small_file = 가장용량이작은파일찾기(photo_list, path)
 
+            small_file = 가장용량이작은파일찾기(photo_list, path)
             # 파일 경로를 생성
             small_file_path = os.path.join(path, small_file)
 
-            # FTP 연결 및 로그인
-            with FTP('obangkr.cafe24.com', 'obangkr', 'Ddhqkd!1') as ftp:
-                # 최소 용량의 파일을 FTP 서버에 업로드
-                with open(small_file_path, 'rb') as file:
+            # 📌 1. 리사이즈된 이미지를 저장할 임시 파일 경로를 생성합니다.
+            #      파일명에 'temp_'를 붙여 원본 파일과 구분합니다.
+            temp_resized_path = os.path.join(path, f"temp_{small_file}")
+
+            # 📌 2. 원본 파일을 리사이즈 함수에 전달하여 임시 파일을 만듭니다.
+            if 이미지크기변환(small_file_path, temp_resized_path):
+
+                resized_file_size = os.path.getsize(temp_resized_path)       
+
+                # FTP 연결 및 로그인
+                with FTP('obangkr.cafe24.com', 'obangkr', 'Ddhqkd!1') as ftp:
+                    # 📌 FTP 전송 모드를 바이너리(이미지)로 설정
+                    ftp.voidcmd('TYPE I')                     
+                    # FTP 디렉토리로 이동
+                    if not is_directory_exists(ftp, ftp_directory):
+                        print("신규등록시 디렉토리생성:", ftp_directory)  
+                        ftp.mkd(ftp_directory)     
+                    else:
+                        print("신규등록시 디렉토리가 이미 존재합니다.")  
+                        print(f"The FTP directory is: {ftp_directory}")  # ftp_directory 변수 값 확인
+                        # remove_existing_files(ftp, ftp_directory) # 기존 파일 제거                              
+
+                    # FTP 디렉토리로 최종 이동
+                    ftp.cwd(ftp_directory)
+
+                    # 📌 현재 작업 중인 디렉토리를 콘솔에 출력
+                    current_directory = ftp.pwd()
+                    print(f"✅ 현재 FTP 디렉토리: {current_directory}")
+
+                    # 기존 FTP 파일 크기 가져오기
+                    try:
+                        print(f"small_file:{small_file}")
+                        existing_file_size = ftp.size(small_file) # 📌 현재 디렉토리에서 바로 파일명만으로 크기 확인
+                        print(f"FTP 서버에 있는 '{small_file}' 파일 크기: {existing_file_size} 바이트")
+                    except Exception as e:
+                        print(f"FTP 파일 크기 가져오기 실패: {e}")
+                        existing_file_size = 0                    
                     
-                    # 현재 날짜와 시간을 얻음
+                    
+                    # 📌 4. 알림창으로 크기 비교 표시
+                    if existing_file_size > 0:
+                        if existing_file_size == resized_file_size : 
+                            print("변환된 파일크기가 이전과 동일")
+                            return
+
+                        message = f"기존 파일 크기: {existing_file_size} 바이트\n"
+                        message += f"변환된 파일 크기: {resized_file_size} 바이트\n"
+                        message += f"용량 절감: {existing_file_size - resized_file_size} 바이트"
+                        # pyautogui.alert(title="용량 비교", text=message)
+                    else:
+                        message = f"기존 파일이 없어 용량 비교 불가\n"
+                        message += f"업로드될 파일 크기: {resized_file_size} 바이트"
+                        # pyautogui.alert(title="신규 업로드", text=message)
+
+                    # # 📌 기존 파일 삭제 (덮어쓰기 전)
+                    # remove_existing_files(ftp, ftp_directory)
+
+                    # 📌 3. 리사이즈된 임시 파일을 FTP 서버에 업로드합니다.
+                    #      이때, FTP 서버에 저장될 파일명은 원본 파일명(small_file)으로 지정합니다.
+                    with open(temp_resized_path, 'rb') as file:
+                        ftp.storbinary(f'STOR {small_file}', file) #ftp.storbinary()는 같은 파일명은 덮어쓰기 됨
+                    print(f"✅ 리사이즈된 파일이 FTP 서버에 업로드되었습니다: {ftp_directory}/{small_file}")
+                    # 📌 4. 데이터베이스에 파일 정보 저장
                     current_date = datetime.date.today().strftime("%Y-%m-%d")
                     current_time = datetime.datetime.now().time().strftime("%H:%M:%S")
-                    
-                    # FTP 서버에 파일 업로드
-                    ftp.cwd(ftp_directory)
-                    ftp.storbinary(f'STOR {small_file}', file)
-                    
-                    # 데이터베이스에 파일 정보 저장
+
                     query = f'''
                         INSERT INTO pr_object_img 
                         (object_code_new, object_info_code, output_folder, oimg_name, oimg_index, oimg_wdate, oimg_wtime, oimg_del) 
@@ -265,10 +346,36 @@ def 데이터_처리(cursor, row):
                         ("{object_code_new}", "{object_info_code}", "{max(변환폴더생성일모음)}", "{small_file}", "1", "{current_date}", "{current_time}", "N")
                     '''
                     cursor.execute(query)
-                    
 
-            # 파일 업로드가 성공적으로 완료되었다는 메시지 출력
-            print(f'File "{small_file}" has been successfully uploaded')
+                # 📌 5. FTP 업로드가 완료된 후, 임시로 생성된 리사이즈 파일을 삭제합니다.
+                os.remove(temp_resized_path)
+                print(f'File "{small_file}" has been successfully uploaded (resized version)')
+            else:
+                print("이미지 리사이즈 실패. FTP 업로드를 건너뜜.")            
+            # # FTP 연결 및 로그인
+            # with FTP('obangkr.cafe24.com', 'obangkr', 'Ddhqkd!1') as ftp:
+            #     # 최소 용량의 파일을 FTP 서버에 업로드
+            #     with open(small_file_path, 'rb') as file:
+                    
+            #         # 현재 날짜와 시간을 얻음
+            #         current_date = datetime.date.today().strftime("%Y-%m-%d")
+            #         current_time = datetime.datetime.now().time().strftime("%H:%M:%S")
+                    
+            #         # FTP 서버에 파일 업로드
+            #         ftp.cwd(ftp_directory)
+            #         ftp.storbinary(f'STOR {small_file}', file)
+                    
+            #         # 데이터베이스에 파일 정보 저장
+            #         query = f'''
+            #             INSERT INTO pr_object_img 
+            #             (object_code_new, object_info_code, output_folder, oimg_name, oimg_index, oimg_wdate, oimg_wtime, oimg_del) 
+            #             VALUES 
+            #             ("{object_code_new}", "{object_info_code}", "{max(변환폴더생성일모음)}", "{small_file}", "1", "{current_date}", "{current_time}", "N")
+            #         '''
+            #         cursor.execute(query)
+
+            # # 파일 업로드가 성공적으로 완료되었다는 메시지 출력
+            # print(f'File "{small_file}" has been successfully uploaded')
             
             if len(photo_list) == 0: #output폴더에 사진없음
                 print("output폴더에 이미지 없음")
@@ -306,7 +413,7 @@ def 메인():
             # 각 row에 대해 데이터 처리 함수를 호출합니다.
             데이터_처리(cursor, row)
             # time.sleep(0.2) 
-            object_code_new = row['object_code_new'].decode('utf-8')
+            object_code_new = row['object_code_new']
             count += 1
             # pyautogui.alert(f"{count}번째 매물번호:{object_code_new} 처리완료")
             print(count)
@@ -344,11 +451,11 @@ if __name__ == "__main__":
 # pyautogui.alert(str(row_count)+"개의 매물을 사진업데이트를 진행합니다.")
 # count = 1
 # for row in result:
-#     object_code_new = row['object_code_new'].decode('utf-8')
-#     tr_target = row['tr_target'].decode('utf-8')
-#     land_code = row['land_code'].decode('utf-8')
-#     building_code = row['building_code'].decode('utf-8')
-#     room_code = row['room_code'].decode('utf-8')
+#     object_code_new = row['object_code_new']
+#     tr_target = row['tr_target']
+#     land_code = row['land_code']
+#     building_code = row['building_code']
+#     room_code = row['room_code']
 
 #     if ((tr_target=='층호수' and room_code=='') or (tr_target=='건물' and building_code=='')): continue
 #     room_query = f'SELECT room_floor FROM pr_room WHERE room_code="{room_code}" AND room_del="N"'
@@ -406,7 +513,7 @@ if __name__ == "__main__":
 #             query = f'SELECT object_ori_img FROM pr_object WHERE object_code_new="{object_code_new}" AND object_ori_img="N"'
 #             cursor.execute(query)
 #             result = cursor.fetchone() 
-#             object_ori_img = result['object_ori_img'].decode('utf-8')
+#             object_ori_img = result['object_ori_img']
 #             print("result:",result)
 #             print("object_ori_img:",object_ori_img)
 #             #pr_object의 object_ori_img값 수정

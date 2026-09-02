@@ -720,6 +720,15 @@ def 데이터_처리(cursor, row):
         print("데이터처리 오류:", str(e))
         traceback.print_exc()
 
+
+
+
+
+
+
+
+# 미입력항목
+# 건축물실제용도,방향기준,내진설계적용여부,내진능력,도로와의관계,입지조건(대중교통),실제권리관계 및 공시되지 않은 권리사항
     
 def 메인():
     
@@ -736,12 +745,12 @@ def 메인():
             root.withdraw()  # 메인 윈도우 숨기기
 
             # 사용자에게 입력 받기
-            contract_code = simpledialog.askstring("입력", "계약 코드를 입력하세요:", initialvalue="250111_C01", parent=root)
+            contract_code = simpledialog.askstring("입력", "계약 코드를 입력하세요:", initialvalue="260130_C01", parent=root)
 
             if contract_code:
                 계약데이터 = 계약_데이터_가져오기(cursor, contract_code)
                 if 계약데이터:
-                    pyautogui.alert("한방 계약관리화면을 우측 모니터에 전체화면으로 열어주세요")
+                    pyautogui.alert("한방 계약관리화면을 주모니터에 전체화면으로 열어주세요")
                     print("계약데이터:", 계약데이터)
                     for row in 계약데이터:
                         데이터_처리(cursor, row)

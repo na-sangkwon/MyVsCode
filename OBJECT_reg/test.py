@@ -2,7 +2,7 @@ import sys
 print(sys.executable)
 from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QPushButton, QTextEdit, QVBoxLayout, QLineEdit, QHBoxLayout, QGridLayout, QMessageBox
 from PyQt5.QtCore import QSettings, Qt, QEvent, pyqtSignal
-import obang, obs, hanbang, naver, zigbang, register, deunggi
+import obang, obs, hanbang, naver, zigbang, register, deunggi, dabang, daangn
 import object_data, threading
 import pyautogui 
 import time
@@ -60,21 +60,19 @@ class MyApp(QWidget):
     thread_n.daemon = True
     thread_n.start()
 
-   # naver.py에서 NaverThread 가져오기
+  # naver.py에서 NaverThread 가져오기
   def naverThread(self):
     # thread_n = threading.Thread(target=self.onNaver)
     # thread_n.daemon = True
     # thread_n.start()
-
-
     self.onObjectClick()
-    print("네이버 매물등록을 시작합니다.")
 
     # NaverThread 생성
     self.thread = NaverThread(self.queryData, self.user)
     self.thread.ask_confirmation.connect(self.show_confirmation)
     self.thread.finished.connect(self.on_naver_finished)
     self.thread.start()
+
   def show_confirmation(self, message):
       # 메인 스레드에서 확인 메시지 띄우기
       response = QMessageBox.question(
@@ -88,10 +86,19 @@ class MyApp(QWidget):
 
   def on_naver_finished(self, success):
       # 스레드 작업 완료 후 처리
-      if success:
-          QMessageBox.information(self, "완료", "네이버 매물 등록이 완료되었습니다.")
-      else:
-          QMessageBox.warning(self, "중단", "네이버 매물 등록이 중단되었습니다.")
+      try:
+          if success:
+              if self.objectInput.text().strip(): #특정매물번호로 네이버등록시
+                  QMessageBox.information(self, "완료", "네이버 매물 등록이 완료되었습니다.")
+          else:
+              QMessageBox.warning(self, "중단", "네이버 매물 등록이 중단되었습니다.")
+      except Exception as e:
+          print(f"on_naver_finished 예외 발생: {e}")      
+      # if success:
+      #     if self.objectInput.text().strip(): #특정매물번호로 네이버등록시
+      #       QMessageBox.information(self, "완료", "네이버 매물 등록이 완료되었습니다.")
+      # else:
+      #     QMessageBox.warning(self, "중단", "네이버 매물 등록이 중단되었습니다.")
 
 
   def hanbangThread(self):
@@ -103,6 +110,16 @@ class MyApp(QWidget):
     thread_n = threading.Thread(target=self.onZigbang)
     thread_n.daemon = True
     thread_n.start()
+
+  def dabangThread(self):
+    thread_n = threading.Thread(target=self.onDabang)
+    thread_n.daemon = True
+    thread_n.start()
+
+  def daangnThread(self):
+    thread_n = threading.Thread(target=self.onDaangn)
+    thread_n.daemon = True
+    thread_n.start()  
 
   def BuildingRegisterThread(self):
     thread_n = threading.Thread(target=self.onBuildingRegister)
@@ -119,10 +136,12 @@ class MyApp(QWidget):
     settings = QSettings('NSGMacro', 'nsg') # 'NSGMacro' 앱의 설정 파일을 로드
     userId = settings.value('userId')
     userPw = settings.value('userPw')
+    # userId = 'lode' #테스트용 아이디
+    # userPw = '1052!'
 
     self.objectLabel = QLabel('새홈 번호: ')
     self.objectInput = QLineEdit(self)
-    self.objectInput.setText('508005') # 10172 543937
+    self.objectInput.setText('201943') # 10172 745958 705914
     # self.objectInput.setText('670983,343799,248831') # 10172 543937
     self.objectInput.textChanged.connect(self.update_button_state) #self.objectInput의 textChanged 시그널을 self.update_button_state 슬롯에 연결
     self.objectInput.selectAll() #모든 텍스트를 선택
@@ -159,6 +178,12 @@ class MyApp(QWidget):
     self.zigbangBtn = QPushButton('직방', self)  # '직방' 버튼 생성
     self.zigbangBtn.clicked.connect(self.zigbangThread)
 
+    self.dabangBtn = QPushButton('다방', self)  # '다방' 버튼 생성
+    self.dabangBtn.clicked.connect(self.dabangThread)
+
+    self.daangnBtn = QPushButton('당근부동산', self)  # '당근부동산' 버튼 생성
+    self.daangnBtn.clicked.connect(self.daangnThread)
+
     self.BuildingRegisterBtn = QPushButton('건축물대장', self)  # '건축물대장' 버튼 생성
     self.BuildingRegisterBtn.clicked.connect(self.BuildingRegisterThread)
 
@@ -172,6 +197,8 @@ class MyApp(QWidget):
 
     # 'ENTER' key로 시작하기 버튼 클릭하기
     self.objectInput.returnPressed.connect(self.startBtn.click) #self.objectInput 위젯의 returnPressed 시그널을 self.startBtn 위젯의 click 슬롯에 연결
+
+    self.objectInput.textChanged.connect(self.update_button_state) # 매물번호 입력란이 공백일 경우 특정 등록버튼 비활성화
 
     #ID와 비밀번호 입력에 대한 레이아웃
     userBox = QHBoxLayout()
@@ -196,6 +223,8 @@ class MyApp(QWidget):
     hbox3.addWidget(self.hanbangBtn)  # '한방등록' 버튼
     hbox3.addWidget(self.naverBtn)
     hbox3.addWidget(self.zigbangBtn)
+    hbox3.addWidget(self.dabangBtn)
+    hbox3.addWidget(self.daangnBtn)
     hbox3.addStretch(1)
     
     hbox4 = QHBoxLayout()
@@ -254,12 +283,36 @@ class MyApp(QWidget):
         if event.button() == Qt.LeftButton:
             self.objectInput.selectAll()
   
-  def onObjectClick(self): # "불러오기" 버튼 클릭 시 수행되는 동작을 정의
-    getData = object_data.getData(self.objectInput.text(), self.idInput.text(), self.pwInput.text()) # objectInput에 입력된 텍스트에 대한 데이터를 가져옵니다.
+  def onObjectClick(self, 버튼이름=None): # "불러오기" 버튼 클릭 시 수행되는 동작을 정의
+
+    if self.objectInput.text().strip():
+      getData = object_data.getData(self.objectInput.text(), self.idInput.text(), self.pwInput.text()) # objectInput에 입력된 텍스트에 대한 데이터를 가져옵니다.
+    else:
+      sender = self.sender()  # 현재 클릭된 버튼 객체 가져오기
+      if sender:
+        광고사이트명 = sender.text()
+        # pyautogui.alert("클릭된 광고사이트명:"+광고사이트명)      
+        getData = object_data.getAdData(광고사이트명, self.idInput.text(), self.pwInput.text())    
+    # 매물번호가 있을 때만 데이터 불러오기
     if getData:
-      self.resultLabel.setText(getData['folderPath']) #getData에서 folderPath 값을 가져와 resultLabel에 텍스트로 표시
+      if self.objectInput.text().strip():
+        print("매물번호가 존재하는 경우 폴더경로 표시")
+        self.resultLabel.setText(getData['folderPath']) #getData에서 folderPath 값을 가져와 resultLabel에 텍스트로 표시
       self.queryData = getData #queryData에 getData 값을 저장
-        
+
+  def update_button_state(self): #버튼상태 업데이트
+      """ 매물번호 입력 상태에 따라 버튼 활성화/비활성화 설정 """
+      is_empty = not self.objectInput.text().strip()  # 공백 여부 확인
+
+      # '네이버' 버튼을 제외한 버튼 리스트
+      buttons = [
+          self.startBtn, self.obsBtn, self.hanbangBtn, self.zigbangBtn, self.dabangBtn,
+          self.BuildingRegisterBtn, self.RegistrationCertBtn, self.daangnBtn
+      ]
+
+      for btn in buttons:
+          btn.setEnabled(not is_empty)  # 매물번호가 비어 있으면 False (비활성화), 있으면 True (활성화)
+
 
   def onObang(self, objectNumber = '', group='N'):
       print(f"onObang({objectNumber})")
@@ -292,6 +345,16 @@ class MyApp(QWidget):
     print("직방 매물등록을 시작합니다.")
     zigbang.macro(data = self.queryData, user = self.user)
   
+  def onDabang(self):
+    self.onObjectClick()
+    print("다방 매물등록을 시작합니다.")
+    dabang.macro(data = self.queryData, user = self.user)
+
+  def onDaangn(self):
+    self.onObjectClick()
+    print("당근부동산 매물등록을 시작합니다.")
+    daangn.macro(data = self.queryData, user = self.user)
+
   def onBuildingRegister(self): #"건축물대장" 버튼 클릭 시 수행되는 동작을 정의
     self.onObjectClick()
     print("건축물대장발급을 시작합니다.")
@@ -313,11 +376,22 @@ class MyApp(QWidget):
     settings.setValue('userId', self.idInput.text())
     settings.setValue('userPw', self.pwInput.text())
   
-  def update_button_state(self): #버튼 상태를 업데이트하는 동작을 정의
-    if self.objectInput.text() == "": #objectInput에 텍스트가 비어있으면
-      self.startBtn.setEnabled(False) #startBtn을 비활성화
-    else:
-      self.startBtn.setEnabled(True) #startBtn을 활성화
+  # def update_button_state(self): #버튼 상태를 업데이트하는 동작을 정의
+  #   """ 매물번호 입력 상태에 따라 버튼 활성화/비활성화 설정 """
+  #   is_empty = not self.objectInput.text().strip()  # 공백 여부 확인
+
+  #   # '네이버' 버튼을 제외한 버튼 리스트
+  #   buttons = [
+  #       self.startBtn, self.obsBtn, self.hanbangBtn, self.zigbangBtn, self.dabangBtn,
+  #       self.BuildingRegisterBtn, self.RegistrationCertBtn
+  #   ]
+
+  #   for btn in buttons:
+  #       btn.setEnabled(not is_empty)  # 매물번호가 비어 있으면 False (비활성화), 있으면 True (활성화)
+  #   # if self.objectInput.text() == "": #objectInput에 텍스트가 비어있으면
+  #   #   self.startBtn.setEnabled(False) #startBtn을 비활성화
+  #   # else:
+  #   #   self.startBtn.setEnabled(True) #startBtn을 활성화
 
   def updateId(self, text):
     self.user['id'] = text #text 매개변수로 전달된 텍스트 값을 사용하여 self.user 딕셔너리의 'id' 키에 해당하는 값을 업데이트
