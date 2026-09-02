@@ -10,3 +10,7 @@ OBJECT_reg/backup/
 # 셀레니움 크롬 프로필(당근마켓 자동화, daangn.py) - 로그인 세션은 남지만 대부분 브라우저 캐시라
 # 계속 불어난다. 로그인하면 다시 만들어지므로 커밋 대상이 아님 (2026-09-02)
 daangn_profile/
+
+# API 키 등 실제 비밀값 - ai_utils.py가 로드하는 OBJECT_reg/.env (2026-09-02, API 키 노출 사고로 도입).
+# 값 없는 템플릿인 .env.example은 그대로 커밋 대상.
+.env
