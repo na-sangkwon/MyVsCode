@@ -11,8 +11,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 from selenium.webdriver.chrome.options import Options
 
-import pyautogui 
+import pyautogui
 import time
+import traceback
 import register
 import re
 import pymysql
@@ -44,10 +45,38 @@ class NaverThread(QThread):
         self.data = data
         self.user = user
         self.continue_work = True      # 작업을 계속할지 여부
+        # [2026-09-03 추가] 웹 버튼 → 로컬도우미로 헤드리스 실행될 때 True로 설정된다(local_helper.py
+        # run_naver_extend_headless() 참고). 원래 이 매크로는 데스크톱(test.exe)에서 사람이 화면을
+        # 보며 쓰던 것이라 최상단알림창()이 전부 사람이 눌러줘야 넘어가는 모달 팝업인데, 헤드리스
+        # 실행에선 아무도 클릭해줄 사람이 없어 그대로 무한정 멈춰버리는 문제가 실사용 중 발견됐다
+        # (기간만료매물확인 종료알림 팝업에서 멈춤). 데스크톱 사용자 경험은 그대로 두고 싶어서
+        # 팝업 자체를 없애지 않고, headless일 때만 최상단알림창()이 화면에 띄우지 않도록 분기한다.
+        self.headless = False
+        self.headless_notes = []  # headless일 때 최상단알림창() 대신 여기에 메시지를 쌓아둔다
 
     def run(self): #run 함수는 QThread 클래스의 핵심 메서드로, 스레드가 시작될 때 즉,start()를 호출하면 자동으로 실행
+        # [2026-09-03 추가] 이 파일 곳곳에서 pyautogui.alert()를 직접 호출하는 곳이 최상단알림창()
+        # 말고도 20곳 넘게 있다(오류 상황 알림 등) — 전부 개별적으로 고치는 대신, headless일 때
+        # pyautogui.alert 자체를 이 스레드 안에서만 가로채서 화면에 띄우지 않고 headless_notes에
+        # 기록하도록 한다. pyautogui는 모듈 전역이라 이렇게 덮어쓰면 이 스레드가 실행되는 동안 이
+        # 프로세스 안의 모든 pyautogui.alert 호출에 적용된다 — 이 프로세스는 애초에 매물 하나(또는
+        # 배치)의 연장등록 하나만 전담하고 끝나는 프로세스라(local_helper.py run_naver_extend_headless
+        # 참고) 다른 스레드와 충돌할 일이 없다. 반환값(버튼 텍스트)을 쓰는 호출부는 없는 것으로
+        # 확인했지만, 혹시 몰라 실제 pyautogui.alert의 기본 반환값인 'OK'를 그대로 돌려준다.
+        if self.headless:
+            def _headless_alert(text='', title='', button='OK', **kwargs):
+                # [2026-09-03 추가 — 진단용] 이 alert가 except 블록 안에서 호출된 것이라면(예:
+                # "오류 발생: {e}") sys.exc_info()에 그 예외가 아직 걸려있으므로, 어느 줄에서
+                # 무슨 예외가 났는지 전체 스택트레이스를 함께 남긴다 — str(e) 한 줄만으로는 원인
+                # 위치를 알 수 없어서(getAttribute.js 관련 오류의 정확한 발생 지점을 못 찾음).
+                tb = traceback.format_exc()
+                note = text if tb.strip() == 'NoneType: None' else f"{text}\n[스택트레이스]\n{tb}"
+                self.headless_notes.append(note)
+                print(f"[headless — pyautogui.alert 대신 기록됨] {title}: {note}")
+                return button
+            pyautogui.alert = _headless_alert
         try:
-            if not self.data: 
+            if not self.data:
                 pyautogui.alert(f"사용되지 않는 매물번호이거나 매물데이터가 없습니다.\n\n data:\n{self.data}")
                 self.finished.emit(False)
                 return                
@@ -165,6 +194,21 @@ class NaverThread(QThread):
                 return str(round(평, 1))  # 소수점 둘째 자리까지 반올림
 
             def 최상단알림창(message, title="알림"):
+                # [2026-09-03 수정] headless(웹 트리거) 실행 중에는 이 팝업을 아무도 클릭해줄 사람이
+                # 없어 그대로 멈춰버리는 문제가 실사용 중 발견됐다("기간만료매물확인 종료알림",
+                # "비밀메모 채우기" 등에서 재현) — 이 함수는 어디서도 반환값을 쓰지 않는 단순 알림이라
+                # (호출부 코드는 팝업을 누르든 안 누르든 뒤 로직이 똑같이 진행됨, 직접 확인함), 화면에
+                # 띄우는 대신 메시지를 기억해뒀다가 최종 결과 보고에 함께 남기는 쪽이 안전하다(사용자
+                # 요청). 데스크톱(test.exe) 사용자 경험은 그대로 유지하기 위해 headless일 때만 이렇게
+                # 분기한다.
+                if self.headless:
+                    # [2026-09-03 추가 — 진단용] pyautogui.alert 쪽과 동일하게, except 블록 안에서
+                    # 호출된 것이라면 스택트레이스도 함께 남긴다.
+                    tb = traceback.format_exc()
+                    note = message if tb.strip() == 'NoneType: None' else f"{message}\n[스택트레이스]\n{tb}"
+                    self.headless_notes.append(note)
+                    print(f"[headless — 알림창 대신 기록됨] {title}: {note}")
+                    return
                 root = tk.Tk()
                 root.withdraw()  # 창 숨기기
                 root.attributes("-topmost", True)  # 항상 위에 있도록 설정
@@ -1901,16 +1945,28 @@ class NaverThread(QThread):
                         최상단알림창(f"등록버튼 클릭 에러: {e}\n\n매물번호를 수동으로 추출해야합니다.")
                         연장결과_msg = '404'
 
-                    # driver.find_element(By.XPATH, f'//*[@id="app"]/div/div/div[2]/div/div[2]/ul/li[3]/div/button').click() 
+                    # driver.find_element(By.XPATH, f'//*[@id="app"]/div/div/div[2]/div/div[2]/ul/li[3]/div/button').click()
                     #등록 확정버튼 클릭
+                    # [2026-09-03 수정 — 실사용 중 재현된 버그] 두 버튼 다 절대경로 XPath(/html/body/div[2]/...)로
+                    # 찾고 있었는데, 이 사이트는 Vue(Vuetify) SPA라 body의 실제 두번째 div는 페이지 콘텐츠가
+                    # 아니라 모든 모달이 공유하는 렌더링 컨테이너(class="v-overlay-container")다 — 그 안의
+                    # 몇 번째 자식을 가리키느냐는 "그 순간 모달이 몇 겹 떠 있는지"에 따라 완전히 달라진다.
+                    # 실제로 2026-09-03에 네이버 무료 등록권(써브N 일반 패키지)이 0/300으로 소진돼 충전금
+                    # 결제 경로(써브N 일반 단건)로 자동 전환됐는데, 이 결제 경로에서는 모달 겹수/구조가
+                    # 달라져 절대경로가 엉뚱한 요소를 가리키면서 두 버튼 다 타임아웃났다(pr_log id=17176로
+                    # 확인, 담당자 PC 재현은 결제 발생 문제로 아직 못 함 — 아래는 이 파일의 확인된 다른
+                    # 모달 처리 방식(연장등록() 위쪽 "중복 매물 확인" 팝업, By.XPATH
+                    # '//div[contains(@class,"modal-popup")]//button[.//span[text()="확인"]]')과 동일한
+                    # 패턴으로 바꾼 것 — 실제 버튼 문구가 "확인"이 맞는지는 라이브 재현으로 아직 확정 못했다,
+                    # 다음에 문제가 생기면 결제 후 실제 화면을 보고 문구를 확정할 것).
                     try:
                         # pyautogui.alert(f"확정버튼요소 확인")
                         time.sleep(0.2)
                         확정버튼요소 =  WebDriverWait(driver, 10).until(
                             EC.element_to_be_clickable(
-                                (By.XPATH, '/html/body/div[2]/div/div[2]/div[1]/div[2]/div/div[2]/button')
+                                (By.XPATH, '//div[contains(@class, "modal-popup")]//button[.//span[text()="확인"]]')
                             )
-                        )   
+                        )
                         확정버튼요소.click()
                     except Exception as e:
                         print(f"확정버튼 클릭 에러: {e}")
@@ -1921,9 +1977,9 @@ class NaverThread(QThread):
                         # pyautogui.alert(f"확정버튼요소 확인")
                         완료확인버튼요소 =  WebDriverWait(driver, 10).until(
                             EC.element_to_be_clickable(
-                                (By.XPATH, '/html/body/div[2]/div/div[2]/div[1]/div[2]/div/div/button')
+                                (By.XPATH, '//div[contains(@class, "modal-popup")]//button[.//span[text()="확인"]]')
                             )
-                        )   
+                        )
                         완료확인버튼요소.click()
                     except Exception as e:
                         print(f"완료확인버튼 클릭 에러: {e}")
