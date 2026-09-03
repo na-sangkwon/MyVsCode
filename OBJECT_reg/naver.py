@@ -53,6 +53,14 @@ class NaverThread(QThread):
         # 팝업 자체를 없애지 않고, headless일 때만 최상단알림창()이 화면에 띄우지 않도록 분기한다.
         self.headless = False
         self.headless_notes = []  # headless일 때 최상단알림창() 대신 여기에 메시지를 쌓아둔다
+        # [2026-09-03 추가 — 사용자 요청] "연장등록이 실제로 어느 코드 경로를 탔는지" 진단하려면
+        # 이 프로세스가 어디에도 print()를 못 남기는 상황(local_helper/main.py가 DETACHED_PROCESS로
+        # 표준출력을 안 연결함)에서도 확인할 방법이 필요했다. headless_notes(→ pr_log의 "중간 알림")는
+        # 담당자가 보는 연장등록 이력 화면에 그대로 노출되므로, 개발 진단용 문구를 거기 섞으면 안 된다
+        # — 대신 이미 있는 일반 오류로그(pr_error_log, main.py::report_error_to_server()가 API로
+        # 보고) 채널을 재사용한다. run_naver_extend_headless()가 이 콜백을 채워준다 — 데스크톱
+        # (test.exe) 실행처럼 안 채워지면 진단_기록()은 조용히 아무 것도 하지 않는다.
+        self.report_error = None
 
     def run(self): #run 함수는 QThread 클래스의 핵심 메서드로, 스레드가 시작될 때 즉,start()를 호출하면 자동으로 실행
         # [2026-09-03 추가] 이 파일 곳곳에서 pyautogui.alert()를 직접 호출하는 곳이 최상단알림창()
@@ -214,6 +222,16 @@ class NaverThread(QThread):
                 root.attributes("-topmost", True)  # 항상 위에 있도록 설정
                 messagebox.showinfo(title, message)
                 root.destroy()
+
+            # [2026-09-03 신규 — 사용자 요청] "연장등록이 실제로 어느 코드 경로를 탔는지"(중복매물
+            # 조기반환 vs 정상 등록 흐름 등) 진단하려던 중, 이 파일의 print()는 headless 실행 시
+            # 어디에도 남지 않는다는 게 확인됐다(위 __init__의 self.report_error 설명 참고). 화면에는
+            # 절대 안 띄우고(데스크톱 사용자 방해 안 함), self.report_error가 채워져 있을 때만
+            # 일반 오류로그(pr_error_log)에 낮은 심각도로 남긴다 — 담당자가 보는 연장등록 이력에는
+            # 안 섞이고, 다음 문제 발생 시 개발자가 오류로그 화면에서 추측 없이 바로 확인할 수 있다.
+            def 진단_기록(message):
+                if self.report_error:
+                    self.report_error(f"[연장등록 진단] {message}", severity='diag')
 
             def 한글금액(금액):
                 단위 = ["만원", "억", "조"]
@@ -1760,10 +1778,12 @@ class NaverThread(QThread):
                         
                         # 중복 매물이 있으면 더 이상 진행서식 입력이 불가능하므로 사유를 반환하고 즉시 함수를 안전하게 탈출시킵니다.
                         print(f"\n- 이미 동일한 매물번호({duplicate_code})가 노출 중이어서 연장 등록이 제한되었습니다.")
-                        
+                        진단_기록(f"중복매물 팝업 감지 — duplicate_code={duplicate_code}로 조기 반환")
+
                     except Exception:
                         # 2초간 지켜봤는데 중복 팝업이 뜨지 않는다면 정상 클린 매물이므로 기존 로직대로 자연스럽게 무혈 통과합니다.
                         print("ℹ️ 중복 매물 팝업 없음 - 정상 연장 등록 양식 단계 진입")
+                        진단_기록("중복매물 팝업 없음 — 정상 등록 흐름으로 진행")
 
                     # pyautogui.alert("다시보지않기 진입 시도") 
                     print("다시보지않기 진입 시도")
@@ -1940,6 +1960,7 @@ class NaverThread(QThread):
                             )
                         )
                         매물등록버튼요소.click()
+                        진단_기록("매물등록 버튼 클릭 성공")
                     except Exception as e:
                         print(f"등록버튼 클릭 에러: {e}")
                         최상단알림창(f"등록버튼 클릭 에러: {e}\n\n매물번호를 수동으로 추출해야합니다.")
@@ -1968,6 +1989,7 @@ class NaverThread(QThread):
                             )
                         )
                         확정버튼요소.click()
+                        진단_기록("확정버튼 클릭 성공 (modal-popup 셀렉터로 찾음)")
                     except Exception as e:
                         print(f"확정버튼 클릭 에러: {e}")
                         최상단알림창(f"확정버튼 클릭 에러: {e}\n\n매물번호를 수동으로 추출해야합니다.")
@@ -1981,6 +2003,7 @@ class NaverThread(QThread):
                             )
                         )
                         완료확인버튼요소.click()
+                        진단_기록("완료확인버튼 클릭 성공 (modal-popup 셀렉터로 찾음)")
                     except Exception as e:
                         print(f"완료확인버튼 클릭 에러: {e}")
                         최상단알림창(f"완료확인버튼 클릭 에러: {e}\n\n매물번호를 수동으로 추출해야합니다.")
