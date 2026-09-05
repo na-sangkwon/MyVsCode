@@ -62,6 +62,33 @@ class NaverThread(QThread):
         # (test.exe) 실행처럼 안 채워지면 진단_기록()은 조용히 아무 것도 하지 않는다.
         self.report_error = None
 
+    # [2026-09-05 신규 — 사용자 요청] 예상 못 한 예외를 개발자용 오류로그(pr_error_log)에 보고한다.
+    # 원래 run()의 catch-all들은 예외를 pyautogui.alert/최상단알림창으로만 알렸는데, headless
+    # 실행에선 그게 headless_notes(→ 담당자가 보는 연장등록 이력 pr_log)에만 쌓이고 개발자용
+    # 오류로그에는 아무것도 안 남아, 크롬드라이버 확보 실패(Unable to obtain driver for chrome,
+    # 2026-09-05 매물 920585)의 원인을 오류로그 화면에서 전혀 확인할 수 없었다.
+    #
+    # run() 안의 중첩함수 진단_기록()을 쓰지 않고 클래스 메서드로 둔 이유가 둘 있다. (1) run()의
+    # 바깥쪽 catch-all은 그 중첩함수가 정의되기 전 단계의 예외(예: 서두 데이터 검증)도 잡기 때문에,
+    # 거기서 중첩함수를 부르면 오히려 "이름 없음" 2차 예외가 난다. (2) 진단_기록()은 정상 경로를
+    # 추적하는 용도(severity='diag')라, 실제 실패(Exception)와 오류로그에서 섞이면 안 된다.
+    def report_unexpected_exception(self, exc, 발생지점):
+        # report_error는 headless 실행일 때만 채워지는 콜백이라(local_helper/main.py의
+        # run_naver_extend_headless() 참고) 데스크톱(test.exe) 실행에선 None이다 — 그때는 조용히 넘어간다.
+        보고 = getattr(self, 'report_error', None)
+        if not 보고:
+            return
+        # 예외가 실제로 터진 가장 안쪽 프레임의 파일/줄번호 — 스택트레이스를 다 읽지 않아도
+        # 오류로그 목록에서 바로 발생 위치가 보이게 함께 넘긴다.
+        발생파일, 발생줄 = None, None
+        프레임들 = traceback.extract_tb(exc.__traceback__)
+        if 프레임들:
+            발생파일, 발생줄 = 프레임들[-1].filename, 프레임들[-1].lineno
+        # 이 콜백은 보고에 실패해도 절대 예외를 올리지 않게 설계돼 있어
+        # (main.py::report_error_to_server() 참고) 호출부에서 따로 try/except로 감싸지 않는다.
+        보고(f"[연장등록 예상밖오류] {발생지점}: {exc}",
+           file=발생파일, line=발생줄, stack=traceback.format_exc(), severity='Exception')
+
     def run(self): #run 함수는 QThread 클래스의 핵심 메서드로, 스레드가 시작될 때 즉,start()를 호출하면 자동으로 실행
         # [2026-09-03 추가] 이 파일 곳곳에서 pyautogui.alert()를 직접 호출하는 곳이 최상단알림창()
         # 말고도 20곳 넘게 있다(오류 상황 알림 등) — 전부 개별적으로 고치는 대신, headless일 때
@@ -1634,6 +1661,15 @@ class NaverThread(QThread):
 
             except Exception as e:
                 print(f"변수설정 에러확인:{e}") 
+                # [2026-09-05 추가 — 사용자 요청] 원래 print만 하고 그대로 다음 단계로 넘어가던 자리다.
+                # headless 실행에선 이 print가 어디에도 안 남아 예외가 통째로 사라졌고, 이후 단계가
+                # 여기서 못 만든 변수를 참조해 NameError로 터지면 오류로그에는 "name 'xxx' is not
+                # defined"만 찍혀 진짜 원인을 알 수 없었다.
+                #
+                # 진행 흐름은 일부러 그대로 둔다(즉시 return 하지 않음) — 로그인용 변수는 이 블록
+                # 앞부분에서 만들어져서, 뒷부분에서 난 예외는 지금도 등록이 진행되는 경우가 있을 수
+                # 있고, 그걸 새로 실패로 바꾸면 안 되기 때문이다(사용자와 확인 후 "보고만 추가"로 결정).
+                self.report_unexpected_exception(e, '변수설정 중')
 
 
             
@@ -3790,11 +3826,26 @@ class NaverThread(QThread):
 
             except Exception as e:
                 print(f"등록중 오류:{e}")
+                # [2026-09-05 추가 — 사용자 요청] 예상 못 한 예외를 개발자용 오류로그에도 남긴다
+                # (아래 바깥쪽 catch-all 주석 참고). 이 try는 webdriver 생성부터 등록 완료까지를
+                # 통째로 감싸고 있어, 크롬드라이버 확보 실패도 여기로 떨어진다.
+                self.report_unexpected_exception(e, '네이버 등록 진행 중')
                 pyautogui.alert(f"오류 발생: {e}", "오류")  
             finally:
-                driver.close() 
+                # [2026-09-05 수정] webdriver.Chrome() 자체가 실패하면(크롬 버전에 맞는 chromedriver를
+                # 못 받아오는 경우 등) driver가 아예 만들어지지 않는데, 그때도 무조건 close()를
+                # 부르는 바람에 "driver 참조 불가" 2차 예외가 나서 진짜 원인 위에 덮여쓰였다
+                # (2026-09-05 매물 920585 사례). driver가 실제로 만들어졌을 때만 닫는다.
+                if 'driver' in locals():
+                    driver.close() 
         except Exception as e:
             print(f"[❌예외] 네이버 매물 등록 중 오류 발생: {e}")
+            # [2026-09-05 추가] 아래 alert는 headless일 때 화면 대신 headless_notes(→ 담당자가 보는
+            # 연장등록 이력 pr_log)에만 남는다 — 개발자용 오류로그(pr_error_log)에도 남겨야 원인 진단이
+            # 된다. 여기와 위의 등록 catch-all 두 곳에만 넣는다: 나머지 except 16곳은 "등록버튼 클릭
+            # 실패"처럼 이미 알려진 개별 단계 실패라, 그것들로 오류로그가 덮이면 정작 예상 못 한
+            # 오류를 못 찾는다.
+            self.report_unexpected_exception(e, '연장등록 실행 중(최상위)')
             pyautogui.alert(str(e), "에러 발생")
             self.finished.emit(False)            
 
