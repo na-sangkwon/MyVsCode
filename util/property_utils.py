@@ -812,13 +812,21 @@ def 당근_팝업창_가격_동기화_처리_엔진(driver, popup_element, ad_co
 
 # fileName: util/property_utils.py
 
-def 당근_끌어올리기_마스터_통합엔진(driver, row_element, ad_code, current_status, price_specs, unattended=False):
+def 당근_끌어올리기_마스터_통합엔진(driver, row_element, ad_code, current_status, price_specs, unattended=False, 끌올관측_수집함=None):
     """
     [소장님 지시 반영 - 숨김해제 독립 분리 버전]
     쿨타임 여부와 관계없이 원래 매물이 '숨김' 상태였다면 일반 끌올/수정과 철저히 분리된
     RESCUE_BUMP_SUCCESS 사인을 최종 반환하여 카운터 누수를 원천 봉쇄합니다.
     :param unattended: 나스 무인 실행 등 사람이 없는 경우 True — 내부에서 호출하는 확인창클릭이
         실패해도 사람 클릭을 기다리지 않고 로그만 남기도록 그대로 전달한다.
+    :param 끌올관측_수집함: 팝업에서 읽은 관측값을 담아 호출자에게 돌려줄 dict(선택).
+        [왜 반환값이 아니라 dict인가 — 2026-09-05]
+        이 함수의 반환값(결과 코드 문자열)을 호출자들이 == 비교로 분기하고 있어, 반환 형태를 바꾸면
+        호출자 두 곳(carrot_worker.py·daangn.py)이 모두 깨진다. 그래서 기존 반환은 그대로 두고,
+        필요한 쪽만 이 dict를 건네받아 가져가는 방식으로 넓혔다. 안 건네면 아무 일도 일어나지 않는다.
+        [무엇을 담나] 팝업 제목(당근이 알려주는 남은 쿨타임 원문)과 쿨타임 여부.
+        '다음 끌올 가능 시각'을 우리가 상수로 추정하지 않고 당근이 준 값 그대로 쓰기 위한 것이다 —
+        쿨타임은 고정값이 아니다(2026-09-05 실측 14일, 과거 5일이던 시기가 있었다는 사용자 확인).
     """
     try:
         # 1. 목록의 1차 끌어올리기 단추 타격
@@ -844,6 +852,12 @@ def 당근_끌어올리기_마스터_통합엔진(driver, row_element, ad_code, 
             
         print(f"   [🔎 팝업 제목 분석 - {ad_code}] ➡️ '{title_text}'")
         is_cooldown_active = "뒤에 끌어올릴 수 있어요" in title_text or "뒤에" in title_text
+
+        # 관측값 전달 — 호출자가 이 순간의 쿨타임 원문을 기록해 시계열로 쌓는다(위 파라미터 설명 참고).
+        # 지금까지 이 문구는 여기서 판정에만 쓰고 그대로 버려졌다.
+        if 끌올관측_수집함 is not None:
+            끌올관측_수집함['팝업제목'] = title_text
+            끌올관측_수집함['쿨타임여부'] = is_cooldown_active
 
         if is_cooldown_active:
             print(f"   [⚠️ 쿨타임 제한 검지 - {ad_code}] 쿨타임 락이 걸려있지만, 금액 조율을 위해 스킵하지 않고 계속 전진합니다.")

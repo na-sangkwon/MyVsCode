@@ -3,6 +3,7 @@
 import os
 import time
 import datetime
+import json   # 끌올관측 기록을 한 줄 JSON으로 남길 때 사용
 import sys
 import pyautogui
 from selenium import webdriver
@@ -353,14 +354,20 @@ class CarrotAutomationWorker:
         DB_유효_가격목록 = 데이터베이스_다중_가격스펙_전수조회(당근매물번호, "당근")
         
         # ② 🚀 [핵심 연동] 복잡한 모든 팝업 추적 처리를 공용 통합 엔진에게 배달 위임합니다!
+        # 팝업에서 읽히는 쿨타임 문구를 받아올 그릇 — 총괄 루프가 이걸 관측기록으로 남긴다.
+        관측 = {}
         결과_코드명사 = 당근_끌어올리기_마스터_통합엔진(
             driver=self.브라우저,
             row_element=매물_행_객체,
             ad_code=당근매물번호,
             current_status=현재_상태,
             price_specs=DB_유효_가격목록,
-            unattended=self.unattended
+            unattended=self.unattended,
+            끌올관측_수집함=관측
         )
+        # 총괄 루프에서 꺼내 쓴다(여기서 바로 적재하지 않는 이유: 상태·날짜표시는 루프가 들고 있어서
+        #  한 줄로 합치려면 그쪽에서 써야 한다. 여기서 따로 적재하면 관측이 두 줄로 쪼개진다).
+        self.최근_끌올관측 = {**관측, '결과코드': 결과_코드명사}
         
         # ③ 공용 엔진이 리턴해준 코드에 따라 이 파일 고유의 카운터 지표 가드레일을 밟습니다.
         if 결과_코드명사 == "BUMP_SUCCESS":
@@ -391,6 +398,58 @@ class CarrotAutomationWorker:
     # =================================================================
     # 🔓 [독립 신설] 수정 방식 사후 검속용 DB 상태 단독 조회기
     # =================================================================
+    def 새홈매물번호_조회(self, 당근매물번호):
+        """ 당근 매물번호에 매핑된 새홈매물번호(우리 기본키)를 조회한다 """
+        import pymysql
+        try:
+            연결고리 = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', database='obangkr', charset='utf8')
+            명령조수 = 연결고리.cursor(pymysql.cursors.DictCursor)
+            명령조수.execute("SELECT object_code_new FROM pr_externalad WHERE ad_code = %s AND ad_site = '당근' AND ad_del = 'N' LIMIT 1", (str(당근매물번호),))
+            행 = 명령조수.fetchone()
+            명령조수.close(); 연결고리.close()
+            return 행['object_code_new'] if 행 else ''
+        except Exception as 오류:
+            print(f"   [❌ 오류 - {당근매물번호}] 새홈매물번호 조회 실패: {오류}")
+            return ''
+
+    def 끌올관측_기록(self, 당근매물번호, 현재_상태, 날짜_텍스트):
+        """
+        이 매물을 오늘 본 그대로 pr_log에 한 줄 남긴다(log_item='당근끌올관측').
+
+        [왜 남기는가 — 2026-09-05 사용자 지시]
+        당근의 두 규칙을 우리가 모른다: ① 끌올 쿨타임이 언제 몇 일로 바뀌는지
+        (실측 14일이지만 과거 5일이던 시기가 있었다 — 고정값이 아니다) ② 끌올하지 않고 방치하면
+        언제 노출이 끊기는지(= 실질 광고종료일). 둘 다 한 시점을 아무리 정밀하게 재도 알 수 없고,
+        매일 같은 값을 찍어 시계열로 쌓아야만 보인다. 그래서 관측을 남긴다.
+
+        [결과코드를 반드시 함께 남기는 이유]
+        '숨김'에는 당근이 자동으로 내린 것과 우리가 내린 것이 섞여 있다(2026-09-05 확인: 판매중인데
+        16일 방치된 매물과 숨김인데 20시간밖에 안 된 매물이 공존). 결과코드가 있어야 나중에
+        '우리가 손대지 않은 매물'만 골라 자연 전이를 계산할 수 있다 —
+        RESCUE_BUMP_SUCCESS(우리가 숨김해제) / NO_CHANGE_SKIP(손 안 댐)이 그 구분자다.
+        """
+        관측 = getattr(self, '최근_끌올관측', {}) or {}
+        새홈매물번호 = self.새홈매물번호_조회(당근매물번호)
+        기록 = {
+            '당근번호': str(당근매물번호),
+            '상태': 현재_상태,
+            '날짜표시': 날짜_텍스트,
+            '팝업제목': 관측.get('팝업제목', ''),      # 당근이 알려준 남은 쿨타임 원문
+            '쿨타임여부': 관측.get('쿨타임여부', None),
+            '결과코드': 관측.get('결과코드', ''),
+        }
+        try:
+            로그저장(
+                log_target=(새홈매물번호 or str(당근매물번호)),   # 새홈번호로 통일(사용자 확정) — 못 찾으면 당근번호로 대체
+                log_item='당근끌올관측',
+                log_value=json.dumps(기록, ensure_ascii=False),
+                admin_id='SYSTEM'
+            )
+        except Exception as 오류:
+            # 관측 실패가 본작업을 막지 않게 한다 — 기록은 부수적인 일이다
+            print(f"   [⚠️ 관측기록 실패 - {당근매물번호}] {오류}")
+        finally:
+            self.최근_끌올관측 = {}   # 다음 매물에 이전 값이 새어나가지 않게 비운다
     def 데이터베이스_매물상태_조회(self, 당근매물번호):
         """ 당근 매물 번호에 매핑된 새홈 원본 매물의 현재 노출 상태(object_status)를 직통 조회 """
         import pymysql
@@ -606,6 +665,11 @@ class CarrotAutomationWorker:
             else:
                 print("끌올버튼 없음")
                 작업_성공_여부 = self.수정방식_업데이트_실행(매물_행, 당근매물번호)
+
+            # 오늘 본 그대로 한 줄 남긴다 — 쿨타임이 언제 바뀌는지, 방치 시 언제 노출이 끊기는지는
+            # 매일 쌓아야만 알 수 있다(끌올관측_기록 주석 참고). 기록 실패는 본작업을 막지 않는다.
+            self.끌올관측_기록(당근매물번호, 현재_상태, 날짜_텍스트)
+
             # pyautogui.alert("이상유무확인")  
             if 작업_성공_여부:
                 self.최종완료_개수 += 1
