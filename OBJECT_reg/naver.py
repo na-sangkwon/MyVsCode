@@ -1689,6 +1689,9 @@ class NaverThread(QThread):
                 # URL 열기
                 driver.maximize_window()
                 
+                # ⚠️ [동기화 경고] 이 로그인 셀렉터(input-1/input-3/로그인버튼)는
+                # verify_naver_registration.py의 네이버_로그인()에도 복제되어 있다 —
+                # 네이버 로그인 화면 구조가 바뀌면 그 파일도 같이 고쳐야 한다.
                 driver.get('https://www.serve.co.kr/member/login')
                 driver.find_element(By.XPATH, '//*[@id="input-1"]').send_keys(naver_id)
                 driver.find_element(By.XPATH, '//*[@id="input-3"]').send_keys(naver_pw)
