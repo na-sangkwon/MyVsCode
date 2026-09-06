@@ -108,7 +108,7 @@ def getAdData(광고사이트명, userid, userpw, object_code_new_list=None):
         query = """
             SELECT
                 e.object_code_new, e.admin_id, e.ad_site, e.ad_code, e.ad_start, e.ad_end,
-                e.ad_memo, o.object_status, o.object_rtype, o.object_ttype, o.object_tmoney1, o.object_tmoney2, o.object_mmoney,
+                e.ad_memo, e.ad_manager, e.ad_manager_id, o.object_status, o.object_rtype, o.object_ttype, o.object_tmoney1, o.object_tmoney2, o.object_mmoney,
                 r.master_name  -- 소유자 이름 필드 추가
             FROM pr_externalad e
             LEFT JOIN pr_object o
@@ -144,17 +144,32 @@ def getAdData(광고사이트명, userid, userpw, object_code_new_list=None):
         ad_rows = cursor.rowcount
         # 광고 사이트별 정보를 담을 딕셔너리 초기화
         ad_info = {'한방': [], '네이버': [], '써브': [], 'KB부동산': [], '직방': [], '다방': [], '당근': []}
+        # 🎯 [2026-09-06 버그 수정] 담당자 판별을 admin_id로 하고 있었는데, 실제 "이 광고를 누가
+        # 관리하는지"는 ad_manager_id 컬럼이다(admin_id는 다른 값 — 예: 매물 746161은
+        # admin_id='omnsk8'였지만 실제 담당자(ad_manager_id)는 요청한 계정 그대로였다). 잘못된
+        # 필드로 걸러지면서, 정당한 담당자의 연장 요청이 "대상 매물 없음"으로 조용히 실패하는
+        # 사고가 실제로 있었다(사용자 실사용 중 재현). 여기서 담당자가 아니라서 제외된 매물은
+        # 조용히 버리지 않고 사유(실제 담당자가 누구인지)와 함께 반환해서, 호출부(로컬도우미)가
+        # "왜 제외됐는지" 명확히 안내할 수 있게 한다.
+        제외매물_담당자불일치 = []
         # print("ad_res: ", ad_res)
         # pyautogui.alert("광고사이트명: "+광고사이트명)
         if not ad_res:
             return None  # 연장할 매물이 없으면 None 반환
-        else:    
+        else:
             # 광고 데이터를 딕셔너리에 저장
             for ad in ad_res:
                 ad_site = ad['ad_site']
                 # print("ad_code:"+ad['ad_code']+" object_code_new:"+ad['object_code_new']+" admin_id:"+ad['admin_id'])
                 # continue
-                if userid != ad['admin_id'] and userid != 'omnsk8': continue
+                if userid != ad['ad_manager_id'] and userid != 'omnsk8':
+                    제외매물_담당자불일치.append({
+                        'object_code_new': ad['object_code_new'],
+                        'ad_site': ad_site,
+                        'ad_manager': ad['ad_manager'] if ad['ad_manager'] is not None else '',
+                        'ad_manager_id': ad['ad_manager_id'] if ad['ad_manager_id'] is not None else '',
+                    })
+                    continue
                 if ad_site in ad_info:
                     print("ad_site:"+ad_site)
                     print("ad:",ad)
@@ -178,17 +193,25 @@ def getAdData(광고사이트명, userid, userpw, object_code_new_list=None):
             print("ad_info1===>", ad_info)
             # pyautogui.alert(len(ad_info['네이버']))
             # 반환 데이터에 추가
-            return_data["adData"] = ad_info 
+            return_data["adData"] = ad_info
             return_data["등록방식"] = '종료매물등록'
+            # 🎯 [2026-09-06 신규] 담당자가 아니라서 제외된 매물 목록 — 호출부(로컬도우미)가 이걸로
+            # "왜 대상에서 빠졌는지" 명확한 안내 메시지를 만들 수 있게 한다.
+            return_data["제외매물_담당자불일치"] = 제외매물_담당자불일치
     except Exception as e:
         print(" 오류발생:", str(e))
         pyautogui.alert(str(e),"오류발생: ")
-    finally:
-        #반환해줘야할 데이터: 관리자정보, 네이버매물정보, 해당 물건정보
-        # pyautogui.alert(return_data)
-        return return_data
-    
-    
+
+    # [2026-09-06 수정 — 매물416943 재현 계기] 원래 위 return들을 전부 finally: return return_data가
+    # 가로채고 있었다 — finally 안의 return은 try/except에서 무슨 값을 반환하든(위 return None
+    # 포함) 무조건 덮어써버리는 파이썬 문법이라, "연장할 매물이 없다"는 정상적인 None 반환이
+    # 실제로는 절대 일어나지 않고 매번 이 return_data(adData 키 자체가 없는 불완전한 값)로
+    # 대체되고 있었다. 그 결과 호출부(로컬도우미)가 "매물 있음"으로 착각해 naver.py까지 넘어갔고,
+    # naver.py가 뒤늦게 빈 목록을 발견해 "더이상 업데이트할 매물이 존재하지 않습니다"라는 원인을
+    # 알 수 없는 메시지로 이어졌다 — 실제로는 이미 연장됐거나 연장이 필요 없는 정상 상황이었다.
+    # finally를 없애 위 return None/return_data가 각자 의도대로 그대로 반환되게 한다.
+    return return_data
+
     # pyautogui.alert("확인")
     # try:
     #     conn = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', charset='utf8', database='obangkr')
