@@ -1683,9 +1683,21 @@ class NaverThread(QThread):
             try:
                 print("=== webdriver 열기")
                 # ChromeDriver 경로 설정
+                # [2026-09-06 추가 — 사용자 지적] "숨김 모드"(오방 화면의 연장등록 체크박스)로
+                # 들어온 요청은 headless=True로 설정되는데(local_helper/main.py::
+                # run_naver_extend_headless), 정작 이 창은 계속 화면에 보였다 — 처음엔 최소화만
+                # 시켰는데(작업표시줄에는 여전히 남음), 사용자가 "숨김 모드는 최소화가 아니라 화면에
+                # 아무 표시도 없어야 한다"고 명확히 함 — 그래서 창 자체를 만들지 않는 진짜 headless
+                # 모드로 바꾼다. --disable-blink-features=AutomationControlled가 이미 적용돼 있어
+                # 가장 흔한 자동화 탐지는 피하지만, 써브 로그인이 headless 자체를 감지해 막을
+                # 가능성은 직접 검증하지 못했다 — 실사용 테스트로 확인 필요.
+                # 사람이 직접 지켜보며 등록하는 일반 매물등록 흐름(headless=False)은 그대로
+                # 화면에 보이는 창으로 띄운다.
+                if self.headless:
+                    options.add_argument('--headless=new')
                 driver = webdriver.Chrome(options=options)
                 # driver = webdriver.Chrome('/chromedriver', options=options)
-                # driver = webdriver.Chrome(ChromeDriverManager().install())                
+                # driver = webdriver.Chrome(ChromeDriverManager().install())
                 # URL 열기
                 driver.maximize_window()
                 
