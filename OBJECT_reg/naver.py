@@ -856,55 +856,26 @@ class NaverThread(QThread):
                     segx12, segy12 = (sx + mx) / 2, (sy + my) / 2
                     segx23, segy23 = (mx + ex) / 2, (my + ey) / 2
           
+                    # 🎯 [2026-09-06 수정 — 실사용 중 재현된 버그] 바로 위에서 캔버스의 실제 위치를
+                    # 기준으로 sx,sy/mx,my/ex,ey/segx12,segy12/segx23,segy23을 정확히 계산해두고도,
+                    # 정작 마우스 이동은 계산값이 아니라 특정 창 배치에서만 맞던 고정 픽셀 좌표를 쓰고
+                    # 있었다 — 그래서 창 배치가 달라지면 캔버스 밖(심하면 뷰포트 밖)을 가리켜
+                    # "move target out of bounds"로 실패했다(새홈 746161 연장등록 라이브 재현으로 확인).
+                    # 계산해둔 값을 그대로 쓰도록 바꾼다.
                     actions = ActionChains(driver)
-                    # print(f"x:{sx}, y:{sy} - p2좌표 ")
-                    actions.w3c_actions.pointer_action.move_to_location(576, 280)
-                    # actions.w3c_actions.pointer_action.move_to_location(sx, sy)
+                    actions.w3c_actions.pointer_action.move_to_location(int(sx), int(sy))
                     actions.w3c_actions.pointer_action.pointer_down()
-                    # (3) 중간점으로 천천히 이동
-                    # print(f"x:{segx12}, y:{segy12} - p1-p2중간좌표 ")
                     actions.w3c_actions.pointer_action.pause(0.05)
-                    actions.w3c_actions.pointer_action.move_to_location(586, 314)
-
-                    # actions.w3c_actions.pointer_action.pause(0.05)
-                    # actions.w3c_actions.pointer_action.pointer_up()
-                    # actions.perform()
-                    # time.sleep(5)
-                    # pyautogui.alert("'\'그리기 완료, '/'그리기 시작?")
-                    # actions.w3c_actions.pointer_action.move_to_location(segx12, segy12)
-                    # actions.w3c_actions.pointer_action.pointer_down()
-
-                    # (4) 끝점(하단 중간)까지 계속 이동
-                    # print(f"x:{mx}, y:{my} - p2좌표 ")
-                    # actions.w3c_actions.pointer_action.pause(0.05)
-                    actions.w3c_actions.pointer_action.move_to_location(636, 368)
-                    
-                    # actions.w3c_actions.pointer_action.pause(0.05)
-                    actions.w3c_actions.pointer_action.move_to_location(666, 442)
-                    
-                    
-                    # actions.w3c_actions.pointer_action.pause(0.05)
+                    actions.w3c_actions.pointer_action.move_to_location(int(segx12), int(segy12))
+                    actions.w3c_actions.pointer_action.move_to_location(int(mx), int(my))
                     actions.w3c_actions.pointer_action.pointer_up()
                     actions.perform()
 
-                    # # time.sleep(1)
-                    # pyautogui.alert("'\'그리기 완료, '/'그리기 시작?")
-
                     actions = ActionChains(driver)
-                    actions.w3c_actions.pointer_action.move_to_location(636, 368)
-                    # actions.w3c_actions.pointer_action.move_to_location(mx, my)
+                    actions.w3c_actions.pointer_action.move_to_location(int(mx), int(my))
                     actions.w3c_actions.pointer_action.pointer_down()
-                    # print(f"x:{segx23}, y:{segy23} - p2-p3중간좌표 ")
-                    # actions.w3c_actions.pointer_action.pause(0.05)
-                    actions.w3c_actions.pointer_action.move_to_location(696, 284)
-                    # actions.w3c_actions.pointer_action.move_to_location(segx23, segy23)
-                    # print(f"x:{ex}, y:{ey} - p3좌표 ")
-                    # actions.w3c_actions.pointer_action.pause(0.05)
-                    actions.w3c_actions.pointer_action.move_to_location(726, 264)
-                    # actions.w3c_actions.pointer_action.move_to_location(segx23, segy23)
-                    # actions.w3c_actions.pointer_action.pause(0.05)
-                    actions.w3c_actions.pointer_action.move_to_location(746, 244)
-                    # actions.w3c_actions.pointer_action.move_to_location(ex, ey)
+                    actions.w3c_actions.pointer_action.move_to_location(int(segx23), int(segy23))
+                    actions.w3c_actions.pointer_action.move_to_location(int(ex), int(ey))
                     actions.w3c_actions.pointer_action.pointer_up()
                     actions.perform()
 
@@ -996,57 +967,27 @@ class NaverThread(QThread):
                     segx12, segy12 = (sx + mx) / 2, (sy + my) / 2
                     segx23, segy23 = (mx + ex) / 2, (my + ey) / 2
           
+                    # 🎯 [2026-09-06 수정 — 실사용 중 재현된 버그] canvas1과 동일한 문제 — 계산해둔
+                    # sx,sy/mx,my/ex,ey/segx12,segy12/segx23,segy23 대신 고정 픽셀 좌표를 쓰고 있어서
+                    # "move target out of bounds"로 실패했다. 계산값을 그대로 쓰도록 바꾼다.
                     actions = ActionChains(driver)
-                    # print(f"x:{sx}, y:{sy} - p2좌표 ")
-                    actions.w3c_actions.pointer_action.move_to_location(756, 720) #-240
-                    # actions.w3c_actions.pointer_action.move_to_location(sx, sy)
+                    actions.w3c_actions.pointer_action.move_to_location(int(sx), int(sy))
                     actions.w3c_actions.pointer_action.pointer_down()
-                    # (3) 중간점으로 천천히 이동
-                    # print(f"x:{segx12}, y:{segy12} - p1-p2중간좌표 ")
                     actions.w3c_actions.pointer_action.pause(0.05)
-                    actions.w3c_actions.pointer_action.move_to_location(666, 614)
-
-                    # actions.w3c_actions.pointer_action.pause(0.05)
-                    actions.w3c_actions.pointer_action.move_to_location(606, 638)
-                    # actions.w3c_actions.pointer_action.pause(0.05)
-                    actions.w3c_actions.pointer_action.move_to_location(616, 648)
-
-
-                    # (4) 끝점(하단 중간)까지 계속 이동
-                    # print(f"x:{mx}, y:{my} - p2좌표 ")
-                    # actions.w3c_actions.pointer_action.pause(0.05)
-                    actions.w3c_actions.pointer_action.move_to_location(636, 668)
-                    
-                    # actions.w3c_actions.pointer_action.pause(0.05)
-                    actions.w3c_actions.pointer_action.move_to_location(666, 666)
-                    
-                    
-                    # actions.w3c_actions.pointer_action.pause(0.05)
+                    actions.w3c_actions.pointer_action.move_to_location(int(segx12), int(segy12))
+                    actions.w3c_actions.pointer_action.move_to_location(int(mx), int(my))
                     actions.w3c_actions.pointer_action.pointer_up()
                     actions.perform()
-
-                    # # time.sleep(1)
-                    # pyautogui.alert("'\'그리기 완료, '/'그리기 시작?")
 
                     actions = ActionChains(driver)
-                    actions.w3c_actions.pointer_action.move_to_location(636, 668)
-                    # actions.w3c_actions.pointer_action.move_to_location(mx, my)
+                    actions.w3c_actions.pointer_action.move_to_location(int(mx), int(my))
                     actions.w3c_actions.pointer_action.pointer_down()
-                    # print(f"x:{segx23}, y:{segy23} - p2-p3중간좌표 ")
-                    # actions.w3c_actions.pointer_action.pause(0.05)
-                    actions.w3c_actions.pointer_action.move_to_location(696, 614)
-                    # actions.w3c_actions.pointer_action.move_to_location(segx23, segy23)
-                    # print(f"x:{ex}, y:{ey} - p3좌표 ")
-                    # actions.w3c_actions.pointer_action.pause(0.05)
-                    actions.w3c_actions.pointer_action.move_to_location(726, 580)
-                    # actions.w3c_actions.pointer_action.move_to_location(segx23, segy23)
-                    # actions.w3c_actions.pointer_action.pause(0.05)
-                    actions.w3c_actions.pointer_action.move_to_location(546, 740)
-                    # actions.w3c_actions.pointer_action.move_to_location(ex, ey)
+                    actions.w3c_actions.pointer_action.move_to_location(int(segx23), int(segy23))
+                    actions.w3c_actions.pointer_action.move_to_location(int(ex), int(ey))
                     actions.w3c_actions.pointer_action.pointer_up()
                     actions.perform()
 
-                    print("✅ 개인정보 수집 동의 체크 완료")
+                    print("✅ 매물의뢰인서명날인 완료")
 
                 except Exception as e:
                     print(f"Canvas 서명 오류: {e}")
@@ -1059,7 +1000,12 @@ class NaverThread(QThread):
                 try:
                     #홍보확인서 작성버튼 클릭
                     홍보확인서작성버튼 = driver.find_element(By.XPATH, '//*[@id="app"]//button//span/span[text()="홍보확인서 작성"]')
-                    홍보확인서작성버튼.click()
+                    # [2026-09-06 수정 — 실사용 중 재현된 버그] 일반 click()이 상단 고정 헤더
+                    # (t-header-lnb)에 가로채여 "element click intercepted"로 실패했다(라이브
+                    # 재현으로 확인 — 새홈 746161 연장등록 시도). carrot_worker.py 등 이 저장소
+                    # 다른 곳에서 같은 문제를 우회할 때 쓰는 것과 동일한 방식(JS로 직접 클릭
+                    # 디스패치 — 화면상 가려짐과 무관하게 동작)으로 바꾼다.
+                    driver.execute_script("arguments[0].click();", 홍보확인서작성버튼)
                     #홍보확인서 작성 팝업창내의 서명하기 버튼 클릭
 
                     # 원래 창 핸들 저장
@@ -1294,10 +1240,14 @@ class NaverThread(QThread):
                     의뢰인정보버튼 = WebDriverWait(driver, 10).until(
                         EC.element_to_be_clickable((By.XPATH, f'//*[@id="app"]/div/div/div[2]/div/div[2]/ol/li//button/span[3]/span[text()="{이동위치}"]'))
                     )
-                    의뢰인정보버튼.click()
+                    # [2026-09-06 수정 — 실사용 중 재현된 버그] 일반 click()이 상단 고정 헤더
+                    # (t-header-lnb)에 가로채여 "element click intercepted"로 실패했다(라이브
+                    # 재현 확인 — 새홈 746161 연장등록 시도, "검증방식"/"의뢰인 정보" 이동 둘 다
+                    # 재현됨). 홍보확인서작성()과 동일하게 JS로 직접 클릭 디스패치하도록 바꾼다.
+                    driver.execute_script("arguments[0].click();", 의뢰인정보버튼)
                     print(f"🔍 '{이동위치}' 버튼을 클릭했습니다.")
                 except Exception as e:
-                    print(f"⚠️ '{이동위치}' 버튼을 찾을 수 없습니다: {e}")                
+                    print(f"⚠️ '{이동위치}' 버튼을 찾을 수 없습니다: {e}")
 
 
 
@@ -1693,6 +1643,10 @@ class NaverThread(QThread):
                 # 가능성은 직접 검증하지 못했다 — 실사용 테스트로 확인 필요.
                 # 사람이 직접 지켜보며 등록하는 일반 매물등록 흐름(headless=False)은 그대로
                 # 화면에 보이는 창으로 띄운다.
+                # ⚠️ [동기화 경고, 2026-09-07] iros_address_lookup.py도 같은 이유로 최소화 대신
+                # --headless=new로 고쳤다 — 창 숨김 방식은 이 두 파일이 같은 원칙을 따라야 한다.
+                # 앞으로 셀레니움 창을 새로 여는 자동화를 추가할 때도 "최소화"가 아니라 이 방식을
+                # 기본으로 검토할 것.
                 if self.headless:
                     options.add_argument('--headless=new')
                 driver = webdriver.Chrome(options=options)
@@ -2010,7 +1964,11 @@ class NaverThread(QThread):
                                 (By.XPATH, '//button[contains(., "매물등록")]')
                             )
                         )
-                        매물등록버튼요소.click()
+                        # [2026-09-06 수정 — 실사용 중 재현된 버그] 일반 click()이 다른 요소에
+                        # 가로채여 "element click intercepted"로 실패했다(새홈 746161 연장등록
+                        # 라이브 재현으로 확인). 이 파일 다른 곳(빠른이동/홍보확인서작성)과 동일하게
+                        # JS로 직접 클릭 디스패치하도록 바꾼다.
+                        driver.execute_script("arguments[0].click();", 매물등록버튼요소)
                         진단_기록("매물등록 버튼 클릭 성공")
                     except Exception as e:
                         print(f"등록버튼 클릭 에러: {e}")
