@@ -67,6 +67,13 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.keys import Keys
 from selenium.common.exceptions import NoSuchElementException, UnexpectedAlertPresentException, WebDriverException
 
+# [2026-09-08 임시 진단 — 사용자 요청 "진짜 헤드리스로 다시 재현되는지 새 진행로그로 확인해보자"]
+# 기본(False)은 화면 밖 창 방식(아래 issue_real_estate_register의 headless 분기 참고) — 실사용
+# 동작은 이 값을 건드리지 않는 한 그대로다. True로 바꾸면 그 자리에 --headless=new를 대신 추가해서
+# 진짜 헤드리스로 돌린다. 확인 끝나면 반드시 False로 되돌릴 것 — 진짜 헤드리스는 결제대상 확인
+# 화면에서 등기소 보안프로그램에 막히는 게 이미 실측 확인돼 있다(위 커밋 사유 참고).
+IROS_TRUE_HEADLESS_FOR_TEST = False
+
 # [2026-09-07 추가 — "몰래 작동" 파이프라인이 불규칙하게 무응답으로 사라지는 문제 대응]
 # 실측으로 확인된 핵심 차이: local_helper.exe를 콘솔이 있는 상태(사람이 터미널에서 직접 실행)로
 # 돌리면 항상 끝까지 완료·보고되는데, local_helper/main.py::handle_iros_issue()가 발급용 자식
@@ -1031,6 +1038,17 @@ def issue_real_estate_register(payload, credentials, options=None):
     # 창 자체는 진짜로 띄우되(headless 아님), 화면 밖 좌표로 옮겨 직원 모니터에는 보이지 않게 한다.
     # "몰래(창 안 띄우고) 작동" 옵션이 실사용자에게 약속하는 것(창이 안 보임)은 이 방식으로도 그대로
     # 지켜진다.
+    if headless and IROS_TRUE_HEADLESS_FOR_TEST:
+        chrome_options.add_argument('--headless=new')
+        # [2026-09-08 임시 진단 — 실측으로 시도했으나 원인이 아닌 것으로 확인됨] 화면밖-창(보임)과
+        # 진짜 헤드리스를 로컬에서 직접 비교했을 때 눈에 띄게 다른 값이 두 가지였다: User-Agent에
+        # "HeadlessChrome"이 그대로 노출되는 것, screen.width/height가 가짜 800x600인 것
+        # (webdriver/플러그인개수/WebGL은 이미 동일했음). 이 둘을 아래 CDP 설정과 함께 보임모드
+        # 값으로 위장해서 재현했지만 **결제대상 확인 화면에서 여전히 똑같이 막혔다** — 즉 등기소
+        # (TouchEn)의 판별 근거는 User-Agent나 화면크기 같은 JS로 조작 가능한 값이 아니다(반증
+        # 완료). 다음에 이 값들을 다시 건드려볼 필요는 없다 — 남은 후보는 JS로 흉내 낼 수 없는
+        # 더 근본적인 신호(예: 실제 GPU 합성 여부, CDP 프로토콜 자체 감지 등)로 보인다(추정).
+        chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36')
     chrome_options.add_experimental_option('prefs', {
         'download.default_directory': download_dir,
         'download.prompt_for_download': False,
@@ -1040,10 +1058,17 @@ def issue_real_estate_register(payload, credentials, options=None):
     driver = _launch_chrome(chrome_options)
     result = {'ok': False, 'file_path': '', 'address': '', 'unique_no': '', 'owner_masked': '', 'message': ''}
     try:
-        print(f'[진행] issue_real_estate_register 시작 — headless={headless}, lookup_only={lookup_only}, auto_confirm={auto_confirm}, stop_before_view={stop_before_view}', flush=True)
+        print(f'[진행] issue_real_estate_register 시작 — headless={headless}, true_headless_test={IROS_TRUE_HEADLESS_FOR_TEST}, lookup_only={lookup_only}, auto_confirm={auto_confirm}, stop_before_view={stop_before_view}', flush=True)
         driver.set_window_size(1280, 1000)
-        if headless:
+        if headless and not IROS_TRUE_HEADLESS_FOR_TEST:
             driver.set_window_position(-32000, -32000)  # 화면 밖으로 이동 — 진짜 창이지만 안 보이게
+        if headless and IROS_TRUE_HEADLESS_FOR_TEST:
+            # --window-size 플래그로는 안 바뀌던 screen.width/height(가짜 800x600)를 CDP로 직접
+            # 덮어쓴다 — 보임모드 실측값(1920x1080)에 맞춘다.
+            driver.execute_cdp_cmd('Emulation.setDeviceMetricsOverride', {
+                'width': 1280, 'height': 1000, 'deviceScaleFactor': 1, 'mobile': False,
+                'screenWidth': 1920, 'screenHeight': 1080,
+            })
 
         target = verify_register_target(driver, payload)
         result['address'] = target.get('address', '')
