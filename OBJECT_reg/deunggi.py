@@ -504,6 +504,18 @@ def macro(data, user):
         전체동의체크박스.click()
         # pyautogui.alert("계속?")
         time.sleep(0.5)
+        # 결제 직전 최종 확인 — '아니오'면 결제 없이 종료(finally에서 종료 안내창 + 브라우저 닫힘)
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        pay_confirm = messagebox.askyesno(
+            "[인터넷등기소] 결제 확인",
+            f"{검색주소값}\n\n열람 수수료 700원을 지금 결제할까요?\n\n('아니오'를 누르면 결제 없이 종료됩니다.)"
+        )
+        root.destroy()
+        if not pay_confirm:
+            print("🛑 사용자가 결제를 취소했습니다.")
+            return
         결제버튼클릭("선불전자지급수단 입력")
 
         #결제확인버튼 클릭
