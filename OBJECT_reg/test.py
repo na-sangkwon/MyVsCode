@@ -1,14 +1,30 @@
 import sys
 print(sys.executable)
-from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QPushButton, QTextEdit, QVBoxLayout, QLineEdit, QHBoxLayout, QGridLayout, QMessageBox
+from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QPushButton, QTextEdit, QVBoxLayout, QLineEdit, QHBoxLayout, QGridLayout, QMessageBox, QRadioButton, QButtonGroup
 from PyQt5.QtCore import QSettings, Qt, QEvent, pyqtSignal
 import obang, obs, hanbang, naver, zigbang, register, deunggi, dabang, daangn
 import object_data, threading
-import pyautogui 
+import pyautogui
 import time
 
+# [2026-09-08 추가 — 사용자 요청] '등기부등본' 버튼이 deunggi.py 대신 iros_document_issue.py(웹
+# 테스트페이지 "셀레니움으로 발급"과 동일한 로직)를 타도록 통합 — 로그인/발급값조회/결과기록에 필요.
+import iros_document_issue
+import urllib.request
+import urllib.parse
+import http.cookiejar
+import json
+import traceback
+import datetime
+import os
+
+# core/config.php의 $CFG['local_helper']['service_token'], local_helper/main.py의
+# IROS_SERVICE_TOKEN, test_iros_manual.py의 같은 이름 상수와 반드시 같은 값이어야 한다
+# (하나를 바꾸면 넷 다 같이 바꿀 것).
+IROS_SERVICE_TOKEN = '51b5f2f355a2e3958e6d5e9a744ab00b53cd181c3a9864ac'
+
 from PyQt5.QtWidgets import QMessageBox
-from naver import NaverThread 
+from naver import NaverThread
 
 class MyApp(QWidget):
   # # 시그널 정의
@@ -163,6 +179,16 @@ class MyApp(QWidget):
     self.pwInput.setText(userPw)
     self.pwInput.textChanged.connect(self.updatePw)
 
+    # [2026-09-08 추가 — 사용자 요청] '등기부등본' 버튼(iros_document_issue.py)이 발급값을 어느
+    # 서버(테섭/본섭)에서 조회할지 — 프로중개인ID/PW 로그인도 이 서버로 보낸다. 실사용은 실제
+    # 데이터가 있는 본섭이 기본이다.
+    self.serverLiveRadio = QRadioButton('본섭')
+    self.serverLiveRadio.setChecked(True)
+    self.serverTestRadio = QRadioButton('테섭')
+    self.serverRadioGroup = QButtonGroup(self)
+    self.serverRadioGroup.addButton(self.serverLiveRadio)
+    self.serverRadioGroup.addButton(self.serverTestRadio)
+
     self.startBtn = QPushButton('오방', self)
     self.startBtn.clicked.connect(self.obangThread) #self.startBtn 위젯의 clicked 시그널을 self.startThread 슬롯에 연결
 
@@ -206,6 +232,8 @@ class MyApp(QWidget):
     userBox.addWidget(self.idInput)
     userBox.addWidget(self.pwLabel)
     userBox.addWidget(self.pwInput)
+    userBox.addWidget(self.serverLiveRadio)
+    userBox.addWidget(self.serverTestRadio)
 
     #새홈 번호 입력에 대한 레이아웃
     hbox = QHBoxLayout()
@@ -361,11 +389,98 @@ class MyApp(QWidget):
     register.macro(data = self.queryData, user = self.user)
     # BuildingRegister.macro(data = self.queryData, user = self.user)
   
-  def RegistrationCertThread(self): #"직방" 버튼 클릭 시 수행되는 동작을 정의
-    self.onObjectClick()
-    print("등기부발급을 시작합니다.")
-    deunggi.macro(data = self.queryData, user = self.user)
-    # RegistrationCert.macro(data = self.queryData, user = self.user)
+  def selected_iros_server(self):
+    """등기부등본 발급값을 어느 서버에서 조회할지 — '본섭'/'테섭' 라디오버튼 상태를 URL로 변환."""
+    return 'https://obangtest.cafe24.com' if self.serverTestRadio.isChecked() else 'https://obangkr.cafe24.com'
+
+  def login_and_fetch_iros_payload(self, server, object_code_new):
+    """
+    [2026-09-08 신규] 화면의 프로중개인ID/PW로 실제 로그인해서(fn=login) 세션쿠키를 확보한 뒤,
+    같은 쿠키로 document_issue_request.php(mode=payload)를 불러 등기부등본 발급값을 받아온다.
+    브라우저가 로그인 후 이어서 요청을 보내는 것과 완전히 같은 방식(파이썬 표준 쿠키저장소 사용) —
+    서버 쪽(document_issue_request.php)은 세션 로그인만 확인하므로 이 파일을 손댈 필요가 없다.
+    """
+    cookie_jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
+
+    login_body = urllib.parse.urlencode({
+        'fn': 'login', 'login_id': self.idInput.text(), 'login_pw': self.pwInput.text(),
+    }).encode('utf-8')
+    login_req = urllib.request.Request(f'{server}/api/get_api_lib.php', data=login_body, method='POST')
+    with opener.open(login_req, timeout=15) as resp:
+        login_res = json.loads(resp.read().decode('utf-8'))
+    login_data = login_res.get('data') or {}
+    if not login_res.get('ok') or login_data.get('status') != 'success':
+        raise RuntimeError(f'로그인 실패: {login_data.get("message") or login_res}')
+
+    payload_body = urllib.parse.urlencode({
+        'mode': 'payload', 'document_type': 'real_estate_register',
+        'object_code_new': object_code_new, 'give_code': '',
+    }).encode('utf-8')
+    payload_req = urllib.request.Request(f'{server}/web/_shared/document_issue_request.php', data=payload_body, method='POST')
+    with opener.open(payload_req, timeout=15) as resp:
+        payload_res = json.loads(resp.read().decode('utf-8'))
+    if not payload_res.get('ok'):
+        raise RuntimeError(f'발급값 조회 실패: {payload_res.get("message") or payload_res}')
+    return payload_res['payload']
+
+  def fetch_iros_credentials(self, server):
+    """등기소 로그인/선불전자지급수단 정보 — test_iros_manual.py의 같은 이름 함수와 동일."""
+    body = urllib.parse.urlencode({'fn': 'getirosservicecredentials', 'service_token': IROS_SERVICE_TOKEN}).encode('utf-8')
+    req = urllib.request.Request(f'{server}/api/get_api_lib.php', data=body, method='POST')
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        res = json.loads(resp.read().decode('utf-8'))
+    if not res.get('ok'):
+        raise RuntimeError(f'등기소 계정정보 조회 실패: {res}')
+    return res['data']
+
+  def RegistrationCertThread(self): #"등기부등본" 버튼 클릭 시 수행되는 동작을 정의
+    # [2026-09-08 변경 — 사용자 요청] deunggi.py 대신 iros_document_issue.py(웹 테스트페이지
+    # "셀레니움으로 발급"과 동일한 로직)를 탄다 — 오늘 세션에서 검증한 헤드리스 우회·blur 처리·
+    # WebSquare setValue 구분·화면판별 재시도 등이 이 버튼에도 그대로 적용된다.
+    # 문제가 생기면 아래 두 줄만 되돌리면 즉시 예전 방식(deunggi.py)으로 복원된다:
+    #   self.onObjectClick()
+    #   deunggi.macro(data=self.queryData, user=self.user)
+    object_code_new = self.objectInput.text().strip()
+    if not object_code_new:
+        pyautogui.alert('새홈 번호를 입력하세요.')
+        return
+    server = self.selected_iros_server()
+    # [2026-09-08 추가 — 사용자 요청 "웹 콘솔·VSCode 콘솔을 비교하기 편하게"] local_helper/main.py의
+    # run_iros_issue_headless()가 자식 진입 직후 남기는 [진단] 줄과 같은 취지 — 어느 파이썬/서버로
+    # 시작했는지 로그 맨 앞에 남겨서, 웹 테스트페이지 콘솔과 이 콘솔의 "시작 지점"을 눈으로 맞춰볼 수
+    # 있게 한다. 완전히 같은 문장은 아니다(웹 쪽엔 tempdir 등 local_helper 전용 진단이 더 있음).
+    print(f'[진단] test.py에서 등기부등본 발급 시작 (매물={object_code_new}) python={sys.executable!r} server={server!r}')
+    print(f'등기부등본 발급을 시작합니다 — 서버={server}, 새홈번호={object_code_new}')
+    try:
+        payload = self.login_and_fetch_iros_payload(server, object_code_new)
+        credentials = self.fetch_iros_credentials(server)
+        options = {
+            'headless': False,       # 이 버튼은 항상 보임모드로 돈다(사용자 확정)
+            'auto_confirm': False,   # 결제 버튼은 화면에서 사람이 직접 눌러야 진행 — deunggi.py의 결제 전 확인과 같은 취지
+            'close_when_done': True,
+            'lookup_only': False,
+            'stop_before_view': False,
+        }
+        result = iros_document_issue.issue_real_estate_register(payload, credentials, options)
+        print('=== 결과 ===')
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if not result.get('ok'):
+            pyautogui.alert(f'등기부등본 발급 실패:\n\n{result.get("message", "")}', '[인터넷등기소]')
+    except Exception as e:
+        # [2026-09-08 추가 — 사용자 요청 "원인도 모르게 죽어버리면 곤란하다"] 콘솔에 이미 traceback이
+        # 찍히지만(파이썬 기본 동작), 콘솔을 놓쳐도 나중에 확인할 수 있게 파일로도 같이 남긴다.
+        tb = traceback.format_exc()
+        print(tb)
+        try:
+            log_dir = os.path.dirname(os.path.abspath(__file__))
+            log_path = os.path.join(log_dir, f'등기부발급_오류_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}_{object_code_new}.txt')
+            with open(log_path, 'w', encoding='utf-8') as f:
+                f.write(tb)
+            print(f'오류 상세를 파일로 남겼습니다: {log_path}')
+        except Exception:
+            pass
+        pyautogui.alert(f'등기부등본 발급 중 예외가 발생했습니다:\n\n{type(e).__name__}: {e}', '[인터넷등기소]')
 
   def closeEvent(self, event): #창을 닫을 때 수행되는 동작을 정의
     self.save_value() #사용자 설정을 저장

@@ -14,3 +14,7 @@ daangn_profile/
 # API 키 등 실제 비밀값 - ai_utils.py가 로드하는 OBJECT_reg/.env (2026-09-02, API 키 노출 사고로 도입).
 # 값 없는 템플릿인 .env.example은 그대로 커밋 대상.
 .env
+
+# test.py '등기부등본' 버튼이 예외 발생 시 남기는 진단용 traceback 파일 (2026-09-08) - 실행
+# 산출물이라 git에 안 넣는다.
+OBJECT_reg/등기부발급_오류_*.txt
