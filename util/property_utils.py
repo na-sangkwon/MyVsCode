@@ -1,5 +1,6 @@
 # fileName: util/property_utils.py
 import re
+import traceback
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
@@ -376,7 +377,11 @@ def 당근_매물상태_확인(row_element):
     try:
         status_el = row_element.find_element(By.CSS_SELECTOR, "div[class*='w-[82px]'] span")
         return status_el.text.strip()
-    except:
+    except Exception as 오류:
+        # [2026-09-06 추가] 매 사이클마다 호출되는 함수인데 실패해도 조용히 빈 문자열만
+        # 반환하고 있었다 — 호출부(carrot_worker.py)는 이 빈 값을 그대로 로그에 찍긴 하지만
+        # "왜 못 읽었는지"는 알 수 없었다. 원인 파악을 위해 출력한다.
+        print(f"   [❌ 공용 유틸 에러] 매물 상태값 읽기 실패 -> 원인: {오류}")
         return ""
 
 
@@ -392,8 +397,10 @@ def 당근_날짜및_끌어올리기_가능여부_확인(row_element):
         up_buttons = date_col_el.find_elements(By.XPATH, ".//button[text()='끌어올리기']")
         can_up = len(up_buttons) > 0
         return date_text, can_up
-    except:
-        return "", False    
+    except Exception as 오류:
+        # [2026-09-06 추가] 위 함수(당근_매물상태_확인)와 동일한 이유로 원인을 출력한다.
+        print(f"   [❌ 공용 유틸 에러] 날짜/끌어올리기 버튼 여부 읽기 실패 -> 원인: {오류}")
+        return "", False
     
 # fileName: util/property_utils.py
 
@@ -432,6 +439,43 @@ def 텍스트창_값검속_및_신규업데이트판정(driver, field_name, db_v
         최상단에러창(summary_msg, "🚨 공용 유틸리티 에러 알림")
         
     return result_log
+
+
+# [2026-09-10 신설] 위 `_검속_및_신규업데이트판정` 계열 함수들은 전부 "화면 현재값 vs DB값" 2단
+# 비교라, 다르면 무조건 DB값으로 덮어쓴다 — 가격처럼 'DB가 항상 정답'인 항목엔 맞지만, 상세설명처럼
+# 담당자가 외부 광고사이트 화면에 직접 들어가 손으로 고쳤을 수 있는 항목엔 위험하다(그 사람의 편집을
+# 자동으로 밀어버리게 된다). 이 함수는 그런 "사람이 직접 편집했을 수 있는 텍스트 항목"을 위해
+# "화면 현재값 vs 우리가 마지막으로 실제로 써넣은 값 vs 새로 만들어질 목표값" 3단 비교로 판정만
+# 담당한다(화면 조작은 하지 않음 — 호출자가 결과를 보고 실제 주입 여부를 결정한다). 아직 이 함수를
+# 실제로 쓰는 동기화 항목은 없다(상세설명 자동동기화는 별도 승인 후 추가 예정) — 항목이 늘어날 때
+# 재사용할 수 있도록 구조만 먼저 준비해둔다.
+def 수동편집_보호_텍스트_동기화_판정(현재_화면값, 마지막_자동동기화값, 새로운_목표값):
+    """
+    담당자가 외부 광고사이트 화면에서 직접 편집했을 수 있는 텍스트 항목(예: 상세설명)을 위한
+    3단 비교 판정기.
+
+    - 마지막_자동동기화값이 None(이 매물은 아직 보호 이력이 없음, 예: 이 기능 도입 이전 데이터) →
+      바로 덮어쓰지 않고 지금 화면값을 기준선으로 처음 기록만 한다.
+    - 현재_화면값이 마지막_자동동기화값과 다르면 → 우리가 마지막으로 써넣은 뒤 누군가 화면에서
+      직접 고쳤다는 뜻이므로, 새 목표값이 있어도 절대 덮어쓰지 않고 그대로 둔다(기준선도 갱신하지
+      않는다 — 우리가 쓴 값이 아니므로. 그래야 한 번 사람이 고친 뒤로는 계속 보호되고, 자동화가
+      다시 건드리려면 사람이 명시적으로 "자동 문구로 초기화"를 요청해야 한다).
+    - 위 두 경우가 아니면(사람이 손대지 않았음이 확인됨) → 새 목표값으로 안전하게 덮어써도 되고,
+      기준선도 새 목표값으로 갱신한다.
+
+    반환값(dict): status(유지/베이스라인기록/수동편집감지_건너뜀/갱신), value_to_write(화면에
+    실제로 써넣어야 할 값, 없으면 None), new_snapshot(호출자가 저장해야 할 새 기준선, 없으면 None)
+    """
+    if 마지막_자동동기화값 is None:
+        return {"status": "베이스라인기록", "value_to_write": None, "new_snapshot": 현재_화면값}
+
+    if 현재_화면값 != 마지막_자동동기화값:
+        return {"status": "수동편집감지_건너뜀", "value_to_write": None, "new_snapshot": None}
+
+    if 현재_화면값 == 새로운_목표값:
+        return {"status": "유지", "value_to_write": None, "new_snapshot": None}
+
+    return {"status": "갱신", "value_to_write": 새로운_목표값, "new_snapshot": 새로운_목표값}
 
 
 def 체크박스_상태검속_및_신규업데이트판정(driver, xpath_target, target_state, label):
@@ -837,8 +881,13 @@ def 당근_끌어올리기_마스터_통합엔진(driver, row_element, ad_code, 
         click_btn.click()
         
         # 2. 가격 조정 팝업창 출현 정밀 대기
+        # 🎯 [2026-09-06 수정 — 실사용 중 재현된 버그] 실제 팝업은 뜨고 있었는데, 코드가 기다리던
+        # @data-state='open' 속성이 아니라 @data-open(값 없는 boolean 속성)을 쓰는 다른 다이얼로그
+        # 컴포넌트였다(새홈 541535/당근 3629260, '숨김' 매물 끌어올리기 라이브 재현으로 확인 —
+        # 스크린샷/DOM 덤프로 실제 마크업 <div data-open="" role="dialog" ...> 확인함). 두 방식을
+        # 모두 인정하도록 조건을 넓힌다.
         dialog_popup = WebDriverWait(driver, 5).until(
-            EC.visibility_of_element_located((By.XPATH, "//div[@role='dialog' and @data-state='open']"))
+            EC.visibility_of_element_located((By.XPATH, "//div[@role='dialog' and (@data-state='open' or @data-open)]"))
         )
         print(f"   [✅ 팝업 확정 - {ad_code}] 실제 작동 팝업창 고유 ID ➡️ '{dialog_popup.get_attribute('id')}'")
         time.sleep(0.5)
@@ -903,8 +952,11 @@ def 당근_끌어올리기_마스터_통합엔진(driver, row_element, ad_code, 
                     except: driver.execute_script("arguments[0].click();", more_btn)
                     time.sleep(0.8)
                     
+                    # [2026-09-06 수정] 위 가격조정 팝업과 같은 이유로 @data-open도 함께 인정한다 —
+                    # 이 메뉴가 실제로 어느 방식인지 라이브로 확인은 못 했지만(재현 당시엔 여기까지
+                    # 못 왔음), 같은 컴포넌트 라이브러리 갱신의 영향을 받았을 가능성에 미리 대비한다.
                     unhide_option = WebDriverWait(driver, 3).until(
-                        EC.element_to_be_clickable((By.XPATH, "//div[@role='menu' and @data-state='open']//*[contains(text(),'숨기기 해제')]"))
+                        EC.element_to_be_clickable((By.XPATH, "//div[@role='menu' and (@data-state='open' or @data-open)]//*[contains(text(),'숨기기 해제')]"))
                     )
                     driver.execute_script("arguments[0].click();", unhide_option)
                     time.sleep(0.5) # 기습 팝업 전개 대기 버퍼 마진
@@ -974,7 +1026,8 @@ def 당근_끌어올리기_마스터_통합엔진(driver, row_element, ad_code, 
                 time.sleep(0.5)
             except TimeoutException:
                 try:
-                    opened_dialogs = driver.find_elements(By.XPATH, "//div[@role='dialog' and @data-state='open']")
+                    # [2026-09-06 수정] 위 가격조정 팝업 대기와 동일한 이유로 @data-open도 인정한다.
+                    opened_dialogs = driver.find_elements(By.XPATH, "//div[@role='dialog' and (@data-state='open' or @data-open)]")
                     if opened_dialogs:
                         top_dialog = opened_dialogs[-1]
                         try: top_title = top_dialog.find_element(By.XPATH, ".//h2").get_attribute("textContent").strip()
@@ -1003,7 +1056,8 @@ def 당근_끌어올리기_마스터_통합엔진(driver, row_element, ad_code, 
             print(f"   [🔎 디버그 - {ad_code}] 4단계: 화면에 남은 모든 팝업창 및 배경 레이어 증발 대기...")
             time.sleep(0.3)
             try:
-                final_dialogs = driver.find_elements(By.XPATH, "//div[@role='dialog' and @data-state='open']")
+                # [2026-09-06 수정] 위와 동일한 이유로 @data-open도 인정한다.
+                final_dialogs = driver.find_elements(By.XPATH, "//div[@role='dialog' and (@data-state='open' or @data-open)]")
                 if final_dialogs:
                     last_dialog = final_dialogs[-1]
                     try: last_title = last_dialog.find_element(By.XPATH, ".//h2").get_attribute("textContent").strip()
@@ -1036,6 +1090,14 @@ def 당근_끌어올리기_마스터_통합엔진(driver, row_element, ad_code, 
             return "BUMP_SUCCESS"
 
     except Exception as global_error:
+        # 🎯 [2026-09-06 수정 — 실사용 중 재현된 버그] 이 함수 전체를 감싸는 마지막 안전망인데
+        # 아무것도 출력하지 않고 "FAIL"만 반환하고 있었다 — 실제 어느 단계에서 왜 실패했는지
+        # 알 방법이 전혀 없어서, 새홈 541535(당근 3629260)가 '숨김' 상태로 방치된 원인을
+        # 추적하다가 이 지점 자체가 문제라는 걸 발견했다. 원인 파악이 가능하도록 실제 예외와
+        # 전체 traceback을 남긴다(호출자에게 보이는 반환값 "FAIL"은 그대로 유지 — 기존 분기
+        # 로직을 건드리지 않는다).
+        print(f"   [❌ 치명적 오류 - {ad_code}] 끌어올리기 마스터 엔진 전체 실패: {global_error}")
+        print(traceback.format_exc())
         return "FAIL"
     
 def 데이터베이스_다중_가격스펙_전수조회(item_code, ad_site=None):

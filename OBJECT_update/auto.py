@@ -1,4 +1,5 @@
 import os
+import json
 import time
 import random
 import datetime
@@ -14,6 +15,17 @@ from selenium.webdriver.chrome.options import Options
 # 외부 폴더의 진짜 일꾼 모듈들을 정상적으로 매핑
 from workers.obang_worker import ObangAutomationWorker
 from workers.carrot_worker import CarrotAutomationWorker
+
+# 🎯 [2026-09-06 통합] 당근 업데이트 사이클 직후 자동 검증(verify_carrot_registration.py)을
+# 연결한다. import 자체가 실패해도(예: 파일 누락, selenium 버전 불일치) 오방/당근 업데이트라는
+# 본작업까지 막으면 안 되므로, 여기서부터 방어적으로 처리한다 — 로컬 lint만으로는 서버에서의
+# import 실패를 못 잡아내기 때문(CLAUDE.md 코드수정 원칙).
+try:
+    import verify_carrot_registration as carrot_verify
+    CARROT_VERIFY_모듈_로드됨 = True
+except Exception:
+    carrot_verify = None
+    CARROT_VERIFY_모듈_로드됨 = False
 
 # 사진 원본 폴더 최상위 경로 — Windows PC에서는 매핑드라이브(Z:), 나스 도커 컨테이너에서는
 # "업무자료" 공유폴더를 직접 볼륨마운트한 경로를 쓴다. 두 환경이 같은 코드를 그대로 쓰도록
@@ -78,16 +90,34 @@ def get_main_settings(prev_settings=None):
     x = int((screen_width / 2) - (window_width / 2))
     y = int((screen_height / 2) - (window_height / 2))
     root.geometry(f"{window_width}x{window_height}+{x}+{y}")
-    root.protocol("WM_DELETE_WINDOW", lambda: sys.exit())
+    # 🎯 [닫기 경로 통일] X버튼도 '확인'과 마찬가지로 체크박스·라디오버튼 상태를 저장한 뒤 종료한다
+    # (close_and_exit는 아래에서 정의 — 클로저라 정의 위치가 이 줄보다 아래여도 문제없음).
+    root.protocol("WM_DELETE_WINDOW", lambda: close_and_exit())
 
     frame_platform = tk.LabelFrame(root, text=" 🌐 대상 플랫폼 선택 ", font=("Malgun Gothic", 10, "bold"), padx=10, pady=10)
     frame_platform.pack(padx=20, pady=10, fill="x")
 
-    # 🎯 [기억 복원 확장] 테스트용으로 타이핑했던 번호가 프리뷰 취소 회항 시에도 지워지지 않도록 세포를 보존합니다.
-    init_obang = prev_settings['obang'] if prev_settings else True
-    init_carrot = prev_settings['carrot'] if prev_settings else True
-    init_day = prev_settings['before_day'] if prev_settings else 1
-    init_mode = prev_settings['mode'] if prev_settings else 'all'
+    # 🎯 [환경설정 영구 저장] 같은 실행 중 재오픈(prev_settings)이 아니라 프로그램을 완전히
+    # 새로 켠 경우엔, 지난번 확인 버튼을 눌렀을 때 이 창 전용으로 저장해둔 main_settings.json을
+    # 읽어 기본값으로 삼는다. 이 값은 test_memo.txt와 마찬가지로 로컬 파일 전용이며,
+    # 나스 무인실행이 쓰는 운영 DB(pr_config, auto_update 그룹)와는 별개다 — 이 창에서 바꾼
+    # 값이 나스 자동실행 설정에 영향을 주지 않도록 의도적으로 분리했다.
+    if prev_settings:
+        init_obang = prev_settings['obang']
+        init_carrot = prev_settings['carrot']
+        init_day = prev_settings['before_day']
+        init_mode = prev_settings['mode']
+    else:
+        saved_settings = {}
+        if os.path.exists("main_settings.json"):
+            try:
+                with open("main_settings.json", "r", encoding="utf-8") as 설정파일:
+                    saved_settings = json.load(설정파일)
+            except: pass
+        init_obang = saved_settings.get('obang', True)
+        init_carrot = saved_settings.get('carrot', True)
+        init_day = saved_settings.get('before_day', 1)
+        init_mode = saved_settings.get('mode', 'all')
     
     # 🎯 [영구 파일 소환] 메모리(prev_settings)에 세션 기록이 없다면 로컬 디스크의 메모장을 열어 마지막 새홈 테스트 번호를 자동 로딩합니다.
     if prev_settings and 'test_code' in prev_settings:
@@ -157,11 +187,48 @@ def get_main_settings(prev_settings=None):
 
     result_settings = {}
 
+    # 🎯 [환경설정 영구 저장] 확인/취소/X 세 가지 닫기 경로 모두에서 공통으로 호출해,
+    # "확인을 눌러야만 저장된다"는 예전 동작 때문에 취소·X로 닫으면 체크박스·라디오버튼
+    # 변경이 그냥 사라지던 문제를 근본적으로 없앤다. 직접입력 기간 값이 잘못 들어있어도
+    # (확인 버튼과 달리) 경고창으로 종료를 막지 않고, 그 항목만 이전 저장값을 그대로 유지한다.
+    def save_current_settings():
+        if var_period.get() == -1:
+            try:
+                직접입력값 = int(entry_custom.get().strip())
+                if 직접입력값 < 0: raise ValueError
+            except ValueError:
+                직접입력값 = init_day
+        else:
+            직접입력값 = var_period.get()
+
+        try:
+            with open("main_settings.json", "w", encoding="utf-8") as 설정파일:
+                json.dump({
+                    'obang': var_obang.get(),
+                    'carrot': var_carrot.get(),
+                    'before_day': 직접입력값,
+                    'mode': var_mode.get(),
+                }, 설정파일, ensure_ascii=False)
+        except: pass
+
+        # 🎯 [영구 파일 마킹] 새홈 매물번호 입력값도 확인/취소/X 세 경로 모두에서
+        # 동일하게 저장한다 — on_ok() 전용이던 예전 방식으로는 취소·X로 닫을 때
+        # 체크박스와 똑같이 유실되던 문제가 있었다.
+        테스트_입력값 = entry_test.get().strip()
+        try:
+            with open("test_memo.txt", "w", encoding="utf-8") as 파일조수:
+                파일조수.write(테스트_입력값)
+        except: pass
+
+    def close_and_exit():
+        save_current_settings()
+        sys.exit()
+
     def on_ok():
         if not var_obang.get() and not var_carrot.get():
             messagebox.showwarning("경고", "최소 하나의 플랫폼은 선택해야 합니다.")
             return
-            
+
         if var_period.get() == -1:
             try:
                 입력값 = int(entry_custom.get().strip())
@@ -172,25 +239,22 @@ def get_main_settings(prev_settings=None):
                 return
         else:
             result_settings['before_day'] = var_period.get()
-            
+
         result_settings['obang'] = var_obang.get()
         result_settings['carrot'] = var_carrot.get()
         result_settings['mode'] = var_mode.get()
-        
-        # 🎯 [영구 파일 마킹] 확인 클릭 시 새홈 번호 공백을 제거하여 변수에 담고, 로컬 메모장 파일에도 즉시 세이브 보관합니다.
-        테스트_입력값 = entry_test.get().strip()
-        result_settings['test_code'] = 테스트_입력값
-        try:
-            with open("test_memo.txt", "w", encoding="utf-8") as 파일조수:
-                파일조수.write(테스트_입력값)
-        except: pass
-        
+        result_settings['test_code'] = entry_test.get().strip()
+
+        # 🎯 [영구 파일 마킹] 새홈 매물번호를 포함한 실제 파일 저장은 save_current_settings()가
+        # 담당한다(확인/취소/X 공통 로직) — 위 result_settings는 이번 실행에 바로 쓸 반환값일 뿐이다.
+        save_current_settings()
+
         root.destroy()
 
     btn_frame = tk.Frame(root)
     btn_frame.pack(pady=15)
     tk.Button(btn_frame, text="확 인", font=("Malgun Gothic", 10, "bold"), bg="#2196F3", fg="white", padx=25, pady=5, command=on_ok).pack(side="left", padx=20)
-    tk.Button(btn_frame, text="취 소", font=("Malgun Gothic", 10), bg="#9E9E9E", fg="white", padx=25, pady=5, command=lambda: sys.exit()).pack(side="right", padx=20)
+    tk.Button(btn_frame, text="취 소", font=("Malgun Gothic", 10), bg="#9E9E9E", fg="white", padx=25, pady=5, command=close_and_exit).pack(side="right", padx=20)
 
     root.mainloop()
     return result_settings
@@ -442,6 +506,101 @@ def obang_data(before_day, 오방_선택=True, 당근_선택=True):
         '당근_거래완료목록': list(dang_complete_set)
     }
 
+# 🎯 [2026-09-06 통합] 당근 루프 검증 단계 전용 디버그 로그 — auto.py는 GUI 경로에 별도
+# 로그파일이 없어서(콘솔 print만 있음), 이 신규 통합 지점만이라도 나중에 원인 추적이 가능하게
+# 독립된 로그 파일을 둔다. cwd에 따라 엉뚱한 위치에 생기지 않도록 이 파일 자신의 위치 기준
+# 절대경로로 고정한다(과거 main_settings.json이 cwd에 따라 엉뚱한 곳에 생기던 문제 재발 방지).
+CARROT_VERIFY_LOOP_DEBUG_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "carrot_loop_verify_debug.log")
+
+
+def _당근_검증_디버그기록(내용):
+    # 디버그 기록 자체의 실패(디스크 문제 등)가 본작업을 막으면 안 된다.
+    try:
+        with open(CARROT_VERIFY_LOOP_DEBUG_LOG, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {내용}\n")
+    except Exception:
+        pass
+
+
+def _당근_검증_오류_pr_error_log기록(message, file=None, line=None, stack=None):
+    """
+    오방홈 오류로그 체계(pr_error_log)에 직접 기록한다. 실제 저장/중복판정 로직은
+    obangtest 저장소의 core/lib/lib_error_log.php::recordErrorLog()가 원본이다 — naver.py는
+    로컬도우미 HTTP 콜백을 거쳐 그 PHP 함수를 호출하지만(연장등록 예상밖오류 사례), auto.py는
+    그 콜백 경로가 없어서(로컬도우미 없이 나스/PC에서 직접 도는 무인 프로세스) 같은 테이블에
+    같은 스키마·같은 지문(fingerprint) 규칙으로 파이썬에서 직접 INSERT한다(2026-09-06,
+    사용자 지적으로 pr_log 대체 임시조치에서 전환) — 다른 저장소(PHP)는 건드리지 않는다.
+
+    지문 = sha1(source|file|line|message[:300]) — recordErrorLog()와 동일 공식. 같은 지문이면
+    새 행 대신 elog_occurrence_count만 늘려서, 반복되는 같은 오류가 로그 테이블을 폭주시키지
+    않게 하는 원본의 방어 설계를 그대로 따른다.
+    """
+    try:
+        import hashlib
+        # ⚠️ [2026-09-06 실측 발견] elog_source는 varchar(10)이다 — pr_log.log_item과 같은 종류의
+        # 함정을 반복하지 않으려고 미리 SHOW CREATE TABLE로 확인했다. 원본 PHP 쪽 관례('php'|'js'|
+        # 'ajax')를 넘지 않는 짧은 값을 쓰고, "당근 루프 검증"이라는 구체적 맥락은 길이 제한이
+        # 없는 elog_message 쪽에 담는다.
+        source = 'python'
+        severity = 'Exception'
+        message = str(message)[:5000]
+        stack = str(stack)[:8000] if stack else None
+        지문원본 = f"{source}|{file or ''}|{line or ''}|{message[:300]}"
+        fingerprint = hashlib.sha1(지문원본.encode('utf-8')).hexdigest()
+
+        conn = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', database='obangkr', charset='utf8')
+        cursor = conn.cursor()
+        cursor.execute(
+            """INSERT INTO pr_error_log
+                   (elog_source, elog_severity, elog_level, elog_message, elog_file, elog_line,
+                    elog_stack, elog_url, elog_admin_id, elog_fingerprint, elog_occurrence_count,
+                    elog_is_read, elog_first_seen_at, elog_last_seen_at)
+               VALUES (%s, %s, 'high', %s, %s, %s, %s, NULL, NULL, %s, 1, 'N', NOW(), NOW())
+               ON DUPLICATE KEY UPDATE
+                   elog_occurrence_count = elog_occurrence_count + 1,
+                   elog_last_seen_at = NOW(),
+                   elog_is_read = 'N',
+                   elog_stack = %s""",
+            (source, severity, message, file, line, stack, fingerprint, stack)
+        )
+        conn.commit()
+        cursor.close(); conn.close()
+    except Exception:
+        pass
+
+
+def 당근_루프_검증_안전실행(driver, 당근번호_리스트):
+    """
+    당근 업데이트 사이클 직후 자동 검증을 실행한다(2026-09-06 통합, 사용자 결정: 사람 승인 없이
+    자동 DB 반영). 검증 로직 자체의 버그나 당근 화면 구조 변경으로 이 단계가 실패해도, 방금 끝난
+    오방/당근 업데이트라는 본작업 결과에는 절대 영향을 주면 안 되므로 여기서 통째로 방어한다 —
+    실패 시 전체 traceback을 로컬 디버그 로그와 pr_error_log(오방홈 오류로그 체계) 둘 다에 남겨
+    나중에 추적 가능하게 한다.
+    """
+    if not CARROT_VERIFY_모듈_로드됨:
+        _당근_검증_디버그기록("검증 모듈(verify_carrot_registration) import 실패로 이번 사이클 검증을 건너뜀")
+        return None
+    if not 당근번호_리스트:
+        return None
+    try:
+        결과 = carrot_verify.당근번호로_검증(driver, 당근번호_리스트, DB반영=True)
+        _당근_검증_디버그기록(f"검증 완료: 대상 {당근번호_리스트} -> {결과}")
+        return 결과
+    except Exception:
+        오류내용 = traceback.format_exc()
+        _당근_검증_디버그기록(f"검증 중 예외 발생(대상 {당근번호_리스트}):\n{오류내용}")
+        # elog_file/elog_line은 실제 예외가 터진 지점(가장 안쪽 프레임)을 가리키게 한다 —
+        # recordErrorLog()가 호출부(__FILE__/__LINE__)를 받는 것과 같은 취지.
+        마지막프레임 = traceback.extract_tb(sys.exc_info()[2])
+        elog_file = 마지막프레임[-1].filename if 마지막프레임 else __file__
+        elog_line = 마지막프레임[-1].lineno if 마지막프레임 else None
+        _당근_검증_오류_pr_error_log기록(
+            f"당근 루프 검증 실패(대상 {당근번호_리스트}): {오류내용.strip().splitlines()[-1] if 오류내용 else ''}",
+            file=elog_file, line=elog_line, stack=오류내용
+        )
+        return None
+
+
 def run_platform_workers(obangData, target_mode, user_settings, progress_callback, unattended=False):
     """
     크롬 드라이버를 띄우고 오방/당근 워커를 순차 실행해 (성공/재등록/수정/비공개/건너뜀) 누적 카운트를 반환한다.
@@ -513,6 +672,20 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
                 f"✅ 당근 업데이트 완료 V \n(끌올 {ro + ho}건 [일반 {ro} / 숨김해제 {ho}] , 수정:{uo} , 비공개:{eo} , 건너뜀:{so}개)",
                 'determinate'
             )
+
+            # 🎯 [2026-09-06 통합] 방금 처리한 당근매물들이 실제로도 '판매중'으로 반영됐는지
+            # 검증하고, 불일치는 자동으로 DB(ad_end)에 반영한다(사용자 결정: 사람 승인 없이
+            # 즉시 반영). 이미 로그인된 driver를 그대로 넘겨 새 브라우저를 띄우지 않는다.
+            # 검증 실패가 방금 끝난 오방/당근 업데이트 결과에 영향을 주지 않도록 별도 함수
+            # 안에서 통째로 방어한다(당근_루프_검증_안전실행 주석 참고).
+            검증결과 = 당근_루프_검증_안전실행(driver, obangData.get('당근_업데이트목록', []))
+            if 검증결과 and 검증결과['불일치건수'] > 0:
+                progress_callback(
+                    'carrot', 100, 100,
+                    f"🔍 당근 사후검증: 불일치 {검증결과['불일치건수']}건 자동수정 "
+                    f"(확인 {검증결과['총건수']}건 중, 확인불가 {검증결과['확인불가건수']}건)",
+                    'determinate'
+                )
         else:
             progress_callback('carrot', 0, 100, "⏭️ 당근부동산 스킵됨", 'determinate')
     finally:
