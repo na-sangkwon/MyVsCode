@@ -39,6 +39,18 @@ from PyQt5.QtWidgets import QMessageBox
 class NaverThread(QThread):
     ask_confirmation = pyqtSignal(str)  # 확인 메시지 요청 시그널
     finished = pyqtSignal(bool)        # 작업 완료 신호 (True: 성공, False: 실패)
+    # [2026-09-10 신규 — 사용자 요청 "진행단계가 안 보여서 처리 중인지 신뢰할 수 없다"] 연장등록
+    # 진행 중 "지금 몇 번째 매물을 뭘 하고 있는지"를 알리는 신호. 당근(carrot_worker.py의
+    # progress_callback)은 이미 이 방식으로 웹 배너에 세부 단계를 보여주고 있는데, 네이버는 이
+    # 신호 자체가 없어서 로컬도우미(main.py::run_naver_extend_worker())가 내보낼 게 없었다 —
+    # 실제 진행 정보(매물번호·몇 번째 확인 중인지)는 run() 안에 이미 있으니 emit만 추가한다.
+    # [2026-09-10 추가 — 사용자 요청 "최대한 구체적인 단계"] 처음엔 매물당 2단계(확인 중/재전송 중)
+    # 뿐이었는데, 로그인부터 등록 확정까지 매물 1건이 항상 순서대로 지나가는 지점(로그인 → 등록종료
+    # 목록 검색 → 검색결과 확인 → 재등록 신청서 열람 → 중복등록 확인 → 가격·약관 확인 → 홍보확인서
+    # 작성 → 매물등록 제출 → 등록 확정)까지 총 9곳으로 세분화했다. 조건에 따라서만 도는 분기
+    # (거래종류 변경 시의 별도 입력 로직 등)까지는 안 쪼갰다 — 그 조건에 안 걸린 매물에서는 나오지도
+    # 않을 문구가 남아 오히려 헷갈릴 수 있어서, "어떤 매물이든 항상 지나가는 지점"만 골랐다.
+    step_progress = pyqtSignal(str)
 
     def __init__(self, data, user):
         super().__init__()
@@ -1655,6 +1667,11 @@ class NaverThread(QThread):
                 # URL 열기
                 driver.maximize_window()
                 
+                # [2026-09-10 추가 — 사용자 요청 "최대한 구체적인 단계"] 로그인은 배치 전체에서
+                # 1회만 일어나 개별 매물 단위 단계와는 성격이 다르지만, 담당자가 지금 브라우저가
+                # 살아서 뭘 하고 있는지 가장 먼저 알 수 있는 신호라 여기서부터 emit을 시작한다.
+                self.step_progress.emit("써브(부동산써브) 로그인 중")
+
                 # ⚠️ [동기화 경고] 이 로그인 셀렉터(input-1/input-3/로그인버튼)는
                 # verify_naver_registration.py의 네이버_로그인()에도 복제되어 있다 —
                 # 네이버 로그인 화면 구조가 바뀌면 그 파일도 같이 고쳐야 한다.
@@ -1761,6 +1778,7 @@ class NaverThread(QThread):
                     # time.sleep(1) 
 
                     # 🌟 [신설] 기등록 중복 매물 알림 팝업창 실시간 감지 및 넘버 추출 엔진
+                    self.step_progress.emit(f"매물 {새홈매물번호} — 중복 등록 여부 확인 중")
                     try:
                         duplicate_code = "확인불가"
                         # 중복 안내 문구가 출력되는지 최대 2초간 동적 감시 실행
@@ -1808,6 +1826,7 @@ class NaverThread(QThread):
                         입력란.send_keys(Keys.BACK_SPACE * 입력값글자수)   
                         입력란.send_keys(신규입력값)      
 
+                    self.step_progress.emit(f"매물 {새홈매물번호} — 가격·약관 정보 확인 중")
                     #기존에 등록된 거래정보
                     구거래종류 = 선택된라디오버튼텍스트가져오기('거래 종류')
                     print(f"구거래종류:{구거래종류}")  
@@ -1922,6 +1941,7 @@ class NaverThread(QThread):
                     네이버등록권_자동선택(driver)
                     
                     동의결과_msg = 약관동의체크()
+                    self.step_progress.emit(f"매물 {새홈매물번호} — 홍보확인서 작성 중")
                     #의뢰인정보 위치 클릭
                     빠른이동("의뢰인 정보")
                     
@@ -1948,6 +1968,7 @@ class NaverThread(QThread):
                     #등록권선택
                     time.sleep(0.2)
                     #매물등록 버튼 클릭
+                    self.step_progress.emit(f"매물 {새홈매물번호} — 매물등록 제출 중")
                     try:
                         # [2026-09-02 수정] 기존 XPath(li[3] 인덱스 기반)가 실제로는 "임시저장" 버튼을
                         # 가리키고 있었다 — 라이브 재현으로 확인함(클릭 직후 "임시저장 하시겠습니까?"
@@ -1989,6 +2010,7 @@ class NaverThread(QThread):
                     # '//div[contains(@class,"modal-popup")]//button[.//span[text()="확인"]]')과 동일한
                     # 패턴으로 바꾼 것 — 실제 버튼 문구가 "확인"이 맞는지는 라이브 재현으로 아직 확정 못했다,
                     # 다음에 문제가 생기면 결제 후 실제 화면을 보고 문구를 확정할 것).
+                    self.step_progress.emit(f"매물 {새홈매물번호} — 등록 확정 처리 중")
                     try:
                         # pyautogui.alert(f"확정버튼요소 확인")
                         time.sleep(0.2)
@@ -2401,7 +2423,8 @@ class NaverThread(QThread):
                     print(f"새홈[{object_code_new}] 네이버 매물번호 {등록된매물번호} 기간만료매물확인 진행 중..................................................")
                     # 부동산써브 등록종료 리스트 접속
                     driver.get('https://ma.serve.co.kr/good/articleRegistEndList')
-                    
+                    self.step_progress.emit(f"매물 {object_code_new} — 등록종료 목록에서 검색 중")
+
                     검색전_결과건수 = 등록종료리스트검색결과건수()
                     print("검색전_결과건수:"+str(검색전_결과건수))
                     검색전_결과건수 = str(검색전_결과건수).replace(',', '')  # 쉼표 제거
@@ -2409,6 +2432,7 @@ class NaverThread(QThread):
                     #등록된 매물번호로 네이버종료리스트에서 조회
                     if int(검색전_결과건수) > 0:
                         등록종료리스트에서검색(등록된매물번호)
+                        self.step_progress.emit(f"매물 {object_code_new} — 검색결과 확인 중")
                         검색결과건수 = 등록종료리스트검색결과건수()
                         print(f"매물상태:{매물상태}, 검색후 검색결과건수:{str(검색결과건수)}")
                         # pyautogui.alert(f"네이버매물번호: {네이버매물정보}")
@@ -2416,6 +2440,10 @@ class NaverThread(QThread):
                         #등록된 네이버매물번호로 1개가 검색되고 해당 매물의 매물상태가 '중개요청'이면 연장등록
                         if int(검색결과건수) == 1 and  매물상태 == '중개요청':
                             print(f"기존 네이버매물({등록된매물번호}) 연장등록")
+                            # [2026-09-10 세분화] 이 지점부터 연장등록() 함수 내부(재등록 버튼 클릭
+                            # 직후)까지가 사실상 같은 순간이라, 함수 안쪽에 별도 emit을 또 넣는 대신
+                            # 여기 문구를 "재등록 신청서 열람 중"으로 바꿔 그 지점의 신호를 대신한다.
+                            self.step_progress.emit(f"매물 {object_code_new} — 재등록 신청서 열람 중")
                             검증방식 = driver.find_element(By.XPATH, '//*[@id="printArea"]/div/table/tbody/tr/td[4]/p[1]').text
                             연장등록결과 = 연장등록(네이버매물정보, 검증방식, 실패_msg)
                             if 연장등록결과 != "200" : 
@@ -2528,8 +2556,10 @@ class NaverThread(QThread):
                     연장_count = 0   
                     종료_count = 0   
                     미확인_count = 0 
-                    check_set = []      
-                    for 네이버매물정보 in ad_naver_list: 
+                    check_set = []
+                    # [2026-09-10 추가] enumerate로 "몇 번째/전체" 진행상황을 알 수 있게 한다 —
+                    # 인덱스 자체는 원래 로직에 안 쓰이던 값이라 추가해도 기존 동작에 영향 없다.
+                    for _순번, 네이버매물정보 in enumerate(ad_naver_list, 1):
                         manager_id = 네이버매물정보.get('admin_id', '')
                         object_code_new = 네이버매물정보.get('object_code_new', '')
                         등록된매물번호 = 네이버매물정보.get('ad_code', '')
@@ -2538,7 +2568,8 @@ class NaverThread(QThread):
                         # pyautogui.alert(f"ad_memo:{ad_memo}")
                         if 매물상태:
                             기간만료_count = 기간만료_count + 1
-                            확인결과_msg,연장_count,종료_count,check_set = 기간만료매물확인(네이버매물정보, 실패_msg, 연장_count, 종료_count, check_set)  # 
+                            self.step_progress.emit(f"{_순번}/{len(ad_naver_list)}건째 확인 중 — 매물 {object_code_new}")
+                            확인결과_msg,연장_count,종료_count,check_set = 기간만료매물확인(네이버매물정보, 실패_msg, 연장_count, 종료_count, check_set)  #
 
                         else:
                             미확인_count = 미확인_count + 1

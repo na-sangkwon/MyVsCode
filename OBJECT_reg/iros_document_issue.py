@@ -682,19 +682,31 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail)
 
 
 def find_register_address(payload):
-    """[기존 시그니처·동작 그대로 유지] 결제 없이 등기상 주소·고유번호만 조회한다.
+    """[기존 시그니처 그대로 유지] 결제 없이 등기상 주소·고유번호만 조회한다.
     local_helper/main.py의 --iros-address-lookup 호출부가 이 함수를 그대로 부르므로 시그니처를
-    바꾸지 않는다. 항상 헤드리스로 돈다(사람 눈에 보이면 안 되는 "몰래" 조회 용도 — iros_address_lookup.py
-    시절부터의 설계, 2026-09-06/07 확정 사유는 이 파일 상단 주석 참고).
+    바꾸지 않는다. 항상 사람 눈에 안 보이게 돈다("몰래" 조회 용도 — iros_address_lookup.py 시절부터의
+    설계, 2026-09-06/07 확정 사유는 이 파일 상단 주석 참고) — 다만 "안 보이게" 하는 실제 방식은
+    아래 참고.
+
+    [2026-09-10 수정 — 사용자 리포트로 원인 파악, 실사용 오류 재현] 이 함수는 verify_register_target()
+    을 거쳐 "결제대상 확인" 화면까지 들어가는데(issue_real_estate_register()와 같은 지점), 그동안
+    여기만 --headless=new(진짜 헤드리스)를 그대로 쓰고 있었다 — 그런데 등기소(TouchEn 보안프로그램)
+    가 바로 그 화면 진입 시점에 "진짜 렌더링 창이 있는지"를 확인하고, 없으면 "보안프로그램 설치"
+    안내로 튕겨버린다는 게 issue_real_estate_register()에서 이미 실측으로 확인·수정된 사실이다
+    (2026-09-08, 아래쪽 함수 주석 참고). 정작 그 발급 함수만 고쳐지고 이 조회 함수는 "iros_address_
+    lookup.py 시절 설계"를 그대로 물려받은 채 남아 있었던 것 — 그래서 그 함수와 완전히 같은 방식
+    (진짜 창은 띄우되 화면 밖 좌표로 옮겨서 안 보이게)으로 통일한다.
+    ⚠️ [동기화 경고] 창 숨김 방식은 이 함수와 issue_real_estate_register()가 반드시 같은 원칙을
+    따라야 한다 — 한쪽만 고치면 이번과 같은 사고(한쪽만 등기소 보안프로그램에 막힘)가 재발한다.
 
     @return {'ok': bool, 'address': str, 'unique_no': str, 'owner_masked': str, 'message': str}
     """
     options = Options()
     options.add_argument('--disable-blink-features=AutomationControlled')
-    options.add_argument('--headless=new')
     driver = _launch_chrome(options)
     try:
         driver.set_window_size(1280, 1000)
+        driver.set_window_position(-32000, -32000)  # 화면 밖으로 이동 — 진짜 창이지만 안 보이게
         result = verify_register_target(driver, payload)
         return {'ok': result['ok'], 'address': result['address'], 'unique_no': result['unique_no'],
                 'owner_masked': result.get('owner_masked', ''), 'message': result['message']}
@@ -1038,6 +1050,10 @@ def issue_real_estate_register(payload, credentials, options=None):
     # 창 자체는 진짜로 띄우되(headless 아님), 화면 밖 좌표로 옮겨 직원 모니터에는 보이지 않게 한다.
     # "몰래(창 안 띄우고) 작동" 옵션이 실사용자에게 약속하는 것(창이 안 보임)은 이 방식으로도 그대로
     # 지켜진다.
+    # ⚠️ [동기화 경고, 2026-09-10] find_register_address()도 이 함수와 같은 "결제대상 확인" 화면을
+    # 거치므로 같은 원칙을 따라야 한다 — 실제로 그 함수만 이 수정을 못 받고 --headless=new로 남아
+    # 있다가 실사용 중 막힌 사고가 있었다(그 함수 docstring 참고). 여기를 또 고칠 때는 그 함수도
+    # 같이 볼 것.
     if headless and IROS_TRUE_HEADLESS_FOR_TEST:
         chrome_options.add_argument('--headless=new')
         # [2026-09-08 임시 진단 — 실측으로 시도했으나 원인이 아닌 것으로 확인됨] 화면밖-창(보임)과
