@@ -392,7 +392,11 @@ class CarrotAutomationWorker:
             return True
             
         else:
-            # FAIL인 경우
+            # [2026-09-06 수정 — 실사용 중 재현된 버그] FAIL인 경우 아무 출력 없이 그냥 False만
+            # 반환해서, 실패했다는 사실 자체를 콘솔/로그에서 알아챌 방법이 없었다(새홈 541535가
+            # '숨김' 상태로 방치된 원인 추적 중 발견 — 실제 예외 내용은 이제 마스터 엔진
+            # (당근_끌어올리기_마스터_통합엔진)이 자체적으로 출력한다).
+            print(f"   [❌ 실패 - {당근매물번호}] 끌어올리기 결과코드 '{결과_코드명사}' — 위 마스터 엔진 로그에서 실제 원인 확인 필요")
             return False
 
     # =================================================================
@@ -562,8 +566,14 @@ class CarrotAutomationWorker:
                     except: self.브라우저.execute_script("arguments[0].click();", 더보기_버튼)
                     time.sleep(0.8)
                     
+                    # [2026-09-10 수정 — 실사용 중 재현된 버그] 이 더보기 메뉴는 @data-state='open'이
+                    # 아니라 값 없는 boolean 속성 @data-open으로 열림을 표시한다(실측 확인 — outerHTML에
+                    # data-state는 아예 없고 data-open=""만 있었음). 그동안 이 조건이 한 번도 만족되지
+                    # 않아 시나리오 A(거래완료→재등록)가 실행될 때마다 이 자리에서 매번 조용히 실패하고
+                    # 있었다. util/property_utils.py가 같은 사이트의 다른 다이얼로그/메뉴에서 이미
+                    # (@data-state='open' or @data-open)로 겪은 것과 동일한 문제라 같은 방식으로 맞춘다.
                     변경_옵션 = WebDriverWait(self.브라우저, 3).until(
-                        EC.element_to_be_clickable((By.XPATH, "//div[@role='menu' and @data-state='open']//*[text()='판매중으로 변경']"))
+                        EC.element_to_be_clickable((By.XPATH, "//div[@role='menu' and (@data-state='open' or @data-open)]//*[text()='판매중으로 변경']"))
                     )
                     self.브라우저.execute_script("arguments[0].click();", 변경_옵션)
                     time.sleep(0.5)
@@ -579,14 +589,29 @@ class CarrotAutomationWorker:
                     except: self.브라우저.execute_script("arguments[0].click();", 더보기_버튼)
                     time.sleep(0.8)
                     
+                    # [2026-09-10 수정] 위 시나리오 A와 동일한 버그·동일한 이유 — @data-open으로 바꾼다.
                     변경_옵션 = WebDriverWait(self.브라우저, 3).until(
-                        EC.element_to_be_clickable((By.XPATH, "//div[@role='menu' and @data-state='open']//*[text()='숨기기']"))
+                        EC.element_to_be_clickable((By.XPATH, "//div[@role='menu' and (@data-state='open' or @data-open)]//*[text()='숨기기']"))
                     )
                     self.브라우저.execute_script("arguments[0].click();", 변경_옵션)
                     time.sleep(0.5)
                     확인창클릭(self.브라우저, 선택='확인', timeout=1, unattended=self.unattended)
                     print(f"   [✅ 상태은닉 마감 - {당근매물번호}] '숨기기' 락 격파 및 은닉 트랙 전송 완수 V")
                     time.sleep(1.0)
+
+                # 🔓 [시나리오 C, 2026-09-06 추가] DB는 활성 중개요청인데 당근이 '숨김'일 때 ➡️ 판매중 구출 작전
+                # 실사용 중 새홈 458090(당근 3702955)이 살아있는 매물인데도 '숨김' 상태로 방치되는
+                # 것을 발견했다 — 이 함수엔 '거래완료'→구출(시나리오 A), '판매중'→은닉(시나리오 B)만
+                # 있고 '숨김'→구출 분기가 아예 없었던 게 원인이다. '숨김' 해제는 '거래완료'와 달리
+                # 더보기 메뉴 없이 행에 바로 보이는 "숨기기 해제" 버튼 하나로 끝난다(실측 확인).
+                # 이 지점은 이미 1~3단계에서 DB 최신 가격/내용으로 수정 폼을 저장한 뒤이므로,
+                # 해제되는 순간 최신 정보가 광고된다(사용자 요구사항).
+                elif DB_상태 == "중개요청" and 현재_상태 == "숨김":
+                    print(f"   [🔓 상태반전 활성화 - {당근매물번호}] '숨김' 상태 포착 ➡️ '숨기기 해제' 버튼 클릭")
+                    숨기기해제_버튼 = 새_매물_행.find_element(By.XPATH, ".//button[normalize-space(text())='숨기기 해제']")
+                    self.브라우저.execute_script("arguments[0].click();", 숨기기해제_버튼)
+                    time.sleep(1.0)
+                    print(f"   [✅ 상태부활 마감 - {당근매물번호}] '숨기기 해제' 완수 V")
 
             print(f"   [✅ 성공 - {당근매물번호}] 수정방식 데이터 동기화 및 상태 교정 대마감")
             self.수정업데이트_성공_개수 += 1
