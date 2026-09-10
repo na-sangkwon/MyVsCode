@@ -1,6 +1,6 @@
 import sys
 print(sys.executable)
-from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QPushButton, QTextEdit, QVBoxLayout, QLineEdit, QHBoxLayout, QGridLayout, QMessageBox, QRadioButton, QButtonGroup
+from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QPushButton, QTextEdit, QVBoxLayout, QLineEdit, QHBoxLayout, QGridLayout, QMessageBox, QRadioButton, QButtonGroup, QComboBox
 from PyQt5.QtCore import QSettings, Qt, QEvent, pyqtSignal
 import obang, obs, hanbang, naver, zigbang, register, deunggi, dabang, daangn
 import object_data, threading
@@ -189,6 +189,18 @@ class MyApp(QWidget):
     self.serverRadioGroup.addButton(self.serverLiveRadio)
     self.serverRadioGroup.addButton(self.serverTestRadio)
 
+    # [2026-09-09 추가 — 사용자 요청] '등기부등본' 버튼의 진행 단계를 고르는 드롭다운 — 웹
+    # 테스트페이지(document_issue_test.php)의 체크박스 3개(신청확인 자동 진행/조회만 진행/결제까지만
+    # 진행)와 같은 의미를 하나로 합쳤다. 각 항목의 데이터는 (lookup_only, stop_before_view, auto_confirm)
+    # 튜플이며, RegistrationCertThread()가 그대로 옵션에 넣는다. 기본 선택(2번째 항목)은 이전에
+    # 하드코딩돼 있던 값(auto_confirm=False)과 동일해서, 아무것도 안 바꾸면 지금까지와 똑같이 동작한다.
+    self.stopStageCombo = QComboBox(self)
+    self.stopStageCombo.addItem('조회만 진행 (결제 안 함)', (True, False, False))
+    self.stopStageCombo.addItem('결제 전에 멈춤 (결제는 직접 클릭)', (False, False, False))
+    self.stopStageCombo.addItem('결제까지만 진행 (열람 안 함)', (False, True, True))
+    self.stopStageCombo.addItem('완료까지 자동 진행 (결제·열람까지)', (False, False, True))
+    self.stopStageCombo.setCurrentIndex(1)
+
     self.startBtn = QPushButton('오방', self)
     self.startBtn.clicked.connect(self.obangThread) #self.startBtn 위젯의 clicked 시그널을 self.startThread 슬롯에 연결
 
@@ -234,6 +246,7 @@ class MyApp(QWidget):
     userBox.addWidget(self.pwInput)
     userBox.addWidget(self.serverLiveRadio)
     userBox.addWidget(self.serverTestRadio)
+    userBox.addWidget(self.stopStageCombo)
 
     #새홈 번호 입력에 대한 레이아웃
     hbox = QHBoxLayout()
@@ -455,12 +468,14 @@ class MyApp(QWidget):
     try:
         payload = self.login_and_fetch_iros_payload(server, object_code_new)
         credentials = self.fetch_iros_credentials(server)
+        lookup_only, stop_before_view, auto_confirm = self.stopStageCombo.currentData()
+        print(f'[진행] 진행 단계 선택 — {self.stopStageCombo.currentText()!r} (lookup_only={lookup_only}, stop_before_view={stop_before_view}, auto_confirm={auto_confirm})')
         options = {
             'headless': False,       # 이 버튼은 항상 보임모드로 돈다(사용자 확정)
-            'auto_confirm': False,   # 결제 버튼은 화면에서 사람이 직접 눌러야 진행 — deunggi.py의 결제 전 확인과 같은 취지
+            'auto_confirm': auto_confirm,
             'close_when_done': True,
-            'lookup_only': False,
-            'stop_before_view': False,
+            'lookup_only': lookup_only,
+            'stop_before_view': stop_before_view,
         }
         result = iros_document_issue.issue_real_estate_register(payload, credentials, options)
         print('=== 결과 ===')
