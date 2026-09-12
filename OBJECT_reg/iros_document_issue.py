@@ -65,7 +65,15 @@ from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.keys import Keys
-from selenium.common.exceptions import NoSuchElementException, UnexpectedAlertPresentException, WebDriverException
+from selenium.common.exceptions import (
+    NoSuchElementException, UnexpectedAlertPresentException, WebDriverException,
+    NoSuchWindowException, InvalidSessionIdException,
+)
+
+# [2026-09-12 추가 — 사용자 요청 "셀레니움 경로도 크롬확장처럼 사용자가 창을 닫은 경우를 구분해달라"]
+# chrome_extension/background.js가 EAIS_TAB_ID_KEY용 chrome.tabs.onRemoved에서 쓰는 것과 동일한
+# 문구 — 두 파이프라인의 사용자 화면 메시지·pr_log 기록을 일치시키기 위해 문구를 그대로 맞춘다.
+USER_CLOSED_WINDOW_MESSAGE = '자동화 창을 완료 전에 직접 닫음'
 
 # [2026-09-08 임시 진단 — 사용자 요청 "진짜 헤드리스로 다시 재현되는지 새 진행로그로 확인해보자"]
 # 기본(False)은 화면 밖 창 방식(아래 issue_real_estate_register의 headless 분기 참고) — 실사용
@@ -699,7 +707,8 @@ def find_register_address(payload):
     ⚠️ [동기화 경고] 창 숨김 방식은 이 함수와 issue_real_estate_register()가 반드시 같은 원칙을
     따라야 한다 — 한쪽만 고치면 이번과 같은 사고(한쪽만 등기소 보안프로그램에 막힘)가 재발한다.
 
-    @return {'ok': bool, 'address': str, 'unique_no': str, 'owner_masked': str, 'message': str}
+    @return {'ok': bool, 'address': str, 'unique_no': str, 'owner_masked': str, 'message': str,
+             'user_cancelled': bool}
     """
     options = Options()
     options.add_argument('--disable-blink-features=AutomationControlled')
@@ -709,14 +718,30 @@ def find_register_address(payload):
         driver.set_window_position(-32000, -32000)  # 화면 밖으로 이동 — 진짜 창이지만 안 보이게
         result = verify_register_target(driver, payload)
         return {'ok': result['ok'], 'address': result['address'], 'unique_no': result['unique_no'],
-                'owner_masked': result.get('owner_masked', ''), 'message': result['message']}
+                'owner_masked': result.get('owner_masked', ''), 'message': result['message'],
+                'user_cancelled': False}
+    except (NoSuchWindowException, InvalidSessionIdException):
+        # [2026-09-12 추가 — 사용자 요청] 담당자가 자동화 창을 직접 닫은 경우다. chrome_extension/
+        # background.js의 chrome.tabs.onRemoved 처리와 구분 기준을 맞춰서, 아래 일반 except의
+        # "자동화 중 오류" 문구(시스템 버그로 오인되는 문구)가 아니라 사용자의 정상적인 취소임이
+        # 드러나는 문구를 쓴다. user_cancelled를 본 호출부(report_iros_address_lookup_result())가
+        # pr_log에 그대로 남긴다.
+        return {'ok': False, 'address': '', 'unique_no': '', 'owner_masked': '',
+                'message': USER_CLOSED_WINDOW_MESSAGE, 'user_cancelled': True}
     except Exception as e:
         # [2026-09-07 추가 — 라이브 재현] TimeoutException 등 일부 셀레니움 예외는 str(e)가 빈
         # 문자열이라(예: "Message: \n") 무슨 예외인지조차 알 수 없었다 — 클래스명을 함께 남긴다.
         return {'ok': False, 'address': '', 'unique_no': '', 'owner_masked': '',
-                'message': f'자동화 중 오류({type(e).__name__}): {e} | {_diag_snapshot(driver)}'}
+                'message': f'자동화 중 오류({type(e).__name__}): {e} | {_diag_snapshot(driver)}',
+                'user_cancelled': False}
     finally:
-        driver.quit()
+        # [2026-09-12 추가 — 사용자가 창을 이미 닫았으면 driver.quit()도 예외를 낼 수 있다] 방금 위에서
+        # 만든 result가 이 예외로 통째로 덮여 함수 자체가 크래시하지 않도록 보호한다 — 이미 세션이
+        # 끝난 뒤의 quit()은 실패해도 무시해도 되는 정리 동작일 뿐이다.
+        try:
+            driver.quit()
+        except Exception:
+            pass
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -1023,7 +1048,9 @@ def issue_real_estate_register(payload, credentials, options=None):
     이 강제와 무관하게 항상 우선한다 — 결제 자체를 안 하므로 "결제를 자동으로 할지"는 애초에 의미가 없다.
 
     @return {'ok': bool, 'file_path': str(로컬 임시경로, NAS 저장은 호출부 책임 — lookup_only면 항상 빈 값),
-             'address': str, 'unique_no': str, 'owner_masked': str, 'message': str}
+             'address': str, 'unique_no': str, 'owner_masked': str, 'message': str,
+             'user_cancelled': bool(담당자가 자동화 창을 완료 전에 직접 닫은 경우에만 True —
+                 2026-09-12 추가, local_helper/main.py가 이 값을 보고 오류로그 대신 취소로 기록한다)}
     """
     options = dict(options or {})
     headless = bool(options.get('headless', True))
@@ -1072,7 +1099,8 @@ def issue_real_estate_register(payload, credentials, options=None):
         'plugins.always_open_pdf_externally': True,  # PDF 뷰어로 열지 않고 그대로 다운로드
     })
     driver = _launch_chrome(chrome_options)
-    result = {'ok': False, 'file_path': '', 'address': '', 'unique_no': '', 'owner_masked': '', 'message': ''}
+    result = {'ok': False, 'file_path': '', 'address': '', 'unique_no': '', 'owner_masked': '', 'message': '',
+              'user_cancelled': False}
     try:
         print(f'[진행] issue_real_estate_register 시작 — headless={headless}, true_headless_test={IROS_TRUE_HEADLESS_FOR_TEST}, lookup_only={lookup_only}, auto_confirm={auto_confirm}, stop_before_view={stop_before_view}', flush=True)
         driver.set_window_size(1280, 1000)
@@ -1189,11 +1217,26 @@ def issue_real_estate_register(payload, credentials, options=None):
                         'message': save_result.get('message', '')})
         return result
 
+    except (NoSuchWindowException, InvalidSessionIdException):
+        # [2026-09-12 추가 — 사용자 요청] 담당자가 자동화 창을 완료 전에 직접 닫은 경우다. 아래 일반
+        # except의 "자동화 중 오류(...)" 문구는 시스템 버그로 오인되고 오류로그(pr_error_log)에도
+        # 남는데, 이건 사람이 스스로 취소한 정상 동작이라 chrome_extension/background.js의
+        # chrome.tabs.onRemoved 처리와 같은 기준으로 구분한다 — local_helper/main.py가
+        # user_cancelled를 보고 오류로그를 건너뛴다(_report_document_issue_status 참고).
+        print('[진행] 사용자가 자동화 창을 직접 닫음 — 정상 취소로 처리', flush=True)
+        result['message'] = USER_CLOSED_WINDOW_MESSAGE
+        result['user_cancelled'] = True
+        return result
     except Exception as e:
         print(f'[오류] issue_real_estate_register 중 예외 발생: {type(e).__name__}: {e}', flush=True)
         result['message'] = f'자동화 중 오류({type(e).__name__}): {e} | {_diag_snapshot(driver)}'
         return result
     finally:
         if close_when_done:
-            driver.quit()
+            # [2026-09-12 추가] 사용자가 이미 창을 닫은 상태면 quit()도 예외를 낼 수 있다 — 위에서
+            # 막 만든 result가 이 예외로 덮여 함수 자체가 크래시하지 않도록 보호한다.
+            try:
+                driver.quit()
+            except Exception:
+                pass
         # close_when_done=False면 창을 열어둔다 — 담당자가 화면을 보고 남은 절차를 직접 마칠 수 있게.
