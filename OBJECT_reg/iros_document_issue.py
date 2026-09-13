@@ -1125,8 +1125,14 @@ def issue_real_estate_register(payload, credentials, options=None):
         'plugins.always_open_pdf_externally': True,  # PDF 뷰어로 열지 않고 그대로 다운로드
     })
     driver = _launch_chrome(chrome_options)
+    # [2026-09-13 추가 — 사용자 리포트로 발견된 버그 수정] stop_before_view=True로 멈춘 경우
+    # ok=True인데도 file_path가 항상 빈 값이다(원래 설계 — 결제만 하고 열람·다운로드는 일부러
+    # 안 함). 그런데 호출부(local_helper/main.py)가 이 둘을 구분하지 않고 ok=True면 무조건 파일을
+    # NAS로 옮기려 시도해서, "옮길 파일 경로가 없습니다"라는 엉뚱한 이유로 "발급 실패"가 오류로그에
+    # 잘못 남았다(실사용 재현, object_code_new=490302). 호출부가 "파일이 없는 게 정상인 멈춤"과
+    # "진짜 실패"를 구분할 수 있도록 플래그를 추가한다.
     result = {'ok': False, 'file_path': '', 'address': '', 'unique_no': '', 'owner_masked': '', 'message': '',
-              'user_cancelled': False}
+              'user_cancelled': False, 'stopped_before_view': False}
     try:
         print(f'[진행] issue_real_estate_register 시작 — headless={headless}, true_headless_test={IROS_TRUE_HEADLESS_FOR_TEST}, lookup_only={lookup_only}, auto_confirm={auto_confirm}, stop_before_view={stop_before_view}', flush=True)
         driver.set_window_size(1280, 1000)
@@ -1165,6 +1171,7 @@ def issue_real_estate_register(payload, credentials, options=None):
         if routed == 'duplicate-handled':
             if stop_before_view:
                 result['ok'] = True
+                result['stopped_before_view'] = True
                 result['message'] = '(stop_before_view) 이미 결제된 건으로 연결됨 — 열람 전에 멈췄습니다.'
                 _alert_stop_before_view(driver, '이미 결제된 건으로 연결됨')
                 return result
@@ -1232,6 +1239,7 @@ def issue_real_estate_register(payload, credentials, options=None):
             # 여기서 멈춘다 — 결제는 이미 완료됐지만 [열람]은 아직 안 눌렀으므로 결제취소가 가능하다.
             print('[진행] stop_before_view — 열람 전에 멈춤', flush=True)
             result['ok'] = True
+            result['stopped_before_view'] = True
             result['message'] = '(stop_before_view) 결제까지 완료, 열람 전에 멈췄습니다.'
             _alert_stop_before_view(driver, '결제까지 완료')
             return result
