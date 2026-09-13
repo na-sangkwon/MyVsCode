@@ -313,6 +313,24 @@ def _squash(s):
     return re.sub(r'\s', '', s or '')
 
 
+# [2026-09-13 추가 — 사용자 발견 "검색어로 숫자와 한글만 사용 가능하다는 게 핵심"] 인터넷등기소
+# 간편검색은 주소에 영문자가 섞이면 검색결과 0건을 낸다(매물 490302로 재현 — "F2418A호" 그대로
+# 넣으면 0건, 발음 그대로 한글로 바꾼 "에프2418에이호"로 넣으면 1건 정확히 매칭). core/lib/
+# lib_request.php::convert_alphabet_to_korean()이 이미 같은 변환표(건물명 매칭용)를 갖고 있어서
+# 그대로 옮겼다 — 용도는 다르지만(건물명 유사판단 vs 등기소 검색어), 매핑 자체는 동일해야 하므로
+# ⚠️ [동기화 경고] 저 PHP 함수의 매핑을 고칠 일이 있으면 이 함수도 반드시 같이 맞출 것.
+_ALPHABET_TO_KOREAN = {
+    'A': '에이', 'B': '비', 'C': '씨', 'D': '디', 'E': '이', 'F': '에프', 'G': '지', 'H': '에이치',
+    'I': '아이', 'J': '제이', 'K': '케이', 'L': '엘', 'M': '엠', 'N': '엔', 'O': '오', 'P': '피',
+    'Q': '큐', 'R': '알', 'S': '에스', 'T': '티', 'U': '유', 'V': '브이', 'W': '더블유', 'X': '엑스',
+    'Y': '와이', 'Z': '제트',
+}
+
+
+def _convert_alphabet_to_korean_for_search(text):
+    return ''.join(_ALPHABET_TO_KOREAN.get(ch, ch) for ch in (text or '').upper())
+
+
 def _row_matches_target(addr_text, payload):
     """content_iros.js::rowMatchesTarget()과 동일한 판정 — 결제 이후 화면(미열람/재열람 목록)에서
     이번 물건에 해당하는 줄을 고를 때도 재사용한다."""
@@ -430,22 +448,53 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail)
     _guard_not_stuck_on_security_page(driver)  # [2026-09-07] 홈 진입 클릭 뒤에도 튕길 수 있다 — 다음 20초 대기 전에 먼저 확인
     print(f'[진행] 부동산 열람·발급 화면 진입 확인 — url={driver.current_url}', flush=True)
 
-    def _find_loc_srch_tab(d):
+    # [2026-09-13 변경 — 사용자 발견, 실사용 재현으로 확인된 근본 해법] 기존엔 "소재지번검색" 탭에서
+    # 동/리+지번+동/호를 각 칸에 나눠 입력했는데, 건물동(동) 정보가 없는 매물(건축물대장 데이터 부재)
+    # 에서는 지번만으로 검색결과가 여러 건으로 갈려 자동으로 못 골랐다(매물 490302로 재현: "가수동
+    # 399 에프2418에이호"를 소재지번검색에 나눠 넣으면 2건, 같은 주소를 "간편검색"에 통째로 넣으면
+    # 정확히 1건). 간편검색은 주소 한 줄을 등기소 자체 DB(도로명주소·건물명 연계)로 해석해 좁혀주므로,
+    # 동 정보가 없어도 대부분 유일하게 특정된다 — 그래서 검색 탭 자체를 간편검색으로 바꾼다.
+    def _find_smpl_srch_tab(d):
         _dismiss_alert_if_present(d)
-        return d.find_element(By.ID, f'{BASE}_tac_rlrg_appl_tab_tab_loc_srch_tabHTML')
-    tab = wait.until(_find_loc_srch_tab)
-    print('[진행] 소재지번검색 탭 찾음, 클릭', flush=True)
+        return d.find_element(By.ID, f'{BASE}_tac_rlrg_appl_tab_tab_smpl_srch_tabHTML')
+    tab = wait.until(_find_smpl_srch_tab)
+    print('[진행] 간편검색 탭 찾음, 클릭', flush=True)
     _js_click(driver, tab)
     time.sleep(1.5)
     _guard_not_stuck_on_security_page(driver)
-    print('[진행] 소재지번검색 탭 진입 확인', flush=True)
+    print('[진행] 간편검색 탭 진입 확인', flush=True)
+
+    # search_address(원본 주소 문자열)는 core/lib/lib_document_issue.php::getIrosIssuePayload()와
+    # 직접입력(buildManualIrosPayload()) 양쪽 다 이미 payload에 담아 보낸다 — 여기서 새로 조립하지
+    # 않는다. 혹시라도 없는 예외적인 경우에만 있는 조각으로 최소한이라도 구성해본다(방어적 fallback).
+    search_address = (payload.get('search_address') or '').strip()
+    if not search_address:
+        parts = [loc.get('sido', ''), loc.get('dong_or_li', ''), loc.get('jibun', '')]
+        if loc.get('building_dong_no'):
+            parts.append(f"{loc['building_dong_no']}동")
+        if loc.get('room_no'):
+            parts.append(f"{loc['room_no']}호")
+        search_address = ' '.join(p for p in parts if p)
+
+    # [2026-09-13 추가 — 실사용 재현으로 확인] search_address는 "F2418A호"처럼 원본 영문 표기를
+    # 그대로 갖고 있는데, 간편검색은 영문이 섞이면 0건을 낸다(위 _convert_alphabet_to_korean_for_search
+    # 주석 참고) — 등기소에 넣기 직전에만 변환하고, payload 자체나 반환값(address)에는 원본을 그대로
+    # 쓴다(변환은 검색용 임시값일 뿐, 실제 등기부상 주소로 오인되면 안 되므로).
+    search_address_for_search = _convert_alphabet_to_korean_for_search(search_address)
+
+    addr_el = _find_first_visible(driver, [f'#{BASE}_sbx_smpl_swrd___input'])
+    if not addr_el:
+        return _fail('간편검색 주소 입력칸을 찾지 못했습니다.')
+    _type_into_field(driver, addr_el, search_address_for_search)
+    print(f'[진행] 간편검색 주소 입력 완료 — {search_address_for_search}', flush=True)
+    time.sleep(0.3)
 
     picked = False
     seen_labels = []
     _dismiss_alert_if_present(driver)
     for r in driver.find_elements(By.CSS_SELECTOR, f'#{BASE} input[type="radio"]'):
         rid = r.get_attribute('id') or ''
-        if 'rad_loc_kind_cls' not in rid:
+        if 'rad_smpl_kind_cls' not in rid:
             continue
         try:
             label = driver.find_element(By.CSS_SELECTOR, f'label[for="{rid}"]')
@@ -453,10 +502,9 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail)
             continue
         label_text = label.text.strip()
         seen_labels.append(label_text)
-        # [2026-09-08 변경 — 실측으로 확인] 이 라디오 항목이 항상 "토지"/"건물"/"집합건물" 3개로
-        # 나오는 게 아니라, 어떤 때는 "토지+건물"(둘을 합친 하나) / "집합건물" 2개로만 나온다(실측
-        # 화면캡처로 확인, 2026-09-08) — "외부사이트 화면 다양성" 원칙대로 라벨이 고정돼있다고
-        # 가정하지 않고, 대상이 토지/건물이면 "토지+건물"도 같이 인정한다.
+        # [2026-09-08 소재지번검색 변경분과 동일한 이유로 남겨둠 — 실측으로 확인된 화면구성 편차
+        # 대응] 간편검색에서는 지금까지 "전체/집합건물/토지/건물" 4개 고정으로만 봤지만, 혹시 다른
+        # 화면에서 "토지+건물"로 합쳐 나올 경우에 대비해 그 표기도 함께 인정한다.
         is_match = (
             label_text == property_category
             or (property_category in ('토지', '건물') and label_text == '토지+건물')
@@ -468,9 +516,9 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail)
     if not picked:
         return _fail(f'부동산구분 "{property_category}" 항목을 찾지 못했습니다 — 실제 화면에 있던 항목: {seen_labels}')
     print(f'[진행] 부동산구분 "{property_category}" 선택 완료 (화면 항목: {seen_labels})', flush=True)
-    time.sleep(1.2)
+    time.sleep(0.6)
 
-    sido_id = f'{BASE}_sel_loc_admin_regn1'
+    sido_id = f'{BASE}_sel_smpl_admin_regn1'
     _dismiss_alert_if_present(driver)
     sido_el = driver.find_element(By.ID, sido_id)
     sido_value = None
@@ -480,12 +528,9 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail)
             break
     if sido_value is None:
         return _fail(f'시/도 "{loc.get("sido", "")}" 옵션을 찾지 못했습니다.')
-    # [2026-09-08 재변경 — 실측으로 원인 확인] Select()로 바꿨다가(select_by_value도, 옵션 직접
-    # 클릭도) 실제 화면에서 "선택해주세요"로 그대로 남고 "시/도를 선택하시기 바랍니다" 팝업까지
-    # 뜨는 게 실측으로 확인됨 — 즉 네이티브 <select> 조작처럼 보여도 실제로는 WebSquare가 자기
-    # 내부 상태로 다시 감싸고 있어서, 그 프레임워크의 setValue() API를 거쳐야 실제로 반영된다.
-    # (텍스트 입력칸의 진짜 타이핑 원칙과는 별개다 — 이건 키보드 입력이 아니라 드롭다운 "선택"이라
-    # 키보드보안 프로그램이 검사할 대상 자체가 아니다.)
+    # [2026-09-08 소재지번검색에서 실측으로 확인된 이유 그대로 적용] 네이티브 <select> 조작(Select(),
+    # 옵션 클릭)은 WebSquare 내부 상태에 반영되지 않는다 — 그 프레임워크의 setValue() API를 거쳐야
+    # 실제로 반영된다. 드롭다운 "선택"이라 키보드보안 프로그램 검사 대상이 아니라 이 방식이 안전하다.
     comp_id = re.sub(r'___input$', '', sido_id)
     ok = driver.execute_script(
         """
@@ -497,42 +542,6 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail)
     )
     print(f'[진행] 시/도 "{loc.get("sido", "")}" 선택 완료 (setValue 성공={ok})', flush=True)
     time.sleep(0.6)
-
-    jibun_el = _find_first_visible(driver, [
-        f'#{BASE}_sbx_agrg_buld_loc_no___input',
-        f'#{BASE}_sbx_loc_no___input',
-    ])
-    dongli_el = driver.find_element(By.ID, f'{BASE}_sbx_loc_admin_regn3___input')
-    if not jibun_el:
-        return _fail('지번 입력칸을 찾지 못했습니다.')
-
-    _type_into_field(driver, dongli_el, loc['dong_or_li'])
-    time.sleep(0.3)
-    _type_into_field(driver, jibun_el, loc['jibun'])
-    time.sleep(0.6)
-    print(f'[진행] 동/리·지번 입력 완료 — {loc["dong_or_li"]} {loc["jibun"]}', flush=True)
-
-    if property_category == '집합건물' and (loc.get('building_dong_no') or loc.get('room_no')):
-        mode_index = 0 if (loc.get('building_dong_no') and loc.get('room_no')) else (1 if loc.get('building_dong_no') else 2)
-        # [2026-09-07 추가 — 본섭 데이터(999071)로 재현] 이 지점 직전에 "보안프로그램 설치" alert가
-        # 뜨어있으면 바로 다음 줄의 find_element()가 UnexpectedAlertPresentException으로 죽는다 —
-        # 클릭 뒤(_js_click 안)만이 아니라 클릭 **전** DOM 조회 시점에도 alert가 열려있을 수 있다.
-        _dismiss_alert_if_present(driver)
-        try:
-            _js_click(driver, driver.find_element(By.CSS_SELECTOR, f'label[for="{BASE}_rad_loc_dong_room_sel_input_{mode_index}"]'))
-            time.sleep(1)
-        except NoSuchElementException:
-            pass
-        if loc.get('building_dong_no'):
-            dong_el = _find_first_visible(driver, [f'#{BASE}_sbx_loc_buld_no_buld___input'])
-            if dong_el:
-                _type_into_field(driver, dong_el, loc['building_dong_no'])
-        if loc.get('room_no'):
-            room_el = _find_first_visible(driver, [f'#{BASE}_sbx_loc_buld_no_room___input'])
-            if room_el:
-                _type_into_field(driver, room_el, loc['room_no'])
-        time.sleep(0.6)
-        print(f'[진행] 동/호수 입력 완료 — 동={loc.get("building_dong_no")}, 호={loc.get("room_no")}', flush=True)
 
     search_btn = None
     for e in driver.find_elements(By.CSS_SELECTOR, f'#{BASE} input, #{BASE} button, #{BASE} a'):
@@ -1024,6 +1033,23 @@ def _alert_stop_before_view(driver, reason):
         pass
 
 
+def _alert_failure_and_keep_window_open(driver, message):
+    """[2026-09-13 추가 — 사용자 요청 "오류가 발생하면 조용히 죽는데, 숨김모드가 아니면 알림창을
+    띄워서 왜 멈췄는지 알 수 있게 하고 싶다"] 지금까지는 실패 사유가 진행로그 파일에만 남아서,
+    창이 보이는 상태로 지켜보고 있어도 창이 그냥 닫혀버리면 왜 멈췄는지 그 자리에서 알 방법이
+    없었다. _alert_stop_before_view()와 같은 방식(alert 대화상자)을 실패 상황에도 적용한다.
+
+    driver.execute_script("alert(...)")는 대화상자가 뜨는 즉시 반환된다(모달이 막는 건 페이지의
+    JS 실행이지, 이 커맨드 자체가 아니다) — 그래서 알림을 띄운 직후 창을 닫아버리면 사람이 읽기도
+    전에 알림이 창과 함께 사라진다. issue_real_estate_register()의 finally에서 이 함수를 부른
+    직후 close_when_done을 강제로 꺼서, "완료 후 창 모두 닫기"가 켜져 있었어도(숨김모드가 아닌 한)
+    이번 실패 건만은 창이 남아 담당자가 알림을 직접 확인·해제할 수 있게 한다."""
+    try:
+        driver.execute_script("alert(arguments[0]);", f'[오류] {message}\n\n이 창은 자동으로 닫히지 않습니다 — 확인 후 직접 닫아주세요.')
+    except Exception:
+        pass
+
+
 def issue_real_estate_register(payload, credentials, options=None):
     """
     [2026-09-07 신규] 등기부등본을 로그인부터 결제·열람·다운로드까지 전체 발급한다.
@@ -1232,6 +1258,13 @@ def issue_real_estate_register(payload, credentials, options=None):
         result['message'] = f'자동화 중 오류({type(e).__name__}): {e} | {_diag_snapshot(driver)}'
         return result
     finally:
+        # [2026-09-13 추가 — 사용자 요청] 실패(result['ok']=False)했는데 사람이 스스로 창을 닫은
+        # 경우(user_cancelled)가 아니고 몰래 작동도 아니면, 사유를 알림창으로 띄우고 이번 실패
+        # 건만은 close_when_done 설정과 무관하게 창을 열어둔다 — 담당자가 왜 멈췄는지 그 자리에서
+        # 바로 읽을 수 있게 하기 위함(_alert_failure_and_keep_window_open() 참고).
+        if not result['ok'] and not result.get('user_cancelled') and not headless:
+            _alert_failure_and_keep_window_open(driver, result['message'])
+            close_when_done = False
         if close_when_done:
             # [2026-09-12 추가] 사용자가 이미 창을 닫은 상태면 quit()도 예외를 낼 수 있다 — 위에서
             # 막 만든 result가 이 예외로 덮여 함수 자체가 크래시하지 않도록 보호한다.
