@@ -35,6 +35,14 @@ from util.property_utils import (
     데이터베이스_다중_가격스펙_전수조회,
 )
 
+# [2026-09-13 추정치 — 확인 필요, 사용자 요청] 당근이 끌어올려진 매물을 실제로 며칠 만에 자동
+# 숨김 처리하는지 정확한 정책을 모른다. 이 값은 네이버 등 다른 사이트가 관행적으로 쓰는 30일
+# 주기를 우선 차용한 추정치일 뿐이다 — 아래 데이터베이스_광고시작종료일_최신화()가 '숨김' 상태를
+# 구출할 때마다 남기는 관측 로그(pr_log, log_item='danggeun_hide_cycle')가 쌓이면 실측값으로
+# 교정할 것. 이 값을 바꿀 땐 여기 한 곳만 고치면 되도록 상수로 뺐다(두 성공 분기가 함께 참조).
+당근_광고주기_일수 = 30
+
+
 class CarrotAutomationWorker:
     """ 당근부동산 비즈니스 센터 제어 및 매물 끌올/수정/완료 처리를 전담하는 클래스 """
 
@@ -333,25 +341,51 @@ class CarrotAutomationWorker:
     # =================================================================
     # 💾 [신설] 끌올 성공 매물 광고시작일(ad_start) 오늘 날짜 동기화 엔진
     # =================================================================
-    def 데이터베이스_광고시작종료일_최신화(self, 당근매물번호):
-        """ 숨김 해제 성공 시 광고 시작일을 오늘로, 종료일을 30일 뒤로 전격 연장 동기화 """
+    def 데이터베이스_광고시작종료일_최신화(self, 당근매물번호, 발견경위='정상'):
+        """ 끌어올리기 성공(또는 '숨김' 상태에서 구출) 시 광고 시작일을 오늘로, 종료일을
+        당근_광고주기_일수 뒤로 전격 연장 동기화.
+
+        발견경위='구출'이면(=RESCUE_BUMP_SUCCESS, '숨김' 상태를 발견해 되살린 경우) 덮어쓰기
+        직전의 옛 ad_start를 먼저 읽어 "그때부터 오늘까지 며칠 만에 '숨김'으로 발견됐는지"를
+        관측 로그로 남긴다 — 정상적인 BUMP_SUCCESS는 애초에 '숨김'을 발견한 사건이 아니라서
+        이 관측이 성립하지 않으므로 남기지 않는다.
+        """
         import pymysql
         try:
             연결고리 = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', database='obangkr', charset='utf8')
             명령조수 = 연결고리.cursor()
-            
-            # 🎯 [종료일 30일 연장 이식] 시작일(오늘), 업데이트일(오늘), 종료일(오늘+30일) 삼각 편대를 동시에 리셋합니다.
+
+            if 발견경위 == '구출':
+                try:
+                    명령조수.execute(
+                        "SELECT ad_start FROM pr_externalad WHERE ad_code=%s AND ad_site='당근' AND ad_del='N'",
+                        (str(당근매물번호),)
+                    )
+                    이전행 = 명령조수.fetchone()
+                    if 이전행 and 이전행[0]:
+                        경과일수 = (datetime.date.today() - 이전행[0]).days
+                        명령조수.execute(
+                            """INSERT INTO pr_log (log_target, log_item, log_value, admin_id, log_wdate, log_wtime)
+                               VALUES (%s, 'danggeun_hide_cycle', %s, 'system', CURRENT_DATE, CURRENT_TIME)""",
+                            (str(당근매물번호),
+                             f"마지막 갱신({이전행[0]}) 이후 {경과일수}일 만에 '숨김' 상태로 발견됨 — 현재 추정 주기({당근_광고주기_일수}일)와 비교용")
+                        )
+                        연결고리.commit()
+                except Exception as 오류:
+                    print(f"   [❌ 관측로그 실패 - {당근매물번호}] 숨김주기 관측 기록 중 실패(무시하고 계속): {오류}")
+
+            # 🎯 [종료일 연장 이식] 시작일(오늘), 업데이트일(오늘), 종료일(오늘+당근_광고주기_일수) 삼각 편대를 동시에 리셋합니다.
             업데이트쿼리 = """
-                UPDATE pr_externalad 
-                SET ad_start = CURRENT_DATE, 
-                    ad_end = DATE_ADD(CURRENT_DATE, INTERVAL 30 DAY), 
-                    ad_udate = CURRENT_DATE 
+                UPDATE pr_externalad
+                SET ad_start = CURRENT_DATE,
+                    ad_end = DATE_ADD(CURRENT_DATE, INTERVAL %s DAY),
+                    ad_udate = CURRENT_DATE
                 WHERE ad_code = %s AND ad_site = '당근' AND ad_del = 'N'
             """
-            명령조수.execute(업데이트쿼리, (str(당근매물번호),))
+            명령조수.execute(업데이트쿼리, (당근_광고주기_일수, str(당근매물번호)))
             연결고리.commit()
             명령조수.close(); 연결고리.close()
-            print(f"   [💾 DB 부활 동기화 - {당근매물번호}] 광고시작일(오늘) 및 종료일(30일 뒤) 패키지 갱신 완료")
+            print(f"   [💾 DB 동기화 - {당근매물번호}] 광고시작일(오늘) 및 종료일({당근_광고주기_일수}일 뒤) 패키지 갱신 완료")
         except Exception as 오류:
             print(f"   [❌ DB 업데이트 실패 - {당근매물번호}] 광고 정보 연장 업데이트 중 실패: {오류}")
 
@@ -387,6 +421,11 @@ class CarrotAutomationWorker:
         if 결과_코드명사 == "BUMP_SUCCESS":
             print(f"   [✅ 성공 - {당근매물번호}] 다차원 가격 조율 및 정통 끌어올리기 최종 마감 완료 V")
             self.끌어올리기_성공_개수 += 1
+            # [2026-09-13 추가 — 신고 "연장 성공했는데 우리 DB 시작일/종료일이 안 바뀐다"] 그동안
+            # RESCUE_BUMP_SUCCESS(숨김 상태에서 구출)만 이 갱신을 했고, 정작 가장 흔한 정상
+            # 끌어올리기 성공은 우리 DB에 반영이 안 되는 비대칭이 있었다 — 둘 다 "성공"이면 우리
+            # DB도 똑같이 최신화해야 한다(사용자 확정).
+            self.데이터베이스_광고시작종료일_최신화(당근매물번호)
             return True
             
         elif 결과_코드명사 == "PRICE_UPDATE_SUCCESS":
@@ -398,7 +437,7 @@ class CarrotAutomationWorker:
             # 🚀 [대통합 치료 완료] 이제 쿨타임 중 구출이든 정통 끌올 중 구출이든 누락 없이 완벽히 이쪽으로 모입니다!
             print(f"   [✅ 성공 - {당근매물번호}] '숨김' 유령 상태 해제 및 활성 트랙 구출 완수 V")
             self.숨김해제_성공_개수 += 1
-            self.데이터베이스_광고시작종료일_최신화(당근매물번호) # 🛑 가로채기 당해 씹히던 30일 수명 연장 쿼리 완벽 결속!
+            self.데이터베이스_광고시작종료일_최신화(당근매물번호, '구출') # 🛑 가로채기 당해 씹히던 수명 연장 쿼리 완벽 결속!
             return True       
             
         elif 결과_코드명사 == "NO_CHANGE_SKIP":
