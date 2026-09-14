@@ -204,6 +204,14 @@ class MyApp(QWidget):
     self.startBtn = QPushButton('오방', self)
     self.startBtn.clicked.connect(self.obangThread) #self.startBtn 위젯의 clicked 시그널을 self.startThread 슬롯에 연결
 
+    # [2026-09-14 신규 — 사용자 요청 "공적장부처럼 한 곳에서 관리되는 셀레니움 파이프라인"] 위 '오방'
+    # 버튼(obang.macro — DB 직접 조회 + 자체 업무로직)과 별개로, 웹과 **완전히 같은 함수**
+    # (obang.automate_from_payload)를 부르는 버튼. 값은 웹 서버(external_ad_register.php)가 계산한 걸
+    # 받아온다 — '등기부등본' 버튼이 iros_document_issue.py를 웹과 공유하는 것과 같은 구조.
+    # 여기서 VSCode로 디버깅해 고치면 웹 버튼(로컬도우미 경유)에서도 똑같이 돈다.
+    self.obangPipelineBtn = QPushButton('오방(파이프라인)', self)
+    self.obangPipelineBtn.clicked.connect(self.ObangPipelineThread)
+
     self.obsBtn = QPushButton('오부사', self)  # '오부사' 버튼 생성
     self.obsBtn.clicked.connect(self.obsThread)
 
@@ -260,6 +268,7 @@ class MyApp(QWidget):
     hbox3 = QHBoxLayout()
     hbox3.addStretch(1)
     hbox3.addWidget(self.startBtn)
+    hbox3.addWidget(self.obangPipelineBtn)
     hbox3.addWidget(self.obsBtn)
     hbox3.addWidget(self.hanbangBtn)  # '한방등록' 버튼
     hbox3.addWidget(self.naverBtn)
@@ -347,7 +356,7 @@ class MyApp(QWidget):
 
       # '네이버' 버튼을 제외한 버튼 리스트
       buttons = [
-          self.startBtn, self.obsBtn, self.hanbangBtn, self.zigbangBtn, self.dabangBtn,
+          self.startBtn, self.obangPipelineBtn, self.obsBtn, self.hanbangBtn, self.zigbangBtn, self.dabangBtn,
           self.BuildingRegisterBtn, self.RegistrationCertBtn, self.daangnBtn
       ]
 
@@ -446,6 +455,78 @@ class MyApp(QWidget):
     if not res.get('ok'):
         raise RuntimeError(f'등기소 계정정보 조회 실패: {res}')
     return res['data']
+
+  def login_and_fetch_external_ad_payload(self, server, site_key, object_code_new):
+    """[2026-09-14 신규] login_and_fetch_iros_payload()와 같은 방식(실제 로그인 → 세션쿠키)으로
+    web/_shared/external_ad_register.php(mode=payload)를 불러 등록값을 받아온다 — 크롬확장이 쓰는 것과
+    완전히 같은 엔드포인트라 값 계산은 서버 한 곳뿐이다. res 전체(payload/missing/admin_id …)를 돌려준다."""
+    cookie_jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
+    login_body = urllib.parse.urlencode({
+        'fn': 'login', 'login_id': self.idInput.text(), 'login_pw': self.pwInput.text(),
+    }).encode('utf-8')
+    login_req = urllib.request.Request(f'{server}/api/get_api_lib.php', data=login_body, method='POST')
+    with opener.open(login_req, timeout=15) as resp:
+        login_res = json.loads(resp.read().decode('utf-8'))
+    login_data = login_res.get('data') or {}
+    if not login_res.get('ok') or login_data.get('status') != 'success':
+        raise RuntimeError(f'로그인 실패: {login_data.get("message") or login_res}')
+    payload_body = urllib.parse.urlencode({
+        'mode': 'payload', 'site_key': site_key, 'object_code_new': object_code_new,
+    }).encode('utf-8')
+    payload_req = urllib.request.Request(f'{server}/web/_shared/external_ad_register.php', data=payload_body, method='POST')
+    with opener.open(payload_req, timeout=30) as resp:
+        res = json.loads(resp.read().decode('utf-8'))
+    if not res.get('ok'):
+        raise RuntimeError(f'등록값 조회 실패: {res.get("message") or res}')
+    return res
+
+  def fetch_obang_credentials(self, server, admin_id):
+    """오방 로그인정보 — fetch_iros_credentials()와 같은 토큰 인증(fn=getobangservicecredentials)."""
+    body = urllib.parse.urlencode({'fn': 'getobangservicecredentials', 'service_token': IROS_SERVICE_TOKEN,
+                                   'admin_id': admin_id}).encode('utf-8')
+    req = urllib.request.Request(f'{server}/api/get_api_lib.php', data=body, method='POST')
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        res = json.loads(resp.read().decode('utf-8'))
+    if not res.get('ok'):
+        raise RuntimeError(f'오방 계정정보 조회 실패: {res}')
+    return res['data']
+
+  def ObangPipelineThread(self): #"오방(파이프라인)" 버튼 — 웹과 같은 obang.automate_from_payload()를 직접 실행
+    object_code_new = self.objectInput.text().strip()
+    if not object_code_new:
+        pyautogui.alert('새홈 번호를 입력하세요.')
+        return
+    server = self.selected_iros_server()
+    print(f'[진단] test.py에서 오방 파이프라인 시작 (매물={object_code_new}) python={sys.executable!r} server={server!r}')
+    try:
+        res = self.login_and_fetch_external_ad_payload(server, 'obang', object_code_new)
+        if res.get('missing'):
+            pyautogui.alert('필수항목이 비어 있어 시작하지 않았습니다:\n\n' + ', '.join(res['missing']), '[오방 파이프라인]')
+            return
+        credentials = self.fetch_obang_credentials(server, res.get('admin_id') or self.idInput.text())
+        payload = dict(res['payload'])
+        payload['started_from'] = server
+        options = {'headless': False, 'close_when_done': False}   # 직접 실행은 창을 보면서 디버깅한다
+        result = obang.automate_from_payload(payload, credentials, options)
+        print('=== 결과 ===')
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if result.get('ok'):
+            body = urllib.parse.urlencode({
+                'fn': 'reportexternaladautomationresult', 'service_token': IROS_SERVICE_TOKEN,
+                'object_code_new': object_code_new, 'site_key': 'obang', 'status': 'success',
+                'ad_code': result.get('ad_code', ''),
+            }).encode('utf-8')
+            with urllib.request.urlopen(urllib.request.Request(f'{server}/api/get_api_lib.php', data=body, method='POST'), timeout=15) as resp:
+                saved = json.loads(resp.read().decode('utf-8'))
+            print('프로중개인 저장:', saved)
+            pyautogui.alert(f"오방매물번호 {result.get('ad_code')} — {result.get('message')}\n프로중개인 저장: {'성공' if saved.get('ok') else saved}", '[오방 파이프라인]')
+        else:
+            pyautogui.alert(f"오방 파이프라인 실패:\n\n{result.get('message', '')}", '[오방 파이프라인]')
+    except Exception as e:
+        print(traceback.format_exc())
+        pyautogui.alert(f'오방 파이프라인 중 예외가 발생했습니다:\n\n{type(e).__name__}: {e}', '[오방 파이프라인]')
+
 
   def RegistrationCertThread(self): #"등기부등본" 버튼 클릭 시 수행되는 동작을 정의
     # [2026-09-08 변경 — 사용자 요청] deunggi.py 대신 iros_document_issue.py(웹 테스트페이지

@@ -1635,3 +1635,674 @@ def modify_item(driver, selector , value=''):
         except Exception as e:
             print(selector+"입력에러 발생:", str(e))
             pass
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# [2026-09-14 신규 — 사용자 요청 "공적장부처럼 한 곳에서 관리되는 셀레니움 파이프라인"]
+#
+# automate_from_payload(payload, credentials, options) — 오방 등록·수정을 "프로중개인 서버가 계산해준
+# 값(payload)"만 받아 셀레니움으로 끝까지 돌리는 단 하나의 함수.
+#
+# [왜 위 macro()와 따로 두는가]
+#   macro()는 object_data.py가 본섭 DB에 직접 SQL을 날려 만든 data 딕셔너리를 받아, 값을 어떻게 만들지
+#   (금액 표기·제목·설명 조합 등 업무로직)까지 이 파일 안에서 스스로 정한다. 그 업무로직은 웹/크롬확장
+#   (core/lib/lib_external_ad.php)에도 따로 한 벌 더 있어서 둘이 조용히 어긋났다. 이 함수는 값을 만드는
+#   일을 전혀 하지 않는다 — 웹의 external_ad_register.php?mode=payload가 돌려준 fields[]를 그대로 받아
+#   "화면에 넣는 일"만 한다. 값 계산은 이제 PHP 한 곳뿐이다.
+#
+# [누가 부르는가 — 둘 다 이 함수 하나]
+#   ① 웹 버튼 → 크롬확장 → local_helper.exe(obangtest/local_helper/main.py::
+#      run_external_ad_automation_headless) → 이 함수      … "웹 실행"
+#   ② test.py의 "오방(파이프라인)" 버튼 → 이 함수                        … "직접 실행"(VSCode 디버깅)
+#   그래서 VSCode에서 여기를 고쳐 정상 동작을 확인하면, 웹에서 눌러도 똑같이 돈다.
+#
+# [무엇을 본떴는가] fields[]의 by/key/value/control 계약을 DOM으로 해석하는 크롬확장 코드
+#   (obangtest/chrome_extension/obang_autofill/autofill_core.js의 applyFields()/applyUpdateFields(),
+#   content_obang.js의 enterRegisterForm()/fillAddress()/runModifySearch()/runModifyRow()/
+#   findRegisteredObangCode())를 Selenium으로 그대로 옮겼다. ⚠️ 그쪽 화면 조작 규칙(버튼 글자·id·
+#   드롭다운 위치 등)이 바뀌면 여기도 같이 맞출 것 — 같은 사이트를 두 기술로 조작하는 유일한 두 곳이다.
+#
+# [payload] external_ad_register.php?mode=payload 의 res.payload:
+#   site_key='obang', mode='register'|'modify', object_code_new, site_code(수정 대상 오방매물번호),
+#   fields[{by,key,value,control,label,required,...}], photo{path,...}|None
+# [credentials] {'obang_id','obang_pw'}   [options] {'headless': bool, 'close_when_done': bool}
+# [return] {'ok', 'ad_code', 'message', 'filled', 'unchanged', 'failed':[{label,reason}], 'skipped',
+#           'changes':[{label,before,after}]}
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_PIPELINE_ADD_URL   = 'https://osanbang.com/adminproduct/add?category_id'
+_PIPELINE_LIST_URL  = 'https://osanbang.com/adminproduct/index'
+_PIPELINE_LOGIN_URL = 'https://osanbang.com/adminlogin/index'
+_PIPELINE_REGISTER_BUTTON_TEXT = '등록하기'
+_PIPELINE_MODIFY_BUTTON_TEXT   = '수정 후 최신으로 갱신'   # 수정화면 맨 아래 세 버튼 중 가운데(2026-09-13 라이브 확인)
+
+
+def _pipeline_log(text):
+    print(time.strftime('%H:%M:%S') + ' ' + str(text), flush=True)
+
+
+def _pipeline_clean(s):
+    return re.sub(r'\s+', ' ', str('' if s is None else s)).strip()
+
+
+def _pipeline_same_value(now, want):
+    """숫자칸은 화면이 1,000처럼 쉼표를 붙여 다시 찍어주기도 한다 — 쉼표만 다른 것은 같은 값으로 본다
+    (autofill_core.js::applyUpdateFields의 sameValue와 같은 규칙)."""
+    a, b = _pipeline_clean(now), _pipeline_clean(want)
+    return a == b or a.replace(',', '') == b.replace(',', '')
+
+
+def _pipeline_wait(check, timeout_sec=5.0, step_sec=0.15):
+    """조건이 참(값을 돌려줌)이 될 때까지 기다린다 — autofill_core.js::waitFor와 같은 뜻. 없으면 None."""
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        try:
+            found = check()
+        except Exception:
+            found = None
+        if found:
+            return found
+        time.sleep(step_sec)
+    return None
+
+
+def _pipeline_find_one(driver, by, key, scope=None):
+    root = scope if scope is not None else driver
+    try:
+        return root.find_element(by, key)
+    except Exception:
+        return None
+
+
+def _pipeline_visible(el):
+    try:
+        return bool(el) and el.is_displayed()
+    except Exception:
+        return False
+
+
+def _pipeline_find_by_exact_text(driver, text, tags=('button', 'label', 'a', 'span', 'div'), scope=None):
+    """글자가 정확히 일치하는 보이는 요소들 — autofill_core.js::findByExactText와 같은 뜻."""
+    wanted = _pipeline_clean(text)
+    root = scope if scope is not None else driver
+    tag_expr = ' or '.join('self::' + t for t in tags)
+    try:
+        candidates = root.find_elements(By.XPATH, f'.//*[{tag_expr}]')
+    except Exception:
+        return []
+    return [el for el in candidates if _pipeline_visible(el) and _pipeline_clean(el.text) == wanted]
+
+
+def _pipeline_is_checked(el):
+    try:
+        if el.tag_name.lower() == 'input':
+            return bool(el.is_selected())
+        inner = _pipeline_find_one(None, By.TAG_NAME, 'input', scope=el)
+        return bool(inner and inner.is_selected())
+    except Exception:
+        return False
+
+
+def _pipeline_click(driver, el):
+    """스크롤해서 보이게 한 뒤 페이지 쪽 JS로 클릭한다 — 진행창·오버레이에 가려 실패하는 일을 막는다."""
+    driver.execute_script("arguments[0].scrollIntoView({block:'center'}); arguments[0].click();", el)
+
+
+def _pipeline_set_value(driver, el, value):
+    """값을 넣고 화면이 알아채도록 input/change/keyup을 함께 보낸다 — autofill_core.js::setValue와 동일."""
+    driver.execute_script(
+        "var el=arguments[0]; el.focus(); el.value=String(arguments[1]);"
+        "['input','change','keyup'].forEach(function(t){el.dispatchEvent(new Event(t,{bubbles:true}));}); el.blur();",
+        el, value)
+
+
+def _pipeline_select_option(driver, el, value):
+    """고를 수 있는 값이면 고른다(value → 글자 → 정수) — autofill_core.js::selectOption과 동일."""
+    wanted = _pipeline_clean(value)
+    options_list = el.find_elements(By.TAG_NAME, 'option')
+    hit = next((o for o in options_list if _pipeline_clean(o.get_attribute('value')) == wanted), None) \
+        or next((o for o in options_list if _pipeline_clean(o.text) == wanted), None)
+    if hit is None:
+        try:
+            as_int = str(int(float(wanted)))
+            hit = next((o for o in options_list if _pipeline_clean(o.get_attribute('value')) == as_int), None)
+        except ValueError:
+            hit = None
+    if hit is None:
+        seen = ' / '.join(_pipeline_clean(o.text) for o in options_list[:12])
+        return {'ok': False, 'reason': f"'{value}' 선택지가 없습니다 · 실제 선택지: {seen}"}
+    driver.execute_script(
+        "arguments[0].value=arguments[1]; arguments[0].dispatchEvent(new Event('change',{bubbles:true}));",
+        el, hit.get_attribute('value'))
+    return {'ok': True}
+
+
+def _pipeline_current_select_text(el):
+    try:
+        cur = next((o for o in el.find_elements(By.TAG_NAME, 'option') if o.is_selected()), None)
+        return (_pipeline_clean(cur.text), _pipeline_clean(cur.get_attribute('value'))) if cur else ('', '')
+    except Exception:
+        return ('', '')
+
+
+def _pipeline_apply_checkset(driver, input_name, wanted_csv):
+    """그 묶음에서 '켤 이름'만 켜고 나머지는 끈다 — autofill_core.js::applyCheckSet과 동일 규칙."""
+    boxes = driver.find_elements(By.CSS_SELECTOR, f'input[name="{input_name}"]')
+    if not boxes:
+        return {'ok': False, 'reason': f"'{input_name}' 묶음을 화면에서 찾지 못했습니다"}
+    wanted = [_pipeline_clean(v) for v in str(wanted_csv or '').split(',') if _pipeline_clean(v)]
+    turned_on, turned_off = [], []
+    for box in boxes:
+        own_label = None
+        try:
+            wrapper = box.find_element(By.XPATH, './ancestor::label[1]')
+            if len(wrapper.find_elements(By.TAG_NAME, 'input')) == 1:
+                own_label = wrapper
+        except Exception:
+            own_label = None
+        names = [_pipeline_clean(box.get_attribute('value'))]
+        if own_label is not None:
+            names.append(_pipeline_clean(own_label.text))
+        should_on = any(w in names for w in wanted)
+        is_on = (('active' in (own_label.get_attribute('class') or '')) or box.is_selected()) if own_label is not None else box.is_selected()
+        if should_on == is_on:
+            continue
+        _pipeline_click(driver, own_label if own_label is not None else box)
+        (turned_on if should_on else turned_off).append(names[-1] if own_label is not None else names[0])
+    parts = []
+    if turned_on:
+        parts.append('켬 ' + '/'.join(turned_on))
+    if turned_off:
+        parts.append('끔 ' + '/'.join(turned_off))
+    return {'ok': True, 'note': ' · '.join(parts) if parts else '이미 그대로임'}
+
+
+def _pipeline_apply_editor(driver, html):
+    """상세설명(CKEditor) — 이미 적혀 있으면 넣지 않는다(autofill_core.js::applyEditorContent와 동일)."""
+    frame = _pipeline_find_one(driver, By.CSS_SELECTOR, '#cke_1_contents iframe')
+    if frame is None:
+        return {'ok': False, 'reason': '상세설명 편집기를 찾지 못했습니다'}
+    try:
+        driver.switch_to.frame(frame)
+        current = _pipeline_clean(driver.execute_script('return document.body ? document.body.innerHTML : "";'))
+        if current not in ('', '<p><br></p>', '<br>'):
+            return {'ok': True, 'note': '이미 설명이 있어 그대로 둠'}
+        driver.execute_script('document.body.innerHTML = arguments[0];', html)
+        return {'ok': True}
+    finally:
+        driver.switch_to.default_content()
+
+
+def _pipeline_apply_fields(driver, fields, compare):
+    """
+    값 한 벌을 화면에 채운다. compare=False면 applyFields(무조건 채움), True면 applyUpdateFields
+    (지금 값과 같으면 안 건드리고 다를 때만 고침 — 수정용). 반환 형식도 그 두 함수와 같다.
+    """
+    filled, unchanged, failed, skipped = [], [], [], []
+    for f in fields:
+        by, key, value = f.get('by'), str(f.get('key') or ''), f.get('value')
+        control, label = f.get('control') or '', f.get('label') or key
+        if by == 'flow':
+            skipped.append(f); continue
+        if by != 'checkset' and _pipeline_clean(value) == '':
+            skipped.append(f); continue
+
+        result, before = None, None
+        try:
+            if by == 'checkset':
+                result = _pipeline_apply_checkset(driver, key, value)
+                if compare and result.get('ok') and result.get('note') == '이미 그대로임':
+                    unchanged.append({'label': label, 'before': '(현재 상태 유지)'}); continue
+            elif by == 'editor':
+                result = _pipeline_apply_editor(driver, value)
+                if compare and result.get('ok') and result.get('note'):
+                    unchanged.append({'label': label, 'before': '(기존 설명 유지)'}); continue
+            elif by == 'text':
+                target = next(iter(_pipeline_find_by_exact_text(driver, key)), None)
+                if target is None:
+                    result = {'ok': False, 'reason': f"'{key}' 선택지를 찾지 못했습니다"}
+                elif _pipeline_is_checked(target):
+                    if compare:
+                        unchanged.append({'label': label, 'before': key}); continue
+                    result = {'ok': True, 'note': '이미 선택돼 있음'}
+                else:
+                    _pipeline_click(driver, target); before = '(다른 선택)'; result = {'ok': True}
+            else:
+                locator = (By.CSS_SELECTOR, f'[name="{key}"]') if by == 'name' else (By.ID, key)
+                el = _pipeline_wait(lambda: _pipeline_find_one(driver, *locator), 1.5)
+                if el is None:
+                    result = {'ok': False, 'reason': f"'{key}' 칸을 찾지 못했습니다({by})"}
+                elif control in ('radio', 'checkbox'):
+                    if _pipeline_is_checked(el):
+                        if compare:
+                            unchanged.append({'label': label, 'before': value}); continue
+                        result = {'ok': True, 'note': '이미 선택돼 있음'}
+                    else:
+                        _pipeline_click(driver, el); before = '(다른 선택)'; result = {'ok': True}
+                elif control == 'select' or el.tag_name.lower() == 'select':
+                    cur_text, cur_value = _pipeline_current_select_text(el)
+                    if compare and (_pipeline_same_value(cur_value, value) or _pipeline_same_value(cur_text, value)):
+                        unchanged.append({'label': label, 'before': cur_text or cur_value or '(못 읽음)'}); continue
+                    before = cur_text or cur_value or '(못 읽음)'
+                    result = _pipeline_select_option(driver, el, value)
+                elif not _pipeline_visible(el):
+                    # 오방은 매물종류·거래종류에 따라 안 쓰는 칸을 숨긴다 — 보일 때만 넣는다
+                    result = {'ok': False, 'reason': '이 매물종류에는 없는 칸입니다(화면에 숨겨져 있음)'}
+                else:
+                    current = el.get_attribute('value')
+                    if compare and _pipeline_same_value(current, value):
+                        unchanged.append({'label': label, 'before': current}); continue
+                    before = current
+                    _pipeline_set_value(driver, el, value)
+                    result = {'ok': True}
+        except Exception as e:
+            result = {'ok': False, 'reason': f'{type(e).__name__}: {e}'}
+
+        if result and result.get('ok'):
+            filled.append({'field': f, 'label': label, 'before': before if before is not None else '(이전 값)',
+                           'after': value, 'note': result.get('note', '')})
+        else:
+            failed.append({'field': f, 'label': label, 'reason': (result or {}).get('reason', '알 수 없음')})
+        time.sleep(0.08)
+    return {'filled': filled, 'unchanged': unchanged, 'failed': failed, 'skipped': skipped}
+
+
+def _pipeline_login(driver, credentials):
+    """오방 관리자 로그인 — 위 macro()의 로그인 절차(login_form XPath, 사이드바 '매물'로 확인)와 동일."""
+    driver.get(_PIPELINE_LOGIN_URL)
+    driver.find_element(By.XPATH, '//*[@id="login_form"]/div[1]/div/input').send_keys(credentials['obang_id'])
+    driver.find_element(By.XPATH, '//*[@id="login_form"]/div[2]/div/input').send_keys(credentials['obang_pw'])
+    driver.find_element(By.XPATH, '//*[@id="login_form"]/div[3]/button').click()
+    try:
+        WebDriverWait(driver, 15).until(EC.presence_of_element_located(
+            (By.XPATH, "//ul[contains(@class, 'page-sidebar-menu')]//li[.//span[contains(@class, 'title') and text()='매물']]")))
+    except TimeoutException:
+        # 왜 못 넘어갔는지 화면 상태를 그대로 남긴다 — 계정 오류 문구, 알림창, 엉뚱한 화면 등을
+        # 로그만 보고 가릴 수 있어야 한다(첫 실행에서 "Timeout"만 남아 원인을 못 가렸다, 2026-09-14).
+        alert_text = ''
+        try:
+            alert = driver.switch_to.alert
+            alert_text = alert.text
+            alert.accept()
+        except Exception:
+            pass
+        try:
+            body = _pipeline_clean(driver.execute_script('return document.body ? document.body.innerText : "";'))[:300]
+        except Exception:
+            body = '(읽지 못함)'
+        raise RuntimeError(f'오방 로그인 후 관리자 화면이 뜨지 않았습니다 — url={driver.current_url} 제목={driver.title!r}'
+                           + (f' 알림창={alert_text!r}' if alert_text else '') + f' 화면문구={body!r}')
+    _pipeline_log('✓ 오방 로그인')
+
+
+def _pipeline_enter_register_form(driver):
+    """등록폼이 뜰 때까지 기다리고, '임시저장 이어쓰기' 창은 두 번째 버튼(이어 쓰지 않기)으로 닫는다
+    — content_obang.js::enterRegisterForm()과 동일(이어 쓰면 이전 매물 값이 섞여 들어간다)."""
+    def dialog_buttons():
+        dialog = _pipeline_find_one(driver, By.ID, 'temp_check_dialog')
+        if not _pipeline_visible(dialog):
+            return None
+        buttons = [b for b in dialog.find_elements(By.TAG_NAME, 'button') if _pipeline_visible(b)]
+        return buttons or None
+    buttons = _pipeline_wait(dialog_buttons, 2.5)
+    if buttons:
+        _pipeline_click(driver, buttons[1] if len(buttons) > 1 else buttons[0])
+        _pipeline_log('✓ 임시저장 이어쓰기 창을 닫았습니다')
+        time.sleep(0.4)
+    form = _pipeline_wait(lambda: _pipeline_find_one(driver, By.ID, 'product_form'), 12)
+    if form is None:
+        raise RuntimeError('매물등록 폼이 열리지 않았습니다 — 오방 로그인 상태를 확인해주세요.')
+    _pipeline_log('✓ 등록폼 열림')
+
+
+def _pipeline_pick_region_button(buttons, want):
+    """지역 목록에서 우리 값에 맞는 버튼 — 정확히 일치가 우선, 없으면 앞부분 일치가 하나뿐일 때만
+    (새홈 '경기도' vs 오방 '경기' 표기 차이 흡수, content_obang.js::pickRegionButton과 동일)."""
+    wanted = _pipeline_clean(want)
+    exact = [b for b in buttons if _pipeline_clean(b.text) == wanted]
+    if exact:
+        return exact[0]
+    partial = [b for b in buttons
+               if _pipeline_clean(b.text) and (_pipeline_clean(b.text).startswith(wanted) or wanted.startswith(_pipeline_clean(b.text)))]
+    return partial[0] if len(partial) == 1 else None
+
+
+def _pipeline_fill_address(driver, address_text, jibun, address_unit):
+    """지역(시/도→구/군→동) 선택 + 지번·상세주소 + [위치 검색] — content_obang.js::fillAddress()와 동일."""
+    parts = [p for p in str(address_text or '').split(' ') if p]
+    if len(parts) < 3:
+        _pipeline_log('· 주소(시/도·구/군·동)가 온전하지 않아 지역 선택을 건너뜁니다.')
+    else:
+        opener = _pipeline_find_one(driver, By.CSS_SELECTOR, '#product_form button')
+        if opener is not None:
+            _pipeline_click(driver, opener)
+        for section_id, want, label in (('sido_section', parts[0], '시/도'), ('gugun_section', parts[1], '구/군'), ('dong_section', parts[2], '읍/면/동')):
+            def visible_buttons(sid=section_id):
+                box = _pipeline_find_one(driver, By.ID, sid)
+                if box is None:
+                    return None
+                buttons = [b for b in box.find_elements(By.TAG_NAME, 'button') if _pipeline_visible(b)]
+                return buttons or None
+            buttons = _pipeline_wait(visible_buttons, 5)
+            button = _pipeline_pick_region_button(buttons, want) if buttons else None
+            if button is None:
+                seen = ' / '.join(_pipeline_clean(b.text) for b in (buttons or [])[:12]) or '(목록이 뜨지 않음)'
+                raise RuntimeError(f"{label} '{want}'을 지역 목록에서 찾지 못했습니다 · 실제 목록: {seen}")
+            _pipeline_click(driver, button)
+            _pipeline_log(f'✓ {label}: {want}')
+            time.sleep(0.3)
+
+    address_input = _pipeline_find_one(driver, By.ID, 'address')
+    if address_input is not None and jibun:
+        _pipeline_set_value(driver, address_input, jibun)
+        _pipeline_log(f'✓ 지번: {jibun}')
+        coord = _pipeline_find_one(driver, By.ID, 'get_coord')
+        if coord is None:
+            raise RuntimeError('[위치 검색] 버튼을 찾지 못했습니다.')
+        _pipeline_click(driver, coord)
+        got = _pipeline_wait(lambda: (
+            _pipeline_clean((_pipeline_find_one(driver, By.ID, 'lat') or {}).get_attribute('value') if _pipeline_find_one(driver, By.ID, 'lat') else '') != ''
+            and _pipeline_clean((_pipeline_find_one(driver, By.ID, 'lng') or {}).get_attribute('value') if _pipeline_find_one(driver, By.ID, 'lng') else '') != ''
+        ) or None, 5)
+        if not got:
+            raise RuntimeError(f'[위치 검색]을 눌렀지만 좌표가 잡히지 않았습니다 — 지번 {jibun}')
+        _pipeline_log('✓ 위치검색 — 좌표를 잡았습니다')
+
+    unit_input = _pipeline_find_one(driver, By.ID, 'address_unit')
+    if unit_input is not None and address_unit:
+        _pipeline_set_value(driver, unit_input, address_unit)
+        _pipeline_log(f'✓ 상세주소: {address_unit}')
+
+
+def _pipeline_photo_files(photo):
+    """올릴 사진 파일 목록 — NAS 원본이 아니라 변환폴더(output…, 이름이 가장 큰 = 최근 것)의 저용량본만
+    쓴다(local_helper/main.py::resolve_photo_folder와 같은 규칙). 없으면 빈 목록."""
+    path = str((photo or {}).get('path') or '').strip()
+    if not path or not os.path.isdir(path):
+        return []
+    try:
+        converted = sorted(n for n in os.listdir(path) if n.lower().startswith('output') and os.path.isdir(os.path.join(path, n)))
+    except OSError:
+        return []
+    if not converted:
+        return []
+    folder = os.path.join(path, converted[-1])
+    try:
+        return [os.path.join(folder, n) for n in sorted(os.listdir(folder))
+                if n.lower().endswith(('.jpg', '.jpeg', '.png', '.gif')) and os.path.isfile(os.path.join(folder, n))]
+    except OSError:
+        return []
+
+
+def _pipeline_set_speed_flag(driver, on):
+    """급매 표시 — 사진을 못 올렸다는 표시로 쓴다(macro()/content_obang.js와 같은 규칙)."""
+    speed = _pipeline_find_one(driver, By.ID, 'is_speed')
+    if speed is not None and bool(speed.is_selected()) != bool(on):
+        _pipeline_click(driver, speed)
+
+
+def _pipeline_upload_photos(driver, photo):
+    """사진 올리기 — 오방에 이미 사진이 있으면 손대지 않고, 못 올리면 급매로 표시한다."""
+    already = len(driver.find_elements(By.CSS_SELECTOR, '#list li'))
+    if already > 0:
+        _pipeline_log(f'· 오방에 이미 사진 {already}장이 있어 사진은 건드리지 않습니다')
+        return
+    files = _pipeline_photo_files(photo)
+    if not files:
+        _pipeline_log('⚠ 올릴 변환 사진이 없어 급매로 표시합니다')
+        _pipeline_set_speed_flag(driver, True)
+        return
+    file_input = next((el for el in driver.find_elements(By.CSS_SELECTOR, 'input[type="file"]')
+                       if el.get_attribute('multiple') is not None and 'image/' in (el.get_attribute('accept') or '')), None)
+    if file_input is None:
+        _pipeline_log('⚠ 사진 넣는 칸을 찾지 못했습니다 — 급매로 표시합니다')
+        _pipeline_set_speed_flag(driver, True)
+        return
+    file_input.send_keys('\n'.join(files))
+    _pipeline_log(f'· 사진 {len(files)}장을 올리는 중…')
+    uploaded = _pipeline_wait(lambda: len(driver.find_elements(By.CSS_SELECTOR, '#list li')) >= len(files) or None, 120, 0.5)
+    if not uploaded:
+        now = len(driver.find_elements(By.CSS_SELECTOR, '#list li'))
+        _pipeline_log(f'⚠ 사진 {len(files)}장 중 {now}장만 올라갔습니다 — 급매로 표시합니다')
+        _pipeline_set_speed_flag(driver, True)
+        return
+    _pipeline_log(f'✓ 사진 {len(files)}장을 올렸습니다')
+    _pipeline_set_speed_flag(driver, False)
+
+
+def _pipeline_match_keywords(fields):
+    """방금 올린 매물을 목록에서 가려낼 말들(지번·건물명·호실) — content_obang.js::buildMatchKeywords."""
+    by_label = {f.get('label'): f for f in fields}
+    keywords = []
+    jibun = _pipeline_clean((by_label.get('상세주소1(지번)') or {}).get('value'))
+    unit = _pipeline_clean((by_label.get('상세주소2(건물·호실)') or {}).get('value'))
+    if jibun:
+        keywords.append(jibun)
+    keywords.extend(w for w in unit.split(' ') if w)
+    return keywords
+
+
+def _pipeline_find_registered_code(driver, keywords):
+    """등록 후 목록에서 방금 올린 매물의 오방매물번호 — 주소(.help-block)에 지번·건물명·호실이 모두 든
+    줄의 두 번째 칸 굵은 글씨(첫 줄을 그냥 집으면 남이 그 사이 올린 매물번호를 저장한다)."""
+    rows = _pipeline_wait(lambda: driver.find_elements(By.CSS_SELECTOR, '#search-items tr') or None, 15)
+    if not rows:
+        return {'ok': False, 'reason': '등록 후 매물목록이 뜨지 않았습니다'}
+    seen = []
+    for row in rows:
+        address_box = _pipeline_find_one(None, By.CSS_SELECTOR, '.help-block', scope=row)
+        cells = row.find_elements(By.TAG_NAME, 'td')
+        strong = _pipeline_find_one(None, By.TAG_NAME, 'strong', scope=cells[1]) if len(cells) > 1 else None
+        if address_box is None or strong is None:
+            continue
+        address, code = _pipeline_clean(address_box.text), _pipeline_clean(strong.text)
+        seen.append(f'{code} — {address}')
+        if all(w in address for w in keywords):
+            return {'ok': True, 'code': code, 'address': address}
+    return {'ok': False, 'reason': f"방금 올린 매물을 목록에서 찾지 못했습니다(찾던 말: {' / '.join(keywords)}) · 목록: {' · '.join(seen[:5])}"}
+
+
+def _pipeline_register(driver, payload, result):
+    fields = payload.get('fields') or []
+    by_label = {f.get('label'): f for f in fields}
+    driver.get(_PIPELINE_ADD_URL)
+    _pipeline_enter_register_form(driver)
+    _pipeline_fill_address(driver,
+                           (by_label.get('시/도·구/군·동') or {}).get('value', ''),
+                           _pipeline_clean((by_label.get('상세주소1(지번)') or {}).get('value')),
+                           _pipeline_clean((by_label.get('상세주소2(건물·호실)') or {}).get('value')))
+    applied = _pipeline_apply_fields(driver, fields, compare=False)
+    _pipeline_summarize(applied, result)
+    _pipeline_upload_photos(driver, payload.get('photo'))
+
+    keywords = _pipeline_match_keywords(fields)
+    if not keywords:
+        raise RuntimeError('매물을 가려낼 주소 정보가 없어 등록 후 매물번호를 찾을 수 없습니다.')
+    submit = next(iter(_pipeline_find_by_exact_text(driver, _PIPELINE_REGISTER_BUTTON_TEXT, ('button',))), None)
+    if submit is None:
+        raise RuntimeError(f'[{_PIPELINE_REGISTER_BUTTON_TEXT}] 버튼을 찾지 못했습니다.')
+    _pipeline_click(driver, submit)
+    _pipeline_log(f'✓ [{_PIPELINE_REGISTER_BUTTON_TEXT}] 클릭 — 등록 결과 화면을 기다립니다…')
+    _pipeline_dismiss_alert(driver)
+
+    found = _pipeline_find_registered_code(driver, keywords)
+    if not found['ok']:
+        raise RuntimeError(found['reason'] + ' — 등록 자체는 끝났을 수 있으니 오방 목록을 확인해주세요.')
+    result.update({'ok': True, 'ad_code': found['code'], 'message': f"오방매물번호 {found['code']} ({found['address']})"})
+
+
+def _pipeline_open_manage_menu(driver, row):
+    """[관리] 드롭다운을 열고 항목 목록을 돌려준다 — 14번째 칸 안의 div.dropdown, 여는 건 [data-toggle]."""
+    cells = row.find_elements(By.TAG_NAME, 'td')
+    manage_cell = cells[13] if len(cells) > 13 else None
+    dropdown = _pipeline_find_one(None, By.CSS_SELECTOR, 'div.dropdown', scope=manage_cell) if manage_cell is not None else None
+    toggle = _pipeline_find_one(None, By.CSS_SELECTOR, '[data-toggle="dropdown"]', scope=dropdown) if dropdown is not None else None
+    if dropdown is None or toggle is None:
+        raise RuntimeError('그 매물의 [관리] 메뉴를 찾지 못했습니다.')
+    _pipeline_click(driver, toggle)
+    items = _pipeline_wait(lambda: [a for a in dropdown.find_elements(By.CSS_SELECTOR, 'ul.dropdown-menu li a') if _pipeline_visible(a)] or None, 5)
+    if not items:
+        items = dropdown.find_elements(By.CSS_SELECTOR, 'ul.dropdown-menu li a')   # 안 열려도 항목은 DOM에 있다
+    if not items:
+        raise RuntimeError('[관리] 메뉴가 열리지 않았습니다.')
+    return items
+
+
+def _pipeline_search_row(driver, code):
+    driver.get(_PIPELINE_LIST_URL)
+    search_box = _pipeline_wait(lambda: _pipeline_find_one(driver, By.ID, 'search_id'), 15)
+    search_btn = _pipeline_find_one(driver, By.ID, 'go_keyword')
+    if search_box is None or search_btn is None:
+        raise RuntimeError('오방 매물목록의 검색칸을 찾지 못했습니다 — 로그인 상태를 확인해주세요.')
+    _pipeline_set_value(driver, search_box, code)
+    _pipeline_click(driver, search_btn)
+    row = _pipeline_wait(lambda: _pipeline_find_one(driver, By.ID, f'tr_{code}'), 20)
+    if row is None:
+        raise RuntimeError(f'매물번호 {code} 를 오방에서 찾지 못했습니다 — 이미 삭제된 매물입니다.')
+    time.sleep(0.8)
+    return _pipeline_find_one(driver, By.ID, f'tr_{code}')
+
+
+def _pipeline_modify(driver, payload, result):
+    """수정 — 목록에서 매물을 찾아 상태(공개·거래완료)를 정리하고 수정화면에서 다른 값만 고친 뒤
+    [수정 후 최신으로 갱신]을 누른다(content_obang.js runModifySearch/Row/Fill과 동일한 순서)."""
+    code = _pipeline_clean(payload.get('site_code'))
+    if not code:
+        raise RuntimeError('고칠 오방매물번호(site_code)가 없습니다.')
+
+    released = False
+    for _ in range(2):   # 거래완료 해제 후 한 번 더 검색한다 — 그 이상 반복하지 않는다
+        row = _pipeline_search_row(driver, code)
+        cells = row.find_elements(By.TAG_NAME, 'td')
+        public_label = _pipeline_find_one(None, By.TAG_NAME, 'label', scope=cells[2]) if len(cells) > 2 else None
+        if public_label is not None and _pipeline_clean(public_label.text) == 'off':
+            _pipeline_click(driver, public_label)
+            _pipeline_log('✓ 비공개 → 공개로 전환했습니다')
+            time.sleep(0.6)
+        items = _pipeline_open_manage_menu(driver, row)
+        named = {_pipeline_clean(a.text): a for a in items}
+        release = named.get('거래완료 해제')
+        if release is not None and not released:
+            m = re.search(r"change\('([^']+)','([^']+)','([^']+)'\)", release.get_attribute('href') or '')
+            if m:
+                url = f'/adminproduct/change/{m.group(1)}/{m.group(2)}/{m.group(3)}/{int(time.time()*1000)}'
+                status = driver.execute_async_script(
+                    "var cb=arguments[arguments.length-1];fetch(arguments[0],{credentials:'same-origin'}).then(r=>cb(r.status)).catch(e=>cb('ERR:'+e.message));", url)
+                _pipeline_log(f'· 거래완료 해제 요청 — {status}')
+            else:
+                _pipeline_log('⚠ 거래완료 해제 주소를 읽지 못했습니다 — 오방에서 직접 해제해주세요')
+            released = True
+            time.sleep(1.0)
+            continue
+        if release is not None and released:
+            _pipeline_log('⚠ 거래완료 해제가 되지 않았습니다 — 오방에서 직접 해제해주세요')
+        modify_item_link = named.get('수정')
+        if modify_item_link is None:
+            raise RuntimeError('[관리] 메뉴에 [수정]이 없습니다 — 그 매물을 고칠 권한이 없습니다(담당자 확인). 메뉴: ' + ' · '.join(named.keys()))
+        href = modify_item_link.get_attribute('href') or ''
+        if href and not href.startswith('javascript:'):
+            driver.get(href)
+        else:
+            _pipeline_click(driver, modify_item_link)
+        break
+
+    if _pipeline_wait(lambda: _pipeline_find_one(driver, By.ID, 'product_form'), 15) is None:
+        raise RuntimeError('수정 폼이 열리지 않았습니다.')
+    # 대분류(category_*)는 화면 주소로 이미 정해져 있어 건드리면 폼이 다시 그려진다 — 수정에서는 제외
+    fields = [f for f in (payload.get('fields') or []) if not str(f.get('key') or '').startswith('category_')]
+    applied = _pipeline_apply_fields(driver, fields, compare=True)
+    _pipeline_summarize(applied, result)
+    if any(x['field'].get('key') == 'address' for x in applied['filled']):
+        coord = _pipeline_find_one(driver, By.ID, 'get_coord')
+        if coord is not None:
+            _pipeline_click(driver, coord)
+            _pipeline_log('✓ [위치 검색]으로 좌표를 다시 잡았습니다')
+    _pipeline_upload_photos(driver, payload.get('photo'))
+
+    submit = next(iter(_pipeline_find_by_exact_text(driver, _PIPELINE_MODIFY_BUTTON_TEXT, ('button',))), None)
+    if submit is None:
+        raise RuntimeError(f'[{_PIPELINE_MODIFY_BUTTON_TEXT}] 버튼을 찾지 못했습니다.')
+    _pipeline_click(driver, submit)
+    _pipeline_log(f'✓ [{_PIPELINE_MODIFY_BUTTON_TEXT}] 클릭 — 목록으로 돌아가길 기다립니다…')
+    _pipeline_dismiss_alert(driver)
+    if _pipeline_wait(lambda: ('/adminproduct/index' in driver.current_url) or None, 20) is None:
+        raise RuntimeError('수정 후 매물목록으로 돌아오지 않았습니다 — 오방 화면을 확인해주세요.')
+    result.update({'ok': True, 'ad_code': code, 'message': f'오방매물번호 {code} 수정 완료'})
+
+
+def _pipeline_dismiss_alert(driver):
+    """저장 직후 사이트가 띄우는 확인/오류 alert가 있으면 글자를 남기고 닫는다."""
+    try:
+        WebDriverWait(driver, 2).until(EC.alert_is_present())
+        alert = driver.switch_to.alert
+        text = alert.text
+        alert.accept()
+        _pipeline_log(f'· 사이트 알림창: {text}')
+        if any(w in text for w in ('확인 해주시기', '필수', '입력해', '선택해')):
+            raise RuntimeError(f'오방이 저장을 거부했습니다: {text}')
+    except TimeoutException:
+        pass
+
+
+def _pipeline_summarize(applied, result):
+    result['filled'] = len(applied['filled'])
+    result['unchanged'] = len(applied['unchanged'])
+    result['skipped'] = len(applied['skipped'])
+    result['failed'] = [{'label': x['label'], 'reason': x['reason']} for x in applied['failed']]
+    result['changes'] = [{'label': x['label'], 'before': x['before'], 'after': x['after']} for x in applied['filled']]
+    _pipeline_log(f"값 채우기 — 채움 {result['filled']} / 안 건드림 {result['unchanged']} / 실패 {len(result['failed'])} / 건너뜀 {result['skipped']}")
+    for x in applied['filled']:
+        _pipeline_log(f"  고침 {x['label']}: '{x['before']}' → '{x['after']}'" + (f" ({x['note']})" if x['note'] else ''))
+    for x in applied['failed']:
+        _pipeline_log(f"  실패 {x['label']}: {x['reason']}")
+    must = [x for x in applied['failed'] if (x['field'] or {}).get('required')]
+    if must:
+        raise RuntimeError('필수항목을 채우지 못했습니다: ' + ', '.join(f"{x['label']}({x['reason']})" for x in must))
+
+
+def automate_from_payload(payload, credentials, options=None):
+    options = options or {}
+    headless = bool(options.get('headless', False))
+    close_when_done = bool(options.get('close_when_done', True))
+    result = {'ok': False, 'ad_code': '', 'message': '', 'filled': 0, 'unchanged': 0, 'failed': [], 'skipped': 0, 'changes': []}
+    if str(payload.get('site_key') or '') != 'obang':
+        result['message'] = f"오방 payload가 아닙니다(site_key={payload.get('site_key')!r})"
+        return result
+    if not credentials or not credentials.get('obang_id'):
+        result['message'] = '오방 로그인정보(obang_id/obang_pw)가 없습니다.'
+        return result
+    mode = str(payload.get('mode') or 'register')
+    _pipeline_log(f"오방 셀레니움 시작 — mode={mode}, 새홈매물번호={payload.get('object_code_new')}, 오방번호={payload.get('site_code') or '-'}, headless={headless}")
+
+    # 위 macro()의 전역 options(detach=True: 스크립트가 끝나도 브라우저를 남김)는 쓰지 않는다 —
+    # 이 함수는 close_when_done으로 창 수명을 직접 관리한다.
+    chrome_options = Options()
+    chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+    driver = webdriver.Chrome(options=chrome_options)
+    try:
+        if headless:
+            # 진짜 headless(--headless) 대신 화면 밖으로 밀어둔다 — iros_document_issue.py와 같은 이유
+            # (보이는 창과 동작 차이를 없앰). 크기는 데스크톱 레이아웃이 나오도록 넉넉히 잡는다 —
+            # 작으면 관리자 사이드바가 접혀 요소 구조가 달라진다. 작업이 끝나면 close_when_done으로 닫힌다.
+            driver.set_window_size(1400, 1000)
+            driver.set_window_position(-32000, -32000)
+        else:
+            driver.maximize_window()
+        _pipeline_login(driver, credentials)
+        if mode == 'modify':
+            _pipeline_modify(driver, payload, result)
+        else:
+            _pipeline_register(driver, payload, result)
+    except Exception as e:
+        result['ok'] = False
+        result['message'] = f'{type(e).__name__}: {e}' if not isinstance(e, RuntimeError) else str(e)
+        _pipeline_log('✗ ' + result['message'])
+        traceback.print_exc()
+    finally:
+        if close_when_done:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+    _pipeline_log(('✓ ' if result['ok'] else '✗ ') + result['message'])
+    return result
