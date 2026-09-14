@@ -432,28 +432,100 @@ def verify_register_target(driver, payload):
         return _fail('"보안프로그램 설치" 페이지로 전환돼 조회를 중단했습니다.')
 
 
-def _verify_register_target_body(driver, payload, property_category, loc, _fail):
-    """verify_register_target()의 실제 로직 — 위 함수가 alert/설치페이지 예외를 잡아 즉시 실패로
-    확정할 수 있도록 try 블록으로 감쌀 본체만 분리했다(로직 자체는 기존과 동일)."""
-    wait = WebDriverWait(driver, 20)
+def _pick_kind_cls_radio(driver, radio_id_fragment, property_category, _fail):
+    """부동산구분 라디오(집합건물/토지/건물)를 라벨 텍스트로 찾아 클릭한다 — 소재지번검색
+    (rad_loc_kind_cls)과 간편검색(rad_smpl_kind_cls)이 각자 부르는 공용 로직(2026-09-14 정리,
+    로직은 기존과 동일 — 두 검색 방식으로 갈라지면서 중복될 뻔한 걸 공용 함수로 뺐다)."""
+    picked = False
+    seen_labels = []
+    _dismiss_alert_if_present(driver)
+    for r in driver.find_elements(By.CSS_SELECTOR, f'#{BASE} input[type="radio"]'):
+        rid = r.get_attribute('id') or ''
+        if radio_id_fragment not in rid:
+            continue
+        try:
+            label = driver.find_element(By.CSS_SELECTOR, f'label[for="{rid}"]')
+        except NoSuchElementException:
+            continue
+        label_text = label.text.strip()
+        seen_labels.append(label_text)
+        # [2026-09-08 변경 — 실측으로 확인] 이 라디오 항목이 항상 "토지"/"건물"/"집합건물" 3개로
+        # 나오는 게 아니라, 어떤 때는 "토지+건물"(둘을 합친 하나) / "집합건물" 2개로만 나온다(실측
+        # 화면캡처로 확인, 2026-09-08) — "외부사이트 화면 다양성" 원칙대로 라벨이 고정돼있다고
+        # 가정하지 않고, 대상이 토지/건물이면 "토지+건물"도 같이 인정한다.
+        is_match = (
+            label_text == property_category
+            or (property_category in ('토지', '건물') and label_text == '토지+건물')
+        )
+        if is_match:
+            _js_click(driver, label)
+            picked = True
+            break
+    if not picked:
+        return _fail(f'부동산구분 "{property_category}" 항목을 찾지 못했습니다 — 실제 화면에 있던 항목: {seen_labels}')
+    print(f'[진행] 부동산구분 "{property_category}" 선택 완료 (화면 항목: {seen_labels})', flush=True)
+    time.sleep(1.2)
+    return None
 
-    print('[진행] 등기소 홈 접속 시도', flush=True)
-    if not _navigate_home(driver):
-        return _fail('"보안프로그램 설치" 안내 페이지에서 벗어나지 못했습니다(3회 재시도).')
-    print(f'[진행] 홈 접속 완료 — url={driver.current_url}', flush=True)
-    btn = wait.until(lambda d: _home_entry_button(d))
-    print('[진행] "부동산 열람·발급" 버튼 찾음, 클릭', flush=True)
-    _js_click(driver, btn)
-    time.sleep(2)
-    _guard_not_stuck_on_security_page(driver)  # [2026-09-07] 홈 진입 클릭 뒤에도 튕길 수 있다 — 다음 20초 대기 전에 먼저 확인
-    print(f'[진행] 부동산 열람·발급 화면 진입 확인 — url={driver.current_url}', flush=True)
 
-    # [2026-09-13 변경 — 사용자 발견, 실사용 재현으로 확인된 근본 해법] 기존엔 "소재지번검색" 탭에서
-    # 동/리+지번+동/호를 각 칸에 나눠 입력했는데, 건물동(동) 정보가 없는 매물(건축물대장 데이터 부재)
-    # 에서는 지번만으로 검색결과가 여러 건으로 갈려 자동으로 못 골랐다(매물 490302로 재현: "가수동
-    # 399 에프2418에이호"를 소재지번검색에 나눠 넣으면 2건, 같은 주소를 "간편검색"에 통째로 넣으면
-    # 정확히 1건). 간편검색은 주소 한 줄을 등기소 자체 DB(도로명주소·건물명 연계)로 해석해 좁혀주므로,
-    # 동 정보가 없어도 대부분 유일하게 특정된다 — 그래서 검색 탭 자체를 간편검색으로 바꾼다.
+def _select_sido_via_websquare(driver, sel_id, sido_text, _fail):
+    """시/도 드롭다운을 WebSquare setValue()로 선택한다 — 소재지번검색·간편검색 공용(2026-09-14
+    정리). [2026-09-08 실측으로 원인 확인] 네이티브 <select> 조작(Select(), 옵션 클릭)은 화면에
+    "선택해주세요"로 그대로 남고 "시/도를 선택하시기 바랍니다" 팝업까지 뜬다 — 즉 실제로는
+    WebSquare가 자기 내부 상태로 다시 감싸고 있어서, 그 프레임워크의 setValue() API를 거쳐야 실제로
+    반영된다(드롭다운 "선택"이라 키보드보안 프로그램 검사 대상이 아니라 이 방식이 안전하다)."""
+    _dismiss_alert_if_present(driver)
+    sido_el = driver.find_element(By.ID, sel_id)
+    sido_value = None
+    for opt in sido_el.find_elements(By.TAG_NAME, 'option'):
+        if opt.text.strip() == sido_text:
+            sido_value = opt.get_attribute('value')
+            break
+    if sido_value is None:
+        return _fail(f'시/도 "{sido_text}" 옵션을 찾지 못했습니다.')
+    comp_id = re.sub(r'___input$', '', sel_id)
+    ok = driver.execute_script(
+        """
+        var comp = window.$p && window.$p.getComponentById(arguments[0]);
+        if (comp && typeof comp.setValue === 'function') { comp.setValue(arguments[1]); return true; }
+        return false;
+        """,
+        comp_id, sido_value,
+    )
+    print(f'[진행] 시/도 "{sido_text}" 선택 완료 (setValue 성공={ok})', flush=True)
+    time.sleep(0.6)
+    return None
+
+
+def _click_search_button(driver, _fail):
+    """검색 버튼을 찾아 클릭한다 — 소재지번검색·간편검색 공용(2026-09-14 정리)."""
+    search_btn = None
+    for e in driver.find_elements(By.CSS_SELECTOR, f'#{BASE} input, #{BASE} button, #{BASE} a'):
+        if not e.is_displayed():
+            continue
+        text = (e.get_attribute('value') or e.text or '').strip()
+        if text == '검색':
+            search_btn = e
+            break
+    if not search_btn:
+        return _fail('검색 버튼을 찾지 못했습니다.')
+    print('[진행] 검색 버튼 클릭', flush=True)
+    _js_click(driver, search_btn)
+    time.sleep(5)
+    return None
+
+
+def _search_via_simple_search(driver, wait, payload, property_category, loc, _fail):
+    """[2026-09-13 추가 — 사용자 발견, 실사용 재현으로 확인] "간편검색"으로 주소 한 줄을 통째로
+    검색한다. 집합건물 중 건물동(동) 정보가 없는 매물(건축물대장 데이터 부재)은 소재지번검색(동/리+
+    지번+동/호를 각 칸에 나눠 입력)으로는 지번만으로 검색결과가 여러 건으로 갈려 자동으로 못 골랐다
+    (매물 490302로 재현). 간편검색은 주소 한 줄을 등기소 자체 DB(도로명주소·건물명 연계)로 해석해
+    좁혀주므로, 동 정보가 없어도 대부분 유일하게 특정된다.
+
+    [2026-09-14 추가 — 사용자 발견, 재현 확인] 집합건물이 아닌 경우(토지/일반건물)에는 반대로
+    문제가 된다 — 지번에 부번이 없으면 같은 본번 지번 위의 여러 건물을 한꺼번에 찾아버린다. 그래서
+    이 함수는 property_category가 '집합건물'일 때만 호출한다(호출부인 _verify_register_target_body
+    참고) — 토지/건물은 기존 소재지번검색(_search_via_location_search)을 그대로 쓴다."""
     def _find_smpl_srch_tab(d):
         _dismiss_alert_if_present(d)
         return d.find_element(By.ID, f'{BASE}_tac_rlrg_appl_tab_tab_smpl_srch_tabHTML')
@@ -489,73 +561,106 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail)
     print(f'[진행] 간편검색 주소 입력 완료 — {search_address_for_search}', flush=True)
     time.sleep(0.3)
 
-    picked = False
-    seen_labels = []
-    _dismiss_alert_if_present(driver)
-    for r in driver.find_elements(By.CSS_SELECTOR, f'#{BASE} input[type="radio"]'):
-        rid = r.get_attribute('id') or ''
-        if 'rad_smpl_kind_cls' not in rid:
-            continue
+    fail = _pick_kind_cls_radio(driver, 'rad_smpl_kind_cls', property_category, _fail)
+    if fail is not None:
+        return fail
+
+    fail = _select_sido_via_websquare(driver, f'{BASE}_sel_smpl_admin_regn1', loc.get('sido', ''), _fail)
+    if fail is not None:
+        return fail
+
+    return _click_search_button(driver, _fail)
+
+
+def _search_via_location_search(driver, wait, payload, property_category, loc, _fail):
+    """[기존 방식 — 2026-09-14부터 토지/건물 전용] "소재지번검색" 탭에서 시/도+동/리+지번(+집합건물이면
+    동/호)을 각 칸에 정확히 대조해 검색한다. 집합건물의 "동 정보 공백" 문제(_search_via_simple_search
+    주석 참고)는 없었던 원래 방식 — 토지/일반건물은 지번 자체가 곧 유일 식별자라 간편검색으로
+    바꿀 이유가 없었고, 오히려 부번 없는 지번에서 간편검색이 여러 건을 한꺼번에 찾아버리는 문제가
+    새로 생겨서(2026-09-14 재현) 이 방식으로 되돌렸다."""
+    def _find_loc_srch_tab(d):
+        _dismiss_alert_if_present(d)
+        return d.find_element(By.ID, f'{BASE}_tac_rlrg_appl_tab_tab_loc_srch_tabHTML')
+    tab = wait.until(_find_loc_srch_tab)
+    print('[진행] 소재지번검색 탭 찾음, 클릭', flush=True)
+    _js_click(driver, tab)
+    time.sleep(1.5)
+    _guard_not_stuck_on_security_page(driver)
+    print('[진행] 소재지번검색 탭 진입 확인', flush=True)
+
+    fail = _pick_kind_cls_radio(driver, 'rad_loc_kind_cls', property_category, _fail)
+    if fail is not None:
+        return fail
+
+    fail = _select_sido_via_websquare(driver, f'{BASE}_sel_loc_admin_regn1', loc.get('sido', ''), _fail)
+    if fail is not None:
+        return fail
+
+    jibun_el = _find_first_visible(driver, [
+        f'#{BASE}_sbx_agrg_buld_loc_no___input',
+        f'#{BASE}_sbx_loc_no___input',
+    ])
+    dongli_el = driver.find_element(By.ID, f'{BASE}_sbx_loc_admin_regn3___input')
+    if not jibun_el:
+        return _fail('지번 입력칸을 찾지 못했습니다.')
+
+    _type_into_field(driver, dongli_el, loc['dong_or_li'])
+    time.sleep(0.3)
+    _type_into_field(driver, jibun_el, loc['jibun'])
+    time.sleep(0.6)
+    print(f'[진행] 동/리·지번 입력 완료 — {loc["dong_or_li"]} {loc["jibun"]}', flush=True)
+
+    if property_category == '집합건물' and (loc.get('building_dong_no') or loc.get('room_no')):
+        mode_index = 0 if (loc.get('building_dong_no') and loc.get('room_no')) else (1 if loc.get('building_dong_no') else 2)
+        # [2026-09-07 추가 — 본섭 데이터(999071)로 재현] 이 지점 직전에 "보안프로그램 설치" alert가
+        # 뜨어있으면 바로 다음 줄의 find_element()가 UnexpectedAlertPresentException으로 죽는다 —
+        # 클릭 뒤(_js_click 안)만이 아니라 클릭 **전** DOM 조회 시점에도 alert가 열려있을 수 있다.
+        _dismiss_alert_if_present(driver)
         try:
-            label = driver.find_element(By.CSS_SELECTOR, f'label[for="{rid}"]')
+            _js_click(driver, driver.find_element(By.CSS_SELECTOR, f'label[for="{BASE}_rad_loc_dong_room_sel_input_{mode_index}"]'))
+            time.sleep(1)
         except NoSuchElementException:
-            continue
-        label_text = label.text.strip()
-        seen_labels.append(label_text)
-        # [2026-09-08 소재지번검색 변경분과 동일한 이유로 남겨둠 — 실측으로 확인된 화면구성 편차
-        # 대응] 간편검색에서는 지금까지 "전체/집합건물/토지/건물" 4개 고정으로만 봤지만, 혹시 다른
-        # 화면에서 "토지+건물"로 합쳐 나올 경우에 대비해 그 표기도 함께 인정한다.
-        is_match = (
-            label_text == property_category
-            or (property_category in ('토지', '건물') and label_text == '토지+건물')
-        )
-        if is_match:
-            _js_click(driver, label)
-            picked = True
-            break
-    if not picked:
-        return _fail(f'부동산구분 "{property_category}" 항목을 찾지 못했습니다 — 실제 화면에 있던 항목: {seen_labels}')
-    print(f'[진행] 부동산구분 "{property_category}" 선택 완료 (화면 항목: {seen_labels})', flush=True)
-    time.sleep(0.6)
+            pass
+        if loc.get('building_dong_no'):
+            dong_el = _find_first_visible(driver, [f'#{BASE}_sbx_loc_buld_no_buld___input'])
+            if dong_el:
+                _type_into_field(driver, dong_el, loc['building_dong_no'])
+        if loc.get('room_no'):
+            room_el = _find_first_visible(driver, [f'#{BASE}_sbx_loc_buld_no_room___input'])
+            if room_el:
+                _type_into_field(driver, room_el, loc['room_no'])
+        time.sleep(0.6)
+        print(f'[진행] 동/호수 입력 완료 — 동={loc.get("building_dong_no")}, 호={loc.get("room_no")}', flush=True)
 
-    sido_id = f'{BASE}_sel_smpl_admin_regn1'
-    _dismiss_alert_if_present(driver)
-    sido_el = driver.find_element(By.ID, sido_id)
-    sido_value = None
-    for opt in sido_el.find_elements(By.TAG_NAME, 'option'):
-        if opt.text.strip() == loc.get('sido', ''):
-            sido_value = opt.get_attribute('value')
-            break
-    if sido_value is None:
-        return _fail(f'시/도 "{loc.get("sido", "")}" 옵션을 찾지 못했습니다.')
-    # [2026-09-08 소재지번검색에서 실측으로 확인된 이유 그대로 적용] 네이티브 <select> 조작(Select(),
-    # 옵션 클릭)은 WebSquare 내부 상태에 반영되지 않는다 — 그 프레임워크의 setValue() API를 거쳐야
-    # 실제로 반영된다. 드롭다운 "선택"이라 키보드보안 프로그램 검사 대상이 아니라 이 방식이 안전하다.
-    comp_id = re.sub(r'___input$', '', sido_id)
-    ok = driver.execute_script(
-        """
-        var comp = window.$p && window.$p.getComponentById(arguments[0]);
-        if (comp && typeof comp.setValue === 'function') { comp.setValue(arguments[1]); return true; }
-        return false;
-        """,
-        comp_id, sido_value,
-    )
-    print(f'[진행] 시/도 "{loc.get("sido", "")}" 선택 완료 (setValue 성공={ok})', flush=True)
-    time.sleep(0.6)
+    return _click_search_button(driver, _fail)
 
-    search_btn = None
-    for e in driver.find_elements(By.CSS_SELECTOR, f'#{BASE} input, #{BASE} button, #{BASE} a'):
-        if not e.is_displayed():
-            continue
-        text = (e.get_attribute('value') or e.text or '').strip()
-        if text == '검색':
-            search_btn = e
-            break
-    if not search_btn:
-        return _fail('검색 버튼을 찾지 못했습니다.')
-    print('[진행] 검색 버튼 클릭', flush=True)
-    _js_click(driver, search_btn)
-    time.sleep(5)
+
+def _verify_register_target_body(driver, payload, property_category, loc, _fail):
+    """verify_register_target()의 실제 로직 — 위 함수가 alert/설치페이지 예외를 잡아 즉시 실패로
+    확정할 수 있도록 try 블록으로 감쌀 본체만 분리했다(로직 자체는 기존과 동일)."""
+    wait = WebDriverWait(driver, 20)
+
+    print('[진행] 등기소 홈 접속 시도', flush=True)
+    if not _navigate_home(driver):
+        return _fail('"보안프로그램 설치" 안내 페이지에서 벗어나지 못했습니다(3회 재시도).')
+    print(f'[진행] 홈 접속 완료 — url={driver.current_url}', flush=True)
+    btn = wait.until(lambda d: _home_entry_button(d))
+    print('[진행] "부동산 열람·발급" 버튼 찾음, 클릭', flush=True)
+    _js_click(driver, btn)
+    time.sleep(2)
+    _guard_not_stuck_on_security_page(driver)  # [2026-09-07] 홈 진입 클릭 뒤에도 튕길 수 있다 — 다음 20초 대기 전에 먼저 확인
+    print(f'[진행] 부동산 열람·발급 화면 진입 확인 — url={driver.current_url}', flush=True)
+
+    # [2026-09-14 변경 — 사용자 발견, 실사용 재현으로 확인] 간편검색은 집합건물의 "동 정보 공백"
+    # 문제는 풀어주지만, 토지·일반건물에서는 부번 없는 지번일 때 오히려 여러 건물을 한꺼번에 찾아버려
+    # 새 문제가 됐다 — "간편검색이 항상 더 낫다"가 아니라 "집합건물만 간편검색이 필요"했던 것.
+    # 부동산구분에 따라 검색 방식 자체를 가른다.
+    if property_category == '집합건물':
+        fail = _search_via_simple_search(driver, wait, payload, property_category, loc, _fail)
+    else:
+        fail = _search_via_location_search(driver, wait, payload, property_category, loc, _fail)
+    if fail is not None:
+        return fail
 
     rows = _visible_result_rows(driver)
     if not rows:
