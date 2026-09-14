@@ -1814,6 +1814,59 @@ class NaverThread(QThread):
 
                     if duplicate_code != '확인불가' : return duplicate_code
 
+                    # [2026-09-14 신규 — 사용자 요청 "연장시 오래된 등기부 자동교체"] 등기부등본
+                    # 첨부. 로컬도우미(handle_naver_extend()/run_naver_extend_worker())가 이 매물의
+                    # NAS 등기부 파일 위치를 registry_attach로 미리 계산해 실어 보낸다 — 재발급이
+                    # 필요 없을 만큼 최신본이 이미 있는 경우와, 방금 새로 재발급받은 경우 둘 다 여기
+                    # 도달할 때는 이미 최신 파일 위치가 정해져 있다(재발급 자체는 naver.py가 하지
+                    # 않는다). 신규등록/수정은 크롬확장(content_serve.js::attachRegistryDocumentIfAny())
+                    # 이 같은 값을 base64로 변환해 파일칸에 넣지만, 이 함수는 셀레니움이라 로컬
+                    # 파일시스템(NAS가 매핑된 드라이브)에 직접 접근할 수 있어 그 변환이 필요 없다.
+                    def 등기부등본_파일칸_찾기():
+                        # 기존 특정위치의x번째입력태그찾기()는 is_displayed()로 걸러진 요소만
+                        # 인정하는데, 파일 첨부칸은 흔히 실제 <input type=file>을 화면에서 숨기고
+                        # 버튼/라벨만 보여주는 방식이라(직접 확인 필요 — 재등록 화면의 실제 구조를
+                        # 아직 육안으로 확인하지 못함) 그 필터에 걸려 못 찾을 위험이 있다. 그래서
+                        # 여기서는 라벨이 보이는 행을 찾은 뒤에는 보이는지 여부와 무관하게 그 안의
+                        # input[type=file]을 그대로 찾는다.
+                        try:
+                            for strong in driver.find_elements(By.XPATH, "//th/strong"):
+                                if not strong.is_displayed():
+                                    continue
+                                텍스트 = strong.get_attribute('textContent').replace('\n', '').replace('\r', '').replace(' ', '')
+                                if 텍스트 != '등기부등본첨부':
+                                    continue
+                                tr = strong.find_element(By.XPATH, './ancestor::tr')
+                                파일입력들 = tr.find_elements(By.XPATH, './/input[@type="file"]')
+                                if 파일입력들:
+                                    return 파일입력들[0]
+                            return None
+                        except Exception as e:
+                            print(f"등기부등본 첨부칸 탐색 실패: {e}")
+                            return None
+
+                    등기부_첨부정보 = 네이버매물정보.get('registry_attach')
+                    if 등기부_첨부정보 and 등기부_첨부정보.get('folder') and 등기부_첨부정보.get('name'):
+                        self.step_progress.emit(f"매물 {새홈매물번호} — 등기부등본 첨부 중")
+                        로컬파일경로 = os.path.join(등기부_첨부정보['folder'], 등기부_첨부정보['name'])
+                        if not os.path.isfile(로컬파일경로):
+                            print(f"등기부등본 첨부 건너뜀 — 파일을 찾을 수 없음: {로컬파일경로}")
+                        else:
+                            파일input = 등기부등본_파일칸_찾기()
+                            if not 파일input:
+                                print("연장등록 화면에서 '등기부등본 첨부'칸을 찾지 못해 건너뜀")
+                            else:
+                                try:
+                                    # 이미 다른 파일이 첨부된 채로 열렸을 수 있으므로(예전에 등록된
+                                    # 오래된 등기부) 값을 지우지 않고 그대로 send_keys — 파일 입력
+                                    # 요소는 새 경로를 보내면 기존 선택을 새 파일로 대체한다(표준
+                                    # HTML 동작, clear() 불필요).
+                                    파일input.send_keys(로컬파일경로)
+                                    print(f"등기부등본 첨부 완료: {로컬파일경로}")
+                                except Exception as e:
+                                    print(f"등기부등본 첨부 실패: {e}")
+                    else:
+                        print("등기부등본 첨부정보 없음 — 첨부 건너뜀(재발급 불필요 판정 또는 대상 아님)")
 
                     # pyautogui.alert(basic_secret, "basic_secret")
                     # 비밀메모요소 = 특정위치의x번째입력태그찾기('관리자 메모 (비공개 정보)', 'textarea', 1)
