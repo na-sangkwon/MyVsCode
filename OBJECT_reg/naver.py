@@ -2144,51 +2144,64 @@ class NaverThread(QThread):
                     print(f"간편 재등록 진행: {새홈매물번호}")
                     self.step_progress.emit(f"매물 {새홈매물번호} — 간편 재등록 신청서 열람 중")
 
-                    # 1단계: 목록에서 "간편 재등록" 버튼 클릭 (printArea는 이 매물번호로 필터링된
-                    # 검색결과 1건짜리 영역 — 연장등록()의 재등록 버튼과 동일한 전제)
-                    간편재등록_버튼 = driver.find_element(
-                        By.XPATH, "//*[@id='printArea']//button[contains(., '간편 재등록')]"
-                    )
-                    try: 간편재등록_버튼.click()
-                    except: driver.execute_script("arguments[0].click();", 간편재등록_버튼)
+                    # [2026-09-15 추가 — 사용자 지적 "오류발생시 디버깅할 수 있게"] 실사용 중
+                    # "주의사항 확인 중" 다음 단계로 못 넘어가고 실패하는 사례가 재현됐는데,
+                    # pr_error_log에 아무 것도 안 남아 원인을 알 수 없었다 — 이 함수를 호출하는
+                    # 여러 겹의 바깥쪽 예외 처리 중 어딘가에서 report_unexpected_exception이
+                    # 도달하지 못한 채 조용히 삼켜지는 것으로 보인다. 함수 전체를 감싸서 실패
+                    # 지점에서 바로(가장 안쪽에서) 원인을 남기고, 연장등록()과 동일하게 예외를
+                    # 올리는 대신 실패 사유 문자열을 반환해 호출부(기간만료매물확인)의 기존
+                    # "!= '200'" 분기가 그대로 처리하게 한다.
+                    try:
+                        # 1단계: 목록에서 "간편 재등록" 버튼 클릭 (printArea는 이 매물번호로 필터링된
+                        # 검색결과 1건짜리 영역 — 연장등록()의 재등록 버튼과 동일한 전제)
+                        간편재등록_버튼 = driver.find_element(
+                            By.XPATH, "//*[@id='printArea']//button[contains(., '간편 재등록')]"
+                        )
+                        try: 간편재등록_버튼.click()
+                        except: driver.execute_script("arguments[0].click();", 간편재등록_버튼)
 
-                    # [2026-09-15 실사용 중 재현된 버그 — 사용자 지적] 상가 매물은 수정화면 진입 시
-                    # "[상가] 매물 등록시, 방 수를... 기입해주세요" 안내 팝업이 뜨는데(신규 매물 등록
-                    # 흐름의 obinfo_type1=='상가/점포' 분기, naver.py:2881에서 이미 확인된 동작), 이
-                    # 팝업을 닫지 않으면 화면을 덮고 있어 아래 체크박스 클릭이 씹힌다. 연장등록()도
-                    # 재등록 버튼 클릭 직후 동일하게 다시보지않기확인()을 호출한다(naver.py:1816) —
-                    # 같은 시점이라 그대로 재사용한다.
-                    다시보지않기확인()
+                        # [2026-09-15 실사용 중 재현된 버그 — 사용자 지적] 상가 매물은 수정화면 진입 시
+                        # "[상가] 매물 등록시, 방 수를... 기입해주세요" 안내 팝업이 뜨는데(신규 매물 등록
+                        # 흐름의 obinfo_type1=='상가/점포' 분기, naver.py:2881에서 이미 확인된 동작), 이
+                        # 팝업을 닫지 않으면 화면을 덮고 있어 아래 체크박스 클릭이 씹힌다. 연장등록()도
+                        # 재등록 버튼 클릭 직후 동일하게 다시보지않기확인()을 호출한다(naver.py:1816) —
+                        # 같은 시점이라 그대로 재사용한다.
+                        다시보지않기확인()
 
-                    # 2단계: "확인 매물 등록 시 주의사항을 확인하였습니다." 체크
-                    # (라이브 DOM 조사로 확인한 정확한 문구 — Vuetify v-checkbox 컴포넌트)
-                    self.step_progress.emit(f"매물 {새홈매물번호} — 주의사항 확인 중")
-                    주의사항_체크박스 = WebDriverWait(driver, 10).until(
-                        EC.presence_of_element_located((
-                            By.XPATH,
-                            "//*[normalize-space(text())='확인 매물 등록 시 주의사항을 확인하였습니다.']"
-                            "/ancestor::div[contains(@class,'v-checkbox')][1]//input[@type='checkbox']"
-                        ))
-                    )
-                    driver.execute_script("arguments[0].click();", 주의사항_체크박스)
+                        # 2단계: "확인 매물 등록 시 주의사항을 확인하였습니다." 체크
+                        # (라이브 DOM 조사로 확인한 정확한 문구 — Vuetify v-checkbox 컴포넌트)
+                        self.step_progress.emit(f"매물 {새홈매물번호} — 주의사항 확인 중")
+                        주의사항_체크박스 = WebDriverWait(driver, 10).until(
+                            EC.presence_of_element_located((
+                                By.XPATH,
+                                "//*[normalize-space(text())='확인 매물 등록 시 주의사항을 확인하였습니다.']"
+                                "/ancestor::div[contains(@class,'v-checkbox')][1]//input[@type='checkbox']"
+                            ))
+                        )
+                        driver.execute_script("arguments[0].click();", 주의사항_체크박스)
 
-                    # 3단계: 등록권 있으면 사용, 없으면 충전금("써브N 일반 단건") 사용 — 기존 함수 재사용
-                    self.step_progress.emit(f"매물 {새홈매물번호} — 등록권 선택 중")
-                    네이버등록권_자동선택(driver)
+                        # 3단계: 등록권 있으면 사용, 없으면 충전금("써브N 일반 단건") 사용 — 기존 함수 재사용
+                        self.step_progress.emit(f"매물 {새홈매물번호} — 등록권 선택 중")
+                        네이버등록권_자동선택(driver)
 
-                    # 4단계: 가격/관리비를 최신 DB값으로 동기화 — "전체동의" 체크 전에 먼저 실행
-                    # (사용자 지시: "가격이 변하면 '전체동의' 체크하기 전에 동기화부터 하고 체크하게 해줘")
-                    가격정보_동기화(네이버매물정보)
+                        # 4단계: 가격/관리비를 최신 DB값으로 동기화 — "전체동의" 체크 전에 먼저 실행
+                        # (사용자 지시: "가격이 변하면 '전체동의' 체크하기 전에 동기화부터 하고 체크하게 해줘")
+                        가격정보_동기화(네이버매물정보)
 
-                    # 5단계: "모두동의" 체크 — 기존 함수 재사용
-                    동의결과_msg = 약관동의체크()
-                    누적결과_msg = ""
-                    if 동의결과_msg != "200":
-                        누적결과_msg += 동의결과_msg
-                        pyautogui.alert(f"동의결과_msg: {동의결과_msg}")
+                        # 5단계: "모두동의" 체크 — 기존 함수 재사용
+                        동의결과_msg = 약관동의체크()
+                        누적결과_msg = ""
+                        if 동의결과_msg != "200":
+                            누적결과_msg += 동의결과_msg
+                            pyautogui.alert(f"동의결과_msg: {동의결과_msg}")
 
-                    # 6단계: "매물등록" 버튼 클릭 + 확정/완료 모달 처리 — 기존 함수 재사용
-                    return 매물등록_최종제출(새홈매물번호, 누적결과_msg)
+                        # 6단계: "매물등록" 버튼 클릭 + 확정/완료 모달 처리 — 기존 함수 재사용
+                        return 매물등록_최종제출(새홈매물번호, 누적결과_msg)
+                    except Exception as e:
+                        print(f"[❌ 예외 - 간편_재등록 {새홈매물번호}] {e}")
+                        self.report_unexpected_exception(e, f'간편_재등록 실행 중(새홈 {새홈매물번호})')
+                        return f"간편재등록 실패: {e}"
 
                 def 약관동의체크():
                     동의실패_msg = ""
