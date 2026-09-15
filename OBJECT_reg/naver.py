@@ -2763,7 +2763,19 @@ class NaverThread(QThread):
                         # 네이버매물번호 = 네이버매물정보.get('ad_code', '')
                     print(f"확인결과_msg", 확인결과_msg)
                     check_list = ','.join(check_set)
-                    최상단알림창(f"기간만료매물확인 종료알림\n\n총 처리건수:{str(len(ad_naver_list))}\n\n기간만료매물확인 - {기간만료_count}건(연장 {연장_count}건, 종료 {종료_count}건)\n미확인매물 - {미확인_count}건\n종료일 확인이 필요한 매물list - {check_list}\n"+확인결과_msg)
+                    # [2026-09-15 변경 — 사용자 요청 "기간만료종료알림 팝업도 하단배너로"] 예전엔
+                    # 여기서 최상단알림창()(tkinter 팝업)을 띄웠는데, 화면에 보이는 모드(숨김 체크
+                    # 해제)에서는 사람이 직접 [확인]을 눌러야만 자동화가 끝나는 구조였다 — 아무도
+                    # 안 누르면 그 자리에서 자동화 전체가 멈춘다(개별/일괄 구분 없이 이 함수를 항상
+                    # 거치므로 매번 발생 가능). 숨김모드일 때만 안 띄우고 대신 기록하던 것을,
+                    # 이제 항상(화면표시 여부 무관) step_progress로만 보내 하단배너에 표시한다 —
+                    # 아무도 클릭 안 해도 자동화가 끝까지 진행된다.
+                    self.step_progress.emit(
+                        f"기간만료매물확인 종료 — 총 {len(ad_naver_list)}건 중 확인 {기간만료_count}건"
+                        f"(연장 {연장_count}건, 종료 {종료_count}건), 미확인 {미확인_count}건"
+                        + (f", 종료일 확인 필요: {check_list}" if check_list else "")
+                        + (f" | {확인결과_msg}" if 확인결과_msg else "")
+                    )
 
                 else:  # 기존 방식 유지
                     네이버매물번호 = ad_naver_list.get('ad_code', '')
