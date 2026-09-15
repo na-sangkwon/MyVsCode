@@ -2159,8 +2159,14 @@ class NaverThread(QThread):
 
                         # 2단계: "확인 매물 등록 시 주의사항을 확인하였습니다." 체크
                         # (라이브 DOM 조사로 확인한 정확한 문구 — Vuetify v-checkbox 컴포넌트)
+                        # [2026-09-15 실사용 중 재현된 버그] 다시보지않기확인() 수정 후에도 같은
+                        # TimeoutException이 재현됐다 — 이번엔 [상가] 팝업이 이미 사라진 상태였다.
+                        # naver.py가 크롬 프로필을 매번 새로 만들어 쓰기 때문에(로그인 쿠키 외엔
+                        # 캐시가 전혀 없음), 이 무거운 SPA 폼(11단계 전체가 한 페이지에 다 실림)의
+                        # 최초 렌더링이 캐시된 상태로 반복 확인해온 것보다 오래 걸릴 수 있다고 보고
+                        # 10초에서 25초로 늘린다.
                         self.step_progress.emit(f"매물 {새홈매물번호} — 주의사항 확인 중")
-                        주의사항_체크박스 = WebDriverWait(driver, 10).until(
+                        주의사항_체크박스 = WebDriverWait(driver, 25).until(
                             EC.presence_of_element_located((
                                 By.XPATH,
                                 "//*[normalize-space(text())='확인 매물 등록 시 주의사항을 확인하였습니다.']"
