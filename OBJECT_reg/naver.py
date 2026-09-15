@@ -1786,7 +1786,13 @@ class NaverThread(QThread):
                             print(f"🚨 [콘솔출력] 이미 다른 번호로 등록된 매물번호 포착 완료 ➡️ {duplicate_code}")
                             
                         # 팝업 컨테이너 내부의 [확인] 버튼을 자바스크립트로 강제 타격하여 차단 해제 및 폐쇄
-                        confirm_btn = driver.find_element(By.XPATH, '//div[contains(@class, "modal-popup")]//button[.//span[text()="확인"]]')
+                        # [2026-09-15 실사용 중 재현된 버그 — 사용자가 개발자도구로 직접 확인] 이
+                        # 클래스명은 "modal-popup"이 아니라 "modal-container"다(실측 HTML: <div
+                        # class="v-overlay__content"><div class="modal-container">...). 이름이
+                        # 비슷해서 헷갈렸던 것으로 보인다 — 못 찾으면 바깥쪽 except가 "중복 팝업
+                        # 없음"으로 오인해 조용히 통과시켜버리는 문제가 있었다(진짜 중복인데도
+                        # 확인 버튼을 못 찾아 그냥 진행서식으로 넘어갈 위험).
+                        confirm_btn = driver.find_element(By.XPATH, '//div[contains(@class, "modal-container")]//button[.//span[text()="확인"]]')
                         driver.execute_script("arguments[0].click();", confirm_btn)
                         print("✅ 중복 매물 차단 알림창을 정상적으로 닫았습니다.")
                         
@@ -2076,47 +2082,48 @@ class NaverThread(QThread):
                         최상단알림창(f"등록버튼 클릭 에러: {e}\n\n매물번호를 수동으로 추출해야합니다.")
                         연장결과_msg = '404'
 
-                    # [2026-09-03 수정 — 실사용 중 재현된 버그] 두 버튼 다 절대경로 XPath(/html/body/div[2]/...)로
-                    # 찾고 있었는데, 이 사이트는 Vue(Vuetify) SPA라 body의 실제 두번째 div는 페이지 콘텐츠가
-                    # 아니라 모든 모달이 공유하는 렌더링 컨테이너(class="v-overlay-container")다 — 그 안의
-                    # 몇 번째 자식을 가리키느냐는 "그 순간 모달이 몇 겹 떠 있는지"에 따라 완전히 달라진다.
-                    # 실제로 2026-09-03에 네이버 무료 등록권(써브N 일반 패키지)이 0/300으로 소진돼 충전금
-                    # 결제 경로(써브N 일반 단건)로 자동 전환됐는데, 이 결제 경로에서는 모달 겹수/구조가
-                    # 달라져 절대경로가 엉뚱한 요소를 가리키면서 두 버튼 다 타임아웃났다(pr_log id=17176로
-                    # 확인, 담당자 PC 재현은 결제 발생 문제로 아직 못 함 — 아래는 이 파일의 확인된 다른
-                    # 모달 처리 방식(연장등록() 위쪽 "중복 매물 확인" 팝업, By.XPATH
-                    # '//div[contains(@class,"modal-popup")]//button[.//span[text()="확인"]]')과 동일한
-                    # 패턴으로 바꾼 것 — 실제 버튼 문구가 "확인"이 맞는지는 라이브 재현으로 아직 확정 못했다,
-                    # 다음에 문제가 생기면 결제 후 실제 화면을 보고 문구를 확정할 것).
+                    # [2026-09-15 실사용 중 재현된 버그 — 사용자가 개발자도구로 직접 확인] 실제
+                    # "매물등록을 하시겠습니까?" 확인창의 진짜 클래스는 "modal-popup"이 아니라
+                    # "modal-container"였다(실측 HTML: <div class="v-overlay__content"><div
+                    # class="modal-container">...<p class="alert-message">매물등록을 하시겠습니까?
+                    # </p>...<span>확인</span>). 버튼 문구("확인")는 맞았지만 컨테이너 클래스명이
+                    # 비슷한 이름끼리 헷갈려 틀려 있었다 — 그래서 실제로는 클릭이 매번 타임아웃나
+                    # "실패"로 잘못 기록됐는데, 그 순간 화면을 보던 사람이 대신 확인을 눌러줘서
+                    # 등록 자체는 됐던 것(새홈 697649/네이버 336086901 실사용 사례로 확인).
                     self.step_progress.emit(f"매물 {새홈매물번호} — 등록 확정 처리 중")
                     try:
                         time.sleep(0.2)
                         확정버튼요소 =  WebDriverWait(driver, 10).until(
                             EC.element_to_be_clickable(
-                                (By.XPATH, '//div[contains(@class, "modal-popup")]//button[.//span[text()="확인"]]')
+                                (By.XPATH, '//div[contains(@class, "modal-container")]//button[.//span[text()="확인"]]')
                             )
                         )
                         확정버튼요소.click()
-                        진단_기록("확정버튼 클릭 성공 (modal-popup 셀렉터로 찾음)")
+                        진단_기록("확정버튼 클릭 성공 (modal-container 셀렉터로 찾음)")
                     except Exception as e:
                         print(f"확정버튼 클릭 에러: {e}")
                         self.report_unexpected_exception(e, f'매물등록_최종제출 - 확정버튼 클릭(새홈 {새홈매물번호})')
                         최상단알림창(f"확정버튼 클릭 에러: {e}\n\n매물번호를 수동으로 추출해야합니다.")
                         연장결과_msg = '404'
 
+                    # [2026-09-15 수정 — 사용자 확인] 검증방식(즉시등록 등)에 따라 "확정" 한 번으로
+                    # 등록이 끝나고 이 2차 확인창 자체가 아예 뜨지 않는 흐름이 실사용으로 확인됐다.
+                    # 그래서 여기서 짧게만 기다리고, 못 찾아도 앞 단계(등록버튼/확정버튼)가 이미
+                    # 성공했다면 전체 결과를 실패로 덮어쓰지 않는다 — 2차 확인이 아예 없는 게
+                    # 정상인 흐름을 실패로 오판하지 않기 위함.
                     try:
-                        완료확인버튼요소 =  WebDriverWait(driver, 10).until(
+                        완료확인버튼요소 =  WebDriverWait(driver, 3).until(
                             EC.element_to_be_clickable(
-                                (By.XPATH, '//div[contains(@class, "modal-popup")]//button[.//span[text()="확인"]]')
+                                (By.XPATH, '//div[contains(@class, "modal-container")]//button[.//span[text()="확인"]]')
                             )
                         )
                         완료확인버튼요소.click()
-                        진단_기록("완료확인버튼 클릭 성공 (modal-popup 셀렉터로 찾음)")
+                        진단_기록("완료확인버튼 클릭 성공 (modal-container 셀렉터로 찾음)")
                     except Exception as e:
-                        print(f"완료확인버튼 클릭 에러: {e}")
-                        self.report_unexpected_exception(e, f'매물등록_최종제출 - 완료확인버튼 클릭(새홈 {새홈매물번호})')
-                        최상단알림창(f"완료확인버튼 클릭 에러: {e}\n\n매물번호를 수동으로 추출해야합니다.")
-                        연장결과_msg = '404'
+                        print(f"완료확인버튼 없음(2차 확인창이 없는 흐름일 수 있음): {e}")
+                        if 연장결과_msg == '404':
+                            # 앞 단계가 이미 실패였다면 그대로 실패 유지(원인은 이미 위에서 기록됨).
+                            pass
 
                     if 연장결과_msg == '404' :
                         print("404 오류발생")
