@@ -2069,6 +2069,10 @@ class NaverThread(QThread):
                         진단_기록("매물등록 버튼 클릭 성공")
                     except Exception as e:
                         print(f"등록버튼 클릭 에러: {e}")
+                        # [2026-09-15 추가 — 사용자 지적] 이 except 3곳 다 report_unexpected_exception이
+                        # 빠져있어서, 간편_재등록() 쪽에 진단 로그를 추가했는데도 이 함수 안에서 나는
+                        # 예외는 여전히 pr_error_log에 하나도 안 남았다(실사용 중 확인).
+                        self.report_unexpected_exception(e, f'매물등록_최종제출 - 등록버튼 클릭(새홈 {새홈매물번호})')
                         최상단알림창(f"등록버튼 클릭 에러: {e}\n\n매물번호를 수동으로 추출해야합니다.")
                         연장결과_msg = '404'
 
@@ -2096,6 +2100,7 @@ class NaverThread(QThread):
                         진단_기록("확정버튼 클릭 성공 (modal-popup 셀렉터로 찾음)")
                     except Exception as e:
                         print(f"확정버튼 클릭 에러: {e}")
+                        self.report_unexpected_exception(e, f'매물등록_최종제출 - 확정버튼 클릭(새홈 {새홈매물번호})')
                         최상단알림창(f"확정버튼 클릭 에러: {e}\n\n매물번호를 수동으로 추출해야합니다.")
                         연장결과_msg = '404'
 
@@ -2109,6 +2114,7 @@ class NaverThread(QThread):
                         진단_기록("완료확인버튼 클릭 성공 (modal-popup 셀렉터로 찾음)")
                     except Exception as e:
                         print(f"완료확인버튼 클릭 에러: {e}")
+                        self.report_unexpected_exception(e, f'매물등록_최종제출 - 완료확인버튼 클릭(새홈 {새홈매물번호})')
                         최상단알림창(f"완료확인버튼 클릭 에러: {e}\n\n매물번호를 수동으로 추출해야합니다.")
                         연장결과_msg = '404'
 
