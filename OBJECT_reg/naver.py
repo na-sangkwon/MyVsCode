@@ -1665,7 +1665,10 @@ class NaverThread(QThread):
                 # driver = webdriver.Chrome('/chromedriver', options=options)
                 # driver = webdriver.Chrome(ChromeDriverManager().install())
                 # URL 열기
-                driver.maximize_window()
+                # [2026-09-15 수정 — 사용자 요청] 화면 전체를 덮는 최대화 대신, 작업하면서 다른
+                # 창도 함께 볼 수 있도록 작은 창(가로1000 x 세로800)으로 띄운다. headless 모드는
+                # 창 자체가 안 보이므로 영향 없음.
+                driver.set_window_size(1000, 800)
                 
                 # [2026-09-10 추가 — 사용자 요청 "최대한 구체적인 단계"] 로그인은 배치 전체에서
                 # 1회만 일어나 개별 매물 단위 단계와는 성격이 다르지만, 담당자가 지금 브라우저가
@@ -1874,106 +1877,11 @@ class NaverThread(QThread):
 
 
 
-                    def 기존값변경(입력란, 기존입력값, 신규입력값):
-                        입력값글자수 = len(기존입력값)
-                        입력란.send_keys(Keys.BACK_SPACE * 입력값글자수)   
-                        입력란.send_keys(신규입력값)      
+                    # [2026-09-15 가격정보_동기화()로 추출 — 사용자 요청 "간편재등록에도 재사용"]
+                    # 아래 있던 인라인 가격/관리비 동기화 코드를 연장등록()/간편_재등록() 둘 다 쓰는
+                    # 공용 함수로 옮겼다. 동작은 그대로이고 위치만 이동했다.
+                    가격정보_동기화(네이버매물정보)
 
-                    self.step_progress.emit(f"매물 {새홈매물번호} — 가격·약관 정보 확인 중")
-                    #기존에 등록된 거래정보
-                    구거래종류 = 선택된라디오버튼텍스트가져오기('거래 종류')
-                    print(f"구거래종류:{구거래종류}")  
-                    if 구거래종류 == object_ttype:            
-                        if 구거래종류 == '매매':
-                            매매금액입력란 = 특정위치의x번째입력태그찾기('매매가', 'number', 1)
-                            기존매매금액 = 매매금액입력란.get_attribute('value')
-                            # print(f"기존매매금액:{기존매매금액}")
-                            if int(object_tmoney1) != int(기존매매금액):
-                                print(f"매매금액 수정:{기존매매금액} => {object_tmoney1}")
-                                기존값변경(매매금액입력란,기존매매금액,object_tmoney1)
-                                
-                        elif 구거래종류  == '전세':
-                            전세가입력란 = 특정위치의x번째입력태그찾기('전세가', 'number', 1)
-                            기존전세가 = 전세가입력란.get_attribute('value')
-                            # print(f"기존전세가:{기존전세가}")
-                            if int(object_tmoney1) != int(기존전세가):
-                                print(f"전세가 수정:{기존전세가} => {object_tmoney1}")
-                                기존값변경(전세가입력란,기존전세가,object_tmoney1)
-                        elif 구거래종류  == '월세':
-                            보증금입력란 = 특정위치의x번째입력태그찾기('보증금', 'number', 1)
-                            기존보증금 = 보증금입력란.get_attribute('value')
-                            # pyautogui.alert(f"기존보증금:{기존보증금}")
-                            월세입력란 = 특정위치의x번째입력태그찾기('월세', 'number', 1)
-                            기존월세 = 월세입력란.get_attribute('value')
-                            # pyautogui.alert(f"기존월세:{기존월세}")
-                            if int(object_tmoney1) != int(기존보증금):
-                                print(f"보증금 수정:{기존보증금} => {object_tmoney1}")
-                                time.sleep(0.1)
-                                기존값변경(보증금입력란,기존보증금,object_tmoney1)
-                            if int(object_tmoney2) != int(기존월세):
-                                print(f"월세 수정:{기존월세} => {object_tmoney2}")
-                                기존값변경(월세입력란,기존월세,object_tmoney2)
-                        
-                        # 선택된부과방식이 '정액관리비 (세부내역 미고지한 경우)'인 경우에만 수정
-                        선택된부과방식 = 선택된라디오버튼텍스트가져오기('부과방식')
-                        #관리비별도이고 값이 변경된 경우
-                        if object_mmoney and int(object_mmoney)>0 and 선택된부과방식 == '정액관리비 (세부내역 미고지한 경우)':
-                            if object_rtype in ['원룸','투룸','쓰리룸 이상']: #주거용?
-                                관리비입력란 = 특정위치의x번째입력태그찾기('관리비', 'number', 1)
-                            else: #비주거용?
-                                관리비입력란 = 특정위치의x번째입력태그찾기('월 관리비', 'number', 1)
-                            기존관리비 = 관리비입력란.get_attribute('value')
-                            if 기존관리비:
-                                if int(object_mmoney*10000) != int(기존관리비):
-                                    print(f"관리비 수정:{기존관리비} => {object_mmoney*10000}")
-                                    기존값변경(관리비입력란,기존관리비,object_mmoney*10000)
-                    #거래종류가 변경된 경우
-                    else:
-                        최상단알림창(f"[새홈]{새홈매물번호}\n\n등록된 거래종류와 다릅니다.\n확인시 거래종류와 금액이 수정됩니다.\n\n{구거래종류} => {object_ttype}")
-                        def 가격정보삭제확인():
-                            try:
-                                # pyautogui.alert(f"확정버튼요소 확인")
-                                가격정보삭제확인버튼요소 =  WebDriverWait(driver, 10).until(
-                                    EC.element_to_be_clickable(
-                                        (By.XPATH, '/html/body/div[2]/div/div[2]/div[1]/div[2]/div/div[2]/button')
-                                    )
-                                )   
-                                가격정보삭제확인버튼요소.click()
-                            except Exception as e:
-                                print(f"가격정보삭제확인버튼 클릭 에러: {e}")
-                                최상단알림창(f"가격정보삭제확인버튼 클릭 에러: {e}\n\n매물번호를 수동으로 추출해야합니다.")
-                                # 연장결과_msg = '404'                        
-                        # 연장결과_msg += f"{새홈매물번호} - 등록된 거래종류와 달라 거래금액이 수정되지 않음"
-
-                        #임대에서 매매로 변경된 경우
-                        if object_ttype == '매매':
-                            라디오버튼선택('거래 종류', '매매')  
-                            가격정보삭제확인()
-                            매매금액입력란 = 특정위치의x번째입력태그찾기('매매가', 'number', 1)
-                            매매금액입력란.send_keys(object_tmoney1)
-                        elif object_ttype == '전세':
-                            라디오버튼선택('거래 종류', '전세')  
-                            가격정보삭제확인()
-                            전세가입력란 = 특정위치의x번째입력태그찾기('전세가', 'number', 1)
-                            전세가입력란.send_keys(object_tmoney1)
-                        elif object_ttype == '월세':
-                            라디오버튼선택('거래 종류', '월세')  
-                            가격정보삭제확인()
-                            보증금입력란 = 특정위치의x번째입력태그찾기('보증금', 'number', 1)
-                            보증금입력란.send_keys(object_tmoney1)
-                            월세입력란 = 특정위치의x번째입력태그찾기('월세', 'number', 1)
-                            월세입력란.send_keys(object_tmoney2)
-                        #매매에서 임대로 변경된 경우
-                        #'월 관리비'항목중 '관리비 표시안함' 체크
-                        try:
-                            관리비표시안함체크박스 = 특정위치의x번째입력태그찾기('월 관리비', 'checkbox', 1)
-                            관리비표시안함체크박스.click()
-                        except:
-                            fail_msg += '\n- 관리비표시안함 체크실패'  
-                        #상세설명내용수정
-                        pyautogui.alert(f"값수정 완료, 상세설명의 가격정보 표시부 확인필요!!")        
-                    
-                    
                     비밀메모요소 = 특정위치의x번째입력태그찾기('관리자 메모 (비공개 정보)', 'textarea', 1)
                     비밀메모 = 비밀메모요소.get_attribute('value')
                     if 비밀메모:
@@ -2018,9 +1926,137 @@ class NaverThread(QThread):
                     if 동의결과_msg != "200": 
                         연장결과_msg += 동의결과_msg
                         pyautogui.alert(f"동의결과_msg: {동의결과_msg}")
-                    #등록권선택
+                    # [2026-09-15 매물등록_최종제출()로 추출 — 사용자 요청 "간편재등록에도 재사용"]
+                    # 아래 있던 "매물등록" 버튼 클릭~확정/완료 모달 처리 인라인 코드를
+                    # 연장등록()/간편_재등록() 둘 다 쓰는 공용 함수로 옮겼다. 동작은 그대로이고
+                    # 위치만 이동했다.
+                    return 매물등록_최종제출(새홈매물번호, 연장결과_msg)
+
+                def 가격정보_동기화(네이버매물정보):
+                    """
+                    [2026-09-15 연장등록()에서 추출 — 사용자 요청 "간편재등록에도 가격동기화 필요"]
+                    화면에 이미 등록되어 있는 거래종류/가격/관리비를 DB 최신값과 비교해 다르면
+                    입력란을 지우고 다시 써넣는다. 연장등록()과 간편_재등록()이 같은 th/strong 라벨
+                    구조(같은 사이트 컴포넌트)를 쓰는 걸 라이브로 직접 확인하고 공용 함수로 뽑았다 —
+                    한쪽만 고치고 다른 쪽을 깜빡하지 않도록 두 호출부 모두 이 함수 하나만 본다.
+                    """
+                    새홈매물번호 = 네이버매물정보.get('object_code_new', '')
+                    object_rtype = 네이버매물정보.get('object_rtype', '')
+                    object_ttype = 네이버매물정보.get('object_ttype', '')
+                    object_tmoney1 = 네이버매물정보.get('object_tmoney1', '')
+                    object_tmoney2 = 네이버매물정보.get('object_tmoney2', '')
+                    object_mmoney = 네이버매물정보.get('object_mmoney', '')
+
+                    def 기존값변경(입력란, 기존입력값, 신규입력값):
+                        입력값글자수 = len(기존입력값)
+                        입력란.send_keys(Keys.BACK_SPACE * 입력값글자수)
+                        입력란.send_keys(신규입력값)
+
+                    self.step_progress.emit(f"매물 {새홈매물번호} — 가격·약관 정보 확인 중")
+                    #기존에 등록된 거래정보
+                    구거래종류 = 선택된라디오버튼텍스트가져오기('거래 종류')
+                    print(f"구거래종류:{구거래종류}")
+                    if 구거래종류 == object_ttype:
+                        if 구거래종류 == '매매':
+                            매매금액입력란 = 특정위치의x번째입력태그찾기('매매가', 'number', 1)
+                            기존매매금액 = 매매금액입력란.get_attribute('value')
+                            # print(f"기존매매금액:{기존매매금액}")
+                            if int(object_tmoney1) != int(기존매매금액):
+                                print(f"매매금액 수정:{기존매매금액} => {object_tmoney1}")
+                                기존값변경(매매금액입력란,기존매매금액,object_tmoney1)
+
+                        elif 구거래종류  == '전세':
+                            전세가입력란 = 특정위치의x번째입력태그찾기('전세가', 'number', 1)
+                            기존전세가 = 전세가입력란.get_attribute('value')
+                            # print(f"기존전세가:{기존전세가}")
+                            if int(object_tmoney1) != int(기존전세가):
+                                print(f"전세가 수정:{기존전세가} => {object_tmoney1}")
+                                기존값변경(전세가입력란,기존전세가,object_tmoney1)
+                        elif 구거래종류  == '월세':
+                            보증금입력란 = 특정위치의x번째입력태그찾기('보증금', 'number', 1)
+                            기존보증금 = 보증금입력란.get_attribute('value')
+                            # pyautogui.alert(f"기존보증금:{기존보증금}")
+                            월세입력란 = 특정위치의x번째입력태그찾기('월세', 'number', 1)
+                            기존월세 = 월세입력란.get_attribute('value')
+                            # pyautogui.alert(f"기존월세:{기존월세}")
+                            if int(object_tmoney1) != int(기존보증금):
+                                print(f"보증금 수정:{기존보증금} => {object_tmoney1}")
+                                time.sleep(0.1)
+                                기존값변경(보증금입력란,기존보증금,object_tmoney1)
+                            if int(object_tmoney2) != int(기존월세):
+                                print(f"월세 수정:{기존월세} => {object_tmoney2}")
+                                기존값변경(월세입력란,기존월세,object_tmoney2)
+
+                        # 선택된부과방식이 '정액관리비 (세부내역 미고지한 경우)'인 경우에만 수정
+                        선택된부과방식 = 선택된라디오버튼텍스트가져오기('부과방식')
+                        #관리비별도이고 값이 변경된 경우
+                        if object_mmoney and int(object_mmoney)>0 and 선택된부과방식 == '정액관리비 (세부내역 미고지한 경우)':
+                            if object_rtype in ['원룸','투룸','쓰리룸 이상']: #주거용?
+                                관리비입력란 = 특정위치의x번째입력태그찾기('관리비', 'number', 1)
+                            else: #비주거용?
+                                관리비입력란 = 특정위치의x번째입력태그찾기('월 관리비', 'number', 1)
+                            기존관리비 = 관리비입력란.get_attribute('value')
+                            if 기존관리비:
+                                if int(object_mmoney*10000) != int(기존관리비):
+                                    print(f"관리비 수정:{기존관리비} => {object_mmoney*10000}")
+                                    기존값변경(관리비입력란,기존관리비,object_mmoney*10000)
+                    #거래종류가 변경된 경우
+                    else:
+                        최상단알림창(f"[새홈]{새홈매물번호}\n\n등록된 거래종류와 다릅니다.\n확인시 거래종류와 금액이 수정됩니다.\n\n{구거래종류} => {object_ttype}")
+                        def 가격정보삭제확인():
+                            try:
+                                # pyautogui.alert(f"확정버튼요소 확인")
+                                가격정보삭제확인버튼요소 =  WebDriverWait(driver, 10).until(
+                                    EC.element_to_be_clickable(
+                                        (By.XPATH, '/html/body/div[2]/div/div[2]/div[1]/div[2]/div/div[2]/button')
+                                    )
+                                )
+                                가격정보삭제확인버튼요소.click()
+                            except Exception as e:
+                                print(f"가격정보삭제확인버튼 클릭 에러: {e}")
+                                최상단알림창(f"가격정보삭제확인버튼 클릭 에러: {e}\n\n매물번호를 수동으로 추출해야합니다.")
+                                # 연장결과_msg = '404'
+                        # 연장결과_msg += f"{새홈매물번호} - 등록된 거래종류와 달라 거래금액이 수정되지 않음"
+
+                        #임대에서 매매로 변경된 경우
+                        if object_ttype == '매매':
+                            라디오버튼선택('거래 종류', '매매')
+                            가격정보삭제확인()
+                            매매금액입력란 = 특정위치의x번째입력태그찾기('매매가', 'number', 1)
+                            매매금액입력란.send_keys(object_tmoney1)
+                        elif object_ttype == '전세':
+                            라디오버튼선택('거래 종류', '전세')
+                            가격정보삭제확인()
+                            전세가입력란 = 특정위치의x번째입력태그찾기('전세가', 'number', 1)
+                            전세가입력란.send_keys(object_tmoney1)
+                        elif object_ttype == '월세':
+                            라디오버튼선택('거래 종류', '월세')
+                            가격정보삭제확인()
+                            보증금입력란 = 특정위치의x번째입력태그찾기('보증금', 'number', 1)
+                            보증금입력란.send_keys(object_tmoney1)
+                            월세입력란 = 특정위치의x번째입력태그찾기('월세', 'number', 1)
+                            월세입력란.send_keys(object_tmoney2)
+                        #매매에서 임대로 변경된 경우
+                        #'월 관리비'항목중 '관리비 표시안함' 체크
+                        try:
+                            관리비표시안함체크박스 = 특정위치의x번째입력태그찾기('월 관리비', 'checkbox', 1)
+                            관리비표시안함체크박스.click()
+                        except:
+                            # [2026-09-15 추출 시 발견 — 기존 코드의 원래 버그, 건드리지 않고 그대로 옮김]
+                            # 이 fail_msg는 연장등록()의 실제 매개변수(실패_msg)와 이름이 달라 정의된 적이
+                            # 없다 — 이 except 블록이 실행되면 NameError가 난다(추출 전부터 있던 문제).
+                            fail_msg += '\n- 관리비표시안함 체크실패'
+                        #상세설명내용수정
+                        pyautogui.alert(f"값수정 완료, 상세설명의 가격정보 표시부 확인필요!!")
+
+                def 매물등록_최종제출(새홈매물번호, 연장결과_msg=""):
+                    """
+                    [2026-09-15 연장등록()에서 추출 — 사용자 요청 "간편재등록에도 재사용"]
+                    "매물등록" 버튼 클릭부터 확정/완료 확인 모달 처리까지 — 연장등록()과 간편_재등록()
+                    둘 다 같은 사이트 컴포넌트를 쓰므로 공유한다. 호출 전까지 이미 실패 메시지가
+                    쌓여 있으면 연장결과_msg로 넘겨받아 이어서 쓰고, 없으면 빈 문자열로 시작한다.
+                    """
                     time.sleep(0.2)
-                    #매물등록 버튼 클릭
                     self.step_progress.emit(f"매물 {새홈매물번호} — 매물등록 제출 중")
                     try:
                         # [2026-09-02 수정] 기존 XPath(li[3] 인덱스 기반)가 실제로는 "임시저장" 버튼을
@@ -2028,7 +2064,6 @@ class NaverThread(QThread):
                         # 확인창이 뜨는 걸 스크린샷으로 확인). 화면 우측 버튼 순서(예약등록/목록/
                         # 임시저장/매물등록)가 바뀌면 인덱스 기반 XPath는 계속 깨질 수 있으므로,
                         # 버튼 텍스트("매물등록")로 직접 찾도록 바꿔 순서 변화에 영향받지 않게 한다.
-                        # pyautogui.alert(f"매물등록 확인")
                         # [2026-09-02 재수정] text()는 버튼의 "직접" 텍스트만 찾는데, 실제로는 이
                         # 버튼 텍스트가 자식 요소(span 등) 안에 있어서 못 찾았다(라이브 재현으로
                         # 확인 — "등록버튼 클릭 에러" 발생). contains(., ...)는 자손 요소를 포함한
@@ -2049,8 +2084,6 @@ class NaverThread(QThread):
                         최상단알림창(f"등록버튼 클릭 에러: {e}\n\n매물번호를 수동으로 추출해야합니다.")
                         연장결과_msg = '404'
 
-                    # driver.find_element(By.XPATH, f'//*[@id="app"]/div/div/div[2]/div/div[2]/ul/li[3]/div/button').click()
-                    #등록 확정버튼 클릭
                     # [2026-09-03 수정 — 실사용 중 재현된 버그] 두 버튼 다 절대경로 XPath(/html/body/div[2]/...)로
                     # 찾고 있었는데, 이 사이트는 Vue(Vuetify) SPA라 body의 실제 두번째 div는 페이지 콘텐츠가
                     # 아니라 모든 모달이 공유하는 렌더링 컨테이너(class="v-overlay-container")다 — 그 안의
@@ -2065,7 +2098,6 @@ class NaverThread(QThread):
                     # 다음에 문제가 생기면 결제 후 실제 화면을 보고 문구를 확정할 것).
                     self.step_progress.emit(f"매물 {새홈매물번호} — 등록 확정 처리 중")
                     try:
-                        # pyautogui.alert(f"확정버튼요소 확인")
                         time.sleep(0.2)
                         확정버튼요소 =  WebDriverWait(driver, 10).until(
                             EC.element_to_be_clickable(
@@ -2080,7 +2112,6 @@ class NaverThread(QThread):
                         연장결과_msg = '404'
 
                     try:
-                        # pyautogui.alert(f"확정버튼요소 확인")
                         완료확인버튼요소 =  WebDriverWait(driver, 10).until(
                             EC.element_to_be_clickable(
                                 (By.XPATH, '//div[contains(@class, "modal-popup")]//button[.//span[text()="확인"]]')
@@ -2093,13 +2124,63 @@ class NaverThread(QThread):
                         최상단알림창(f"완료확인버튼 클릭 에러: {e}\n\n매물번호를 수동으로 추출해야합니다.")
                         연장결과_msg = '404'
 
-                    
-                    if 연장결과_msg == '404' : 
-                        print("404 오류발생")         
+                    if 연장결과_msg == '404' :
+                        print("404 오류발생")
                     else:
-                        # if 연장결과_msg != '' : 최상단알림창(f"연장결과_msg:{연장결과_msg}\n\n") 
-                        연장결과_msg = '200'                   
+                        연장결과_msg = '200'
                     return 연장결과_msg
+
+                def 간편_재등록(네이버매물정보):
+                    """
+                    [2026-09-15 신규 — 사용자 요청] 목록에 "간편 재등록" 버튼이 있으면 이 버튼을
+                    우선 사용한다 — 일반 "재등록"(연장등록())과 달리 중복매물 확인/홍보확인서 작성/
+                    서명 단계 없이, 주의사항 확인 → 등록권(또는 충전금) 선택 → 약관동의만 거치면
+                    등록되는 더 저렴한 경로다(사용자 확인, 간편재등록 목록 화면 라이브 조사로 검증).
+                    단, 화면에 남아있는 가격/관리비가 최신 DB값과 다를 수 있어 "전체동의" 체크 전에
+                    반드시 가격정보_동기화()로 먼저 맞춘다(사용자 지시).
+                    """
+                    새홈매물번호 = 네이버매물정보.get('object_code_new', '')
+
+                    print(f"간편 재등록 진행: {새홈매물번호}")
+                    self.step_progress.emit(f"매물 {새홈매물번호} — 간편 재등록 신청서 열람 중")
+
+                    # 1단계: 목록에서 "간편 재등록" 버튼 클릭 (printArea는 이 매물번호로 필터링된
+                    # 검색결과 1건짜리 영역 — 연장등록()의 재등록 버튼과 동일한 전제)
+                    간편재등록_버튼 = driver.find_element(
+                        By.XPATH, "//*[@id='printArea']//button[contains(., '간편 재등록')]"
+                    )
+                    try: 간편재등록_버튼.click()
+                    except: driver.execute_script("arguments[0].click();", 간편재등록_버튼)
+
+                    # 2단계: "확인 매물 등록 시 주의사항을 확인하였습니다." 체크
+                    # (라이브 DOM 조사로 확인한 정확한 문구 — Vuetify v-checkbox 컴포넌트)
+                    self.step_progress.emit(f"매물 {새홈매물번호} — 주의사항 확인 중")
+                    주의사항_체크박스 = WebDriverWait(driver, 10).until(
+                        EC.presence_of_element_located((
+                            By.XPATH,
+                            "//*[normalize-space(text())='확인 매물 등록 시 주의사항을 확인하였습니다.']"
+                            "/ancestor::div[contains(@class,'v-checkbox')][1]//input[@type='checkbox']"
+                        ))
+                    )
+                    driver.execute_script("arguments[0].click();", 주의사항_체크박스)
+
+                    # 3단계: 등록권 있으면 사용, 없으면 충전금("써브N 일반 단건") 사용 — 기존 함수 재사용
+                    self.step_progress.emit(f"매물 {새홈매물번호} — 등록권 선택 중")
+                    네이버등록권_자동선택(driver)
+
+                    # 4단계: 가격/관리비를 최신 DB값으로 동기화 — "전체동의" 체크 전에 먼저 실행
+                    # (사용자 지시: "가격이 변하면 '전체동의' 체크하기 전에 동기화부터 하고 체크하게 해줘")
+                    가격정보_동기화(네이버매물정보)
+
+                    # 5단계: "모두동의" 체크 — 기존 함수 재사용
+                    동의결과_msg = 약관동의체크()
+                    누적결과_msg = ""
+                    if 동의결과_msg != "200":
+                        누적결과_msg += 동의결과_msg
+                        pyautogui.alert(f"동의결과_msg: {동의결과_msg}")
+
+                    # 6단계: "매물등록" 버튼 클릭 + 확정/완료 모달 처리 — 기존 함수 재사용
+                    return 매물등록_최종제출(새홈매물번호, 누적결과_msg)
 
                 def 약관동의체크():
                     동의실패_msg = ""
@@ -2493,12 +2574,33 @@ class NaverThread(QThread):
                         #등록된 네이버매물번호로 1개가 검색되고 해당 매물의 매물상태가 '중개요청'이면 연장등록
                         if int(검색결과건수) == 1 and  매물상태 == '중개요청':
                             print(f"기존 네이버매물({등록된매물번호}) 연장등록")
-                            # [2026-09-10 세분화] 이 지점부터 연장등록() 함수 내부(재등록 버튼 클릭
-                            # 직후)까지가 사실상 같은 순간이라, 함수 안쪽에 별도 emit을 또 넣는 대신
-                            # 여기 문구를 "재등록 신청서 열람 중"으로 바꿔 그 지점의 신호를 대신한다.
-                            self.step_progress.emit(f"매물 {object_code_new} — 재등록 신청서 열람 중")
-                            검증방식 = driver.find_element(By.XPATH, '//*[@id="printArea"]/div/table/tbody/tr/td[4]/p[1]').text
-                            연장등록결과 = 연장등록(네이버매물정보, 검증방식, 실패_msg)
+                            # [2026-09-15 추가 — 사용자 요청] "간편 재등록" 버튼이 있으면(등록 후
+                            # 일정 기간 내에만 뜨는 더 저렴한 경로) 그쪽을 우선 사용하고, 없으면
+                            # 기존 "재등록" 흐름(연장등록()) 그대로 쓴다. printArea는 이미 이
+                            # 네이버매물번호 하나로 필터링된 검색결과 영역이라 버튼 존재 여부만
+                            # 보면 된다.
+                            # [2026-09-15 실사용 중 재현된 버그 — 라이브 DOM으로 직접 확인] XPath 자체는
+                            # 맞는데(document.evaluate로 검증 완료), 바로 위 등록종료리스트검색결과건수()가
+                            # 동기화하는 건 상단 "총건수" 뱃지 하나뿐이라, 그 뱃지가 갱신된 순간에도 행의
+                            # 재등록/간편재등록 버튼은 아직 안 그려져 있을 수 있다. else 분기의 다음 줄
+                            # (검증방식 = driver.find_element(...))은 등록종료리스트에서검색()이 걸어둔
+                            # implicitly_wait(10) 덕분에 우연히 버튼이 그려질 때까지 자동 재시도돼서
+                            # 문제가 안 보였을 뿐 — 실제로 이 문제가 재현됨(새홈 697649 라이브 테스트,
+                            # "간편 재등록" 대신 "재등록"이 클릭돼 네이버 측 업셀 확인창이 뜸). 버튼이
+                            # 실제로 나타날 때까지 명시적으로 기다린 뒤 판정한다.
+                            WebDriverWait(driver, 5).until(
+                                lambda d: d.find_elements(By.XPATH, "//*[@id='printArea']//button[contains(., '재등록')]")
+                            )
+                            간편재등록_버튼들 = driver.find_elements(By.XPATH, "//*[@id='printArea']//button[contains(., '간편 재등록')]")
+                            if 간편재등록_버튼들:
+                                연장등록결과 = 간편_재등록(네이버매물정보)
+                            else:
+                                # [2026-09-10 세분화] 이 지점부터 연장등록() 함수 내부(재등록 버튼 클릭
+                                # 직후)까지가 사실상 같은 순간이라, 함수 안쪽에 별도 emit을 또 넣는 대신
+                                # 여기 문구를 "재등록 신청서 열람 중"으로 바꿔 그 지점의 신호를 대신한다.
+                                self.step_progress.emit(f"매물 {object_code_new} — 재등록 신청서 열람 중")
+                                검증방식 = driver.find_element(By.XPATH, '//*[@id="printArea"]/div/table/tbody/tr/td[4]/p[1]').text
+                                연장등록결과 = 연장등록(네이버매물정보, 검증방식, 실패_msg)
                             if 연장등록결과 != "200" : 
                                 실패_msg += 연장등록결과
                                 pyautogui.alert(f"이미등록된 매물입니다. 써브매물번호: {연장등록결과}")
