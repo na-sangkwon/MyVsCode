@@ -300,41 +300,29 @@ class NaverThread(QThread):
                 결과 = ''.join(단위_금액)
                 return 결과 if 결과 else "0만원" # 결과가 비어있으면 "0만원" 반환
             
-            def 다시보지않기확인():      
+            def 다시보지않기확인():
+                """
+                [2026-09-15 수정 — 사용자 지적, 간편_재등록() 실사용 중 재현된 버그] 원래는 팝업
+                컨테이너를 절대경로(/html/body/div[2]/div)로 먼저 찾은 뒤 그 안에서 버튼을
+                찾았는데, 이 사이트는 Vue SPA라 body의 몇 번째 자식이 모달 컨테이너인지가 그
+                순간 열려있는 모달 개수에 따라 달라진다(이 파일 다른 곳의 기존 경고 주석 —
+                매물등록_최종제출() 참고). 그래서 컨테이너 없이 버튼 문구("다시 보지 않기")
+                자체를 문서 전체에서 바로 찾도록 단순화했다.
+                팝업이 아예 없는 경우(정상 상황)도 자주 지나가는 경로라, implicitly_wait를
+                반드시 원상복구해야 한다 — 원래는 못 찾았을 때 복구를 건너뛰어 이후 모든 동작이
+                implicitly_wait(0)인 채로 진행되는 버그가 있었다(try/finally로 수정).
+                """
+                driver.implicitly_wait(0)
                 try:
-                    # el = WebDriverWait(driver, 1, poll_frequency=0.1).until(
-                    #     EC.visibility_of_element_located(
-                    #         (By.XPATH, '//div[@class="v-overlay-container"]//span[text()="다시 보지 않기"]')
-                    #     )
-                    # )
-                    # el.click()
-                    # print("✅ '다시 보지 않기' 클릭 완료")   
-                    driver.implicitly_wait(0)             
-
-                    # 팝업 컨테이너가 나타날 때까지 최대 1초 대기
-                    popup_xpath = '/html/body/div[2]/div'
-                    popup = WebDriverWait(driver, 0.5, poll_frequency=0.1).until(
-                        EC.presence_of_element_located((By.XPATH, popup_xpath))
+                    다시보지않기_버튼 = WebDriverWait(driver, 1.5, poll_frequency=0.1).until(
+                        EC.element_to_be_clickable((By.XPATH, '//span[text()="다시 보지 않기"]'))
                     )
-
-                    # 팝업 내에서 "다시 보지 않기" 버튼 span 찾기
-                    다시보지않기_버튼 = popup.find_element(By.XPATH, './/span[text()="다시 보지 않기"]')
-
-
-                    # 요소가 보이면 클릭
-                    if 다시보지않기_버튼.is_displayed():
-                        driver.execute_script("arguments[0].click();", 다시보지않기_버튼)
-                        print("✅ '다시 보지 않기' 클릭 성공")
-                    else:
-                        print("⚠️ '다시 보지 않기'는 존재하지만 표시되지 않았습니다.")
-                    # # 클릭 (JS 사용해도 안전)
-                    # driver.execute_script("arguments[0].click();", 다시보지않기_버튼)
-                    # print("✅ '다시 보지 않기' 클릭 성공")
-
-                    driver.implicitly_wait(10)
-
-                except Exception as e:
+                    driver.execute_script("arguments[0].click();", 다시보지않기_버튼)
+                    print("✅ '다시 보지 않기' 클릭 성공")
+                except Exception:
                     print("알림: '다시 보지 않기' 텍스트가 화면에 나타나지 않았습니다.")
+                finally:
+                    driver.implicitly_wait(10)
 
             def 확인메세지창승인():
                 try:
