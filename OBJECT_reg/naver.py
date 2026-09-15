@@ -2158,18 +2158,20 @@ class NaverThread(QThread):
                         다시보지않기확인()
 
                         # 2단계: "확인 매물 등록 시 주의사항을 확인하였습니다." 체크
-                        # (라이브 DOM 조사로 확인한 정확한 문구 — Vuetify v-checkbox 컴포넌트)
-                        # [2026-09-15 실사용 중 재현된 버그] 다시보지않기확인() 수정 후에도 같은
-                        # TimeoutException이 재현됐다 — 이번엔 [상가] 팝업이 이미 사라진 상태였다.
-                        # naver.py가 크롬 프로필을 매번 새로 만들어 쓰기 때문에(로그인 쿠키 외엔
-                        # 캐시가 전혀 없음), 이 무거운 SPA 폼(11단계 전체가 한 페이지에 다 실림)의
-                        # 최초 렌더링이 캐시된 상태로 반복 확인해온 것보다 오래 걸릴 수 있다고 보고
-                        # 10초에서 25초로 늘린다.
+                        # (라이브 DOM 조사로 확인한 문구 — Vuetify v-checkbox 컴포넌트)
+                        # [2026-09-15 실사용 중 재현된 버그, 두 차례 재현] 다시보지않기확인() 수정과
+                        # 대기시간 25초 연장 둘 다 효과가 없었다 — 같은 지점에서 매번 같은
+                        # TimeoutException이 재현됐다(로딩 지연이 원인이 아니었다는 뜻). 남은
+                        # 유력한 원인은 정확히 일치(normalize-space(text())=...)하는 선택자가
+                        # 실제 화면의 공백/줄바꿈과 미세하게 달라 매칭에 실패하는 경우라, label
+                        # 태그 하나를 기준으로 "포함" 매칭으로 완화한다 — 텍스트가 자손 요소로
+                        # 쪼개져 있어도(., contains) 잡히고, 문장 끝 마침표 등 미세한 차이에도
+                        # 영향받지 않는다.
                         self.step_progress.emit(f"매물 {새홈매물번호} — 주의사항 확인 중")
                         주의사항_체크박스 = WebDriverWait(driver, 25).until(
                             EC.presence_of_element_located((
                                 By.XPATH,
-                                "//*[normalize-space(text())='확인 매물 등록 시 주의사항을 확인하였습니다.']"
+                                "//label[contains(., '주의사항을 확인하였습니다')]"
                                 "/ancestor::div[contains(@class,'v-checkbox')][1]//input[@type='checkbox']"
                             ))
                         )
