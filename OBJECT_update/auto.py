@@ -878,9 +878,31 @@ def update_start():
                         print(f"   [🔄 오방 선로 배정 완료] 오방번호 [{오방_고유_번호}]를 [최신화 업데이트] 트랙에 단독 주입합니다.")
                         obangData['업데이트매물'] = [오방_고유_번호]
                         obangData['거래완료매물'] = []
+
+                        # [프리뷰 정확성] process_updates()가 실제로 도는 목록은 '업데이트매물'뿐이라
+                        # 위 한 줄로 실행 자체는 이미 정상 동작하지만, 프리뷰 대시보드(관심수정/일반수정
+                        # 칸)는 이 목록이 아니라 '업데이트매물_관심'/'업데이트매물_일반' 개수를 따로 센다
+                        # (293번째 줄) — 여기도 같이 채워야 사용자가 프리뷰에서 "0건"으로 오해하지 않는다.
+                        관심여부 = False
+                        try:
+                            conn4 = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', database='obangkr', charset='utf8')
+                            cur4 = conn4.cursor()
+                            cur4.execute("SELECT 1 FROM pr_request_fix WHERE request_code = %s AND fix_del = 'N'", (오방_엔트리.get('request_code', ''),))
+                            관심여부 = cur4.fetchone() is not None
+                            cur4.close(); conn4.close()
+                        except Exception as e:
+                            print(f"   [❌ 관심(즐겨찾기) 여부 조회 실패] {e}")
+                        if 관심여부:
+                            obangData['업데이트매물_관심'] = [오방_고유_번호]
+                            obangData['업데이트매물_일반'] = []
+                        else:
+                            obangData['업데이트매물_관심'] = []
+                            obangData['업데이트매물_일반'] = [오방_고유_번호]
                     else:
                         print(f"   [🔒 오방 선로 배정 완료] 오방번호 [{오방_고유_번호}]를 [거래완료 비공개] 트랙에 단독 주입합니다.")
                         obangData['업데이트매물'] = []
+                        obangData['업데이트매물_관심'] = []
+                        obangData['업데이트매물_일반'] = []
                         obangData['거래완료매물'] = [오방_고유_번호]
         # =================================================================
 
