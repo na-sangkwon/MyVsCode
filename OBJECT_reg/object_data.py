@@ -114,9 +114,9 @@ def getAdData(광고사이트명, userid, userpw, object_code_new_list=None):
             LEFT JOIN pr_object o
                 ON e.object_code_new = o.object_code_new
             LEFT JOIN pr_request_give r  -- pr_request 테이블 조인 추가
-                ON o.land_code = r.land_code
-                AND o.building_code = r.building_code
-                AND o.room_code = r.room_code
+                ON o.land_group_code = r.land_group_code
+                AND o.building_group_code = r.building_group_code
+                AND o.room_group_code = r.room_group_code
             WHERE  r.give_del = %s
             AND e.ad_site = %s
             AND e.ad_end < %s
@@ -322,24 +322,60 @@ def getData(object_code_new, userid, userpw):
             # print(row['object_address'])
             
             obang_code = row['object_code_obang']
-            land_code = row['land_code']
-            building_code = row['building_code']
-            room_code = row['room_code']
+            land_group_code = row['land_group_code']
+            building_group_code = row['building_group_code']
+            room_group_code = row['room_group_code']
             object_ttype = row['object_ttype'] #거래종류
             object_title = row['object_title'] #매물제목
             object_content = row['object_content'] #매물설명
-            
-        # object_type = o_res['object_type']
-        # land_code = o_res['land_code']
-        # building_code = o_res['building_code']
-        # room_code = o_res['room_code']
-        # print(f"{num_rows} rows returned by the query.")
+
+        # [2026-09-16 추가 — 다른 세션 DB 마이그레이션 반영] pr_object는 이제 land_group_code
+        # 등만 갖고 있는데, 바로 아래 pr_land/pr_building/pr_room/pr_BrentalInfo 조회는 여전히
+        # 개별 land_code/building_code/room_code가 필요해서 대표 코드로 풀어준다. land_group_code
+        # 하나가 여러 필지를 묶을 수 있어(auto.py 수정 때 실측 확인, 최대 16개) 대표 필지
+        # 판정에는 obangtest(PHP) lib_object.php/lib_get.php와 동일하게
+        # pr_land_group.representing_jibun을 쓴다 — 이 판정 로직을 바꿀 땐 auto.py/
+        # lib_object.php/lib_get.php 넷 다 같이 맞출 것. building/room은 그룹당 항목이
+        # 사실상 항상 1개뿐이라(실측 확인) 단순 조회로 충분하다.
+        land_code = ''
+        land_group_representing_jibun = ''
+        land_group_jibung = ''
+        if land_group_code:
+            cursor.execute('SELECT representing_jibun, land_jibung FROM pr_land_group WHERE land_group_code = %s', (land_group_code,))
+            lg_row = cursor.fetchone()
+            if lg_row:
+                land_group_representing_jibun = lg_row['representing_jibun'] or ''
+                land_group_jibung = lg_row['land_jibung'] or ''
+
+            cursor.execute('''
+                SELECT il.land_code FROM pr_land_group_item li
+                INNER JOIN pr_land il ON il.land_code = li.land_code AND il.land_del = 'N'
+                WHERE li.land_group_code = %s AND il.land_jibun = %s
+                LIMIT 1
+            ''', (land_group_code, land_group_representing_jibun))
+            lc_row = cursor.fetchone()
+            if not lc_row:
+                cursor.execute('SELECT land_code FROM pr_land_group_item WHERE land_group_code = %s ORDER BY item_idx ASC LIMIT 1', (land_group_code,))
+                lc_row = cursor.fetchone()
+            land_code = lc_row['land_code'] if lc_row else ''
+
+        building_code = ''
+        if building_group_code:
+            cursor.execute('SELECT building_code FROM pr_building_group_item WHERE building_group_code = %s LIMIT 1', (building_group_code,))
+            bc_row = cursor.fetchone()
+            building_code = bc_row['building_code'] if bc_row else ''
+
+        room_code = ''
+        if room_group_code:
+            cursor.execute('SELECT room_code FROM pr_room_group_item WHERE room_group_code = %s LIMIT 1', (room_group_code,))
+            rc_row = cursor.fetchone()
+            room_code = rc_row['room_code'] if rc_row else ''
 
         print('land_code: '+land_code)
         print('building_code: '+building_code)
         print('room_code: '+room_code)
         print('object_ttype: '+object_ttype)
-        
+
         query = 'SELECT * FROM pr_BrentalInfo WHERE building_code = "%s"' % building_code
         cursor.execute(query)
         brental_res = cursor.fetchall()
@@ -347,15 +383,15 @@ def getData(object_code_new, userid, userpw):
         for room_info in brental_res:
             brData.append(room_info)
         return_data["brData"] = brData
-        # return_data["brData"]['r_count'] = r_count  
+        # return_data["brData"]['r_count'] = r_count
         # print(">>>>>brData",brData)
         # pyautogui.alert('확인'+str(len(brData)))
 
-            
+
         # query = 'SELECT * FROM pr_request AS p LEFT JOIN pr_request_give AS c ON p.request_code = c.request_code WHERE c.land_code = "%s" AND c.building_code = "%s" AND c.room_code = "%s"' % (land_code, building_code, room_code)
         # cursor.execute(query)
-        query = 'SELECT * FROM pr_request AS p LEFT JOIN pr_request_give AS c ON p.request_code = c.request_code WHERE p.request_del="N" AND c.land_code = %s AND c.building_code = %s AND c.room_code = %s'
-        params = (land_code, building_code, room_code)
+        query = 'SELECT * FROM pr_request AS p LEFT JOIN pr_request_give AS c ON p.request_code = c.request_code WHERE p.request_del="N" AND c.land_group_code = %s AND c.building_group_code = %s AND c.room_group_code = %s'
+        params = (land_group_code, building_group_code, room_group_code)
         cursor.execute(query, params)
         g_res = cursor.fetchall()
         request_main = g_res[0]['request_main']
@@ -418,11 +454,23 @@ def getData(object_code_new, userid, userpw):
             # 토지정보를 저장할 빈 딕셔너리
             landData = []  # 결과 데이터를 저장할 리스트
             for row in l_res:
-                # 원하는 필드들 선택
-                selected_fields = ['land_do', 'land_si', 'land_dong', 'land_li', 'land_main', 'land_type', 'land_jibun', 'land_jibung',
-                                   'representing_jibun','representing_jimok','representing_purpose','representing_use','land_roadsize',
-                                   'land_important','land_option','land_terms','land_memo','land_purpose','land_totarea','land_adjoiningroad']
+                # [2026-09-16 수정 — 다른 세션 DB 마이그레이션 반영] land_jibung/representing_jibun/
+                # representing_jimok/representing_purpose/representing_use는 pr_land(개별, 방금 조회한
+                # row)에는 없는 필드다. land_jibung(그룹 전체 필지 목록)과 representing_jibun(대표
+                # 필지 지번)은 위에서 이미 pr_land_group에서 구해뒀다. representing_jimok/purpose/use는
+                # "대표 필지 자신의 지목/용도지역/실제이용상황"이라는 뜻이라 — 직접 검증해보니
+                # pr_land_group에는 이 값들이 비어있고(land_jimok/purpose/use 컬럼 자체가 전부 빈
+                # 문자열), 실제로는 대표 필지로 이미 뽑아온 이 row 자신의 land_jimok/land_purpose/
+                # land_use가 그 값이다.
+                selected_fields = ['land_do', 'land_si', 'land_dong', 'land_li', 'land_main', 'land_type', 'land_jibun',
+                                   'land_roadsize', 'land_important','land_option','land_terms','land_memo','land_purpose',
+                                   'land_totarea','land_adjoiningroad']
                 selected_data = {field: row[field] for field in selected_fields}
+                selected_data['land_jibung'] = land_group_jibung
+                selected_data['representing_jibun'] = land_group_representing_jibun
+                selected_data['representing_jimok'] = row['land_jimok']
+                selected_data['representing_purpose'] = row['land_purpose']
+                selected_data['representing_use'] = row['land_use']
                 land_address = row['land_address']
                 address = land_address
                 pnu = row['pnu']
@@ -436,12 +484,14 @@ def getData(object_code_new, userid, userpw):
                 land_li = row['land_li'] #리
                 land_main = row['land_main']
                 land_type = '산' if row['land_type'] == '2' else '일반' #대장구분 일반:1 산:2
-                land_jibun = row['land_jibun'] #지번(숫자)  
-                land_jibung = row['land_jibung'] #지번(숫자)  
-                representing_jibun = row['representing_jibun'] 
-                representing_jimok = row['representing_jimok'] 
-                representing_purpose = row['representing_purpose'] 
-                representing_use = row['representing_use'] 
+                land_jibun = row['land_jibun'] #지번(숫자)
+                # [2026-09-16 수정 — 다른 세션 DB 마이그레이션 반영] 위 selected_data 주석과 동일한
+                # 이유로 row(개별 pr_land)가 아니라 그룹 조회값/대표 필지 자신의 값에서 가져온다.
+                land_jibung = land_group_jibung #지번(숫자, 그룹 전체)
+                representing_jibun = land_group_representing_jibun
+                representing_jimok = row['land_jimok']
+                representing_purpose = row['land_purpose']
+                representing_use = row['land_use']
                 land_roadsize = row['land_roadsize'] 
                 land_purpose = row['land_purpose'] 
                 land_totarea = row['land_totarea'] 
