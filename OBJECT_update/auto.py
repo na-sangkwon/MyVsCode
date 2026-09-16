@@ -335,14 +335,18 @@ def obang_data(before_day, 오방_선택=True, 당근_선택=True):
     for c_row in 당근_광고_원본목록:
         if c_row['object_code_new']: carrot_map[c_row['object_code_new']] = str(c_row['ad_code'])
 
-    query = '''SELECT DISTINCT p.request_code, p.land_code, p.building_code, p.room_code FROM pr_request_give AS p
+    # [2026-09-16 수정 — 다른 세션 DB 마이그레이션 반영] pr_request_give/pr_object 둘 다
+    # land_code/building_code/room_code 대신 land_group_code/building_group_code/
+    # room_group_code를 쓰도록 스키마가 바뀌었다. 여기서는 두 테이블끼리 "같은 위치인지"만
+    # 비교하면 되므로(개별 land_code 자체가 필요한 게 아님) 그룹코드로 그대로 바꿔치기하면 된다.
+    query = '''SELECT DISTINCT p.request_code, p.land_group_code, p.building_group_code, p.room_group_code FROM pr_request_give AS p
             LEFT JOIN pr_request_fix AS c ON p.request_code = c.request_code WHERE c.fix_del="N"'''
     cursor.execute(query)
     f_res = cursor.fetchall()
     f_codes_arr = []
     for row in f_res:
-        o_query = 'SELECT land_code,building_code,room_code,object_code_obang FROM pr_object WHERE object_status="중개요청" AND object_del="N" AND land_code = %s AND building_code = %s AND room_code = %s'
-        cursor.execute(o_query, (row['land_code'], row['building_code'], row['room_code']))
+        o_query = 'SELECT land_group_code,building_group_code,room_group_code,object_code_obang FROM pr_object WHERE object_status="중개요청" AND object_del="N" AND land_group_code = %s AND building_group_code = %s AND room_group_code = %s'
+        cursor.execute(o_query, (row['land_group_code'], row['building_group_code'], row['room_group_code']))
         o_res = cursor.fetchall()
         try:
             if o_res and o_res[0]['object_code_obang'] != '': obang_update.append(str(o_res[0]['object_code_obang'])) 
@@ -353,7 +357,7 @@ def obang_data(before_day, 오방_선택=True, 당근_선택=True):
     f_codes = f"'{f_codes}'"
 
     query = f'''SELECT p.request_code, p.tr_target, p.object_type1, p.object_type2, p.admin_name, p.request_date, p.request_udate, p.request_wdate,
-        c.land_code, c.building_code, c.room_code, c.request_trading, c.request_deposit1, c.request_deposit2, c.request_deposit3,
+        c.land_group_code, c.building_group_code, c.room_group_code, c.request_trading, c.request_deposit1, c.request_deposit2, c.request_deposit3,
         c.request_rent1, c.request_rent2, c.request_rent3, c.request_manager, c.request_mmoney, c.request_mlist, c.tr_memo,
         c.request_area1, c.request_area2, c.request_areatype1, c.request_areatype2, c.first_trade 
         FROM pr_request AS p LEFT JOIN pr_request_give AS c ON p.request_code = c.request_code
@@ -368,17 +372,37 @@ def obang_data(before_day, 오방_선택=True, 당근_선택=True):
     print("-" * 80)
 
     for row in recently_res:
-        if not row['land_code']: continue
-        o_query = '''SELECT o.object_code_new, o.land_code, o.building_code, o.room_code, o.object_code_obang, o.object_type, o.object_ttype, o.object_rtype, o.object_del, o.object_ori_img,
-            l.land_do, l.land_si, l.land_dong, l.land_li, l.land_main, l.land_jibun, l.land_jibung, l.land_address, l.land_totarea, l.land_important, l.land_option, l.land_memo, l.representing_jibun, l.representing_jimok, l.representing_purpose,
+        if not row['land_group_code']: continue
+        # [2026-09-16 수정 — 다른 세션 DB 마이그레이션 반영] pr_object는 land_group_code만
+        # 갖고 있고, 주소 상세(land_do/si/dong/li 등)는 여전히 개별 pr_land에만 있어서 land_code로
+        # 한 번 풀어줘야 한다. 그런데 land_group_code 하나가 여러 land_code(필지)를 묶을 수 있어
+        # (실측 확인: 최대 16개), "대표 필지" 하나를 골라야 한다 — 이미 web(PHP)쪽
+        # core/lib/lib_object.php:getObjectFullInfoDataList()/lib_get.php:getObjectInfo()가
+        # 쓰는 것과 동일한 방식(pr_land_group.representing_jibun과 land_jibun이 일치하는 필지,
+        # 없으면 가장 먼저 등록된 필지)을 그대로 따른다 — 두 곳 다 고칠 때 반드시 같이 맞출 것.
+        # building_group_code/room_group_code는 실측 결과 그룹당 항목이 사실상 항상 1개뿐이라
+        # (건물 2452/2452, 호실 11672/11677) 단순 서브쿼리로 충분하다.
+        # 기존 컬럼 l.land_jibung/representing_jibun/representing_jimok/representing_purpose는
+        # 애초에 pr_land(개별)가 아니라 pr_land_group(그룹)에만 있는 컬럼이라 이 JOIN(l=pr_land)
+        # 에서는 원래부터 전부 NULL만 나오고 있었다 — land_jibun만 살리고 나머지는 뺐다(아래
+        # land_jibung 코드에서 쓰는 이름과 맞추려고 AS로 별칭만 유지).
+        o_query = '''SELECT o.object_code_new, o.land_group_code, o.building_group_code, o.room_group_code, o.object_code_obang, o.object_type, o.object_ttype, o.object_rtype, o.object_del, o.object_ori_img,
+            l.land_do, l.land_si, l.land_dong, l.land_li, l.land_main, l.land_jibun AS land_jibung, l.land_address, l.land_totarea, l.land_important, l.land_option, l.land_memo,
             b.building_name, b.building_del, b.building_gate1, b.building_gate2, b.building_parking, b.building_pn, b.building_direction, b.building_bolt, b.building_height, b.building_element, b.building_memo, b.building_important, b.building_option, b.building_purpose, b.building_grndflr, b.building_ugrndflr, b.building_archarea, b.building_totarea, b.building_usedate, b.building_stract, b.building_elvcount,
             r.room_num, r.room_floor, r.room_status, r.room_nmemo, r.room_gate1, r.room_gate2, r.room_memo, r.room_rcount, r.room_bcount, r.r_direction, r.room_direction, r.room_area1, r.room_areatype1, r.room_area2, r.room_areatype2, r.room_important, r.room_option, r.room_purpose
             FROM pr_object AS o
-            LEFT JOIN pr_land     AS l ON l.land_code     = o.land_code     AND l.land_del = 'N'
-            LEFT JOIN pr_building AS b ON b.building_code = o.building_code AND b.building_del = 'N'
-            LEFT JOIN pr_room     AS r ON r.room_code     = o.room_code     AND r.room_del = 'N'
-            WHERE o.object_del = 'N' AND o.land_code = %s AND o.building_code = %s AND o.room_code = %s LIMIT 1;'''
-        cursor.execute(o_query, (row['land_code'], row.get('building_code',''), row.get('room_code','')))
+            LEFT JOIN pr_land AS l ON l.land_code = COALESCE(
+                    (SELECT li.land_code FROM pr_land_group_item li
+                     INNER JOIN pr_land il ON il.land_code = li.land_code AND il.land_del = 'N'
+                     WHERE li.land_group_code = o.land_group_code
+                       AND il.land_jibun = (SELECT lgr.representing_jibun FROM pr_land_group lgr WHERE lgr.land_group_code = o.land_group_code)
+                     LIMIT 1),
+                    (SELECT li2.land_code FROM pr_land_group_item li2 WHERE li2.land_group_code = o.land_group_code ORDER BY li2.item_idx ASC LIMIT 1)
+                ) AND l.land_del = 'N'
+            LEFT JOIN pr_building AS b ON b.building_code = (SELECT bi.building_code FROM pr_building_group_item bi WHERE bi.building_group_code = o.building_group_code LIMIT 1) AND b.building_del = 'N'
+            LEFT JOIN pr_room     AS r ON r.room_code     = (SELECT ri.room_code FROM pr_room_group_item ri WHERE ri.room_group_code = o.room_group_code LIMIT 1) AND r.room_del = 'N'
+            WHERE o.object_del = 'N' AND o.land_group_code = %s AND o.building_group_code = %s AND o.room_group_code = %s LIMIT 1;'''
+        cursor.execute(o_query, (row['land_group_code'], row.get('building_group_code',''), row.get('room_group_code','')))
         o_row = cursor.fetchone()
         if not o_row: continue
         # print(f">>>>>>o_row:\n{o_row}")
@@ -412,7 +436,7 @@ def obang_data(before_day, 오방_선택=True, 당근_선택=True):
 
         # 🔥 [원형 전수 복원] Z드라이브 물리 폴더 스캔 및 object_ori_img DB 상태 동기화 처리
         tr_target = row['tr_target']
-        if tr_target == '층호수' and row.get('room_code','') == '':
+        if tr_target == '층호수' and row.get('room_group_code','') == '':
             print("호실정보없는 층호수의뢰: " + str(row['request_code']))
         else:
             try:
@@ -485,7 +509,7 @@ def obang_data(before_day, 오방_선택=True, 당근_선택=True):
     # 거래완료매물 수집
     query = f"""SELECT o.object_code_obang, o.object_code_new FROM pr_request AS p
                JOIN pr_request_give AS c ON p.request_code = c.request_code
-               JOIN pr_object AS o ON o.object_del = 'N' AND o.land_code = c.land_code AND o.building_code = c.building_code AND o.room_code = c.room_code
+               JOIN pr_object AS o ON o.object_del = 'N' AND o.land_group_code = c.land_group_code AND o.building_group_code = c.building_group_code AND o.room_group_code = c.room_group_code
                WHERE p.request_del = 'N' AND p.request_main <> '전체' AND p.tr_type = '내놓기' AND p.request_status IN ('성공','실패')
                  AND p.request_date BETWEEN "{start_date_str}" AND "{today_str}" """
     cursor.execute(query)
