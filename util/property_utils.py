@@ -315,7 +315,12 @@ def 당근매물번호_검색창_입력(driver, 매물번호):
         검색창 = WebDriverWait(driver, 5).until(
             EC.presence_of_element_located((By.XPATH, 검색창_xpath))
         )
-        검색창.click()
+        # [2026-09-16 실사용 중 재현된 버그] 당근 대시보드에 새로 뜨는 프로모션 배너 이미지가
+        # 검색창을 덮어서 네이티브 click()이 "element click intercepted"로 실패했다(실사용
+        # 로그로 확인 — 배너 src가 .../performance-*.png). 이 파일 다른 곳(당근_끌어올리기_
+        # 마스터_통합엔진 등)과 동일하게 JS 강제클릭으로 우회한다.
+        try: 검색창.click()
+        except: driver.execute_script("arguments[0].click();", 검색창)
         검색창.send_keys(Keys.CONTROL + "a")
         검색창.send_keys(Keys.BACKSPACE)
         time.sleep(0.3)

@@ -326,7 +326,7 @@ class CarrotAutomationWorker:
             조회쿼리 = """
                 SELECT * FROM pr_externalad AS e
                 JOIN pr_object AS o ON e.object_code_new = o.object_code_new
-                JOIN pr_request_give AS c ON o.land_code = c.land_code AND o.building_code = c.building_code AND o.room_code = c.room_code
+                JOIN pr_request_give AS c ON o.land_group_code = c.land_group_code AND o.building_group_code = c.building_group_code AND o.room_group_code = c.room_group_code
                 WHERE e.ad_code = %s AND e.ad_site = '당근' LIMIT 1
             """
             명령조수.execute(조회쿼리, (str(당근매물번호),))

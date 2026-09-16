@@ -156,8 +156,12 @@ class ObangAutomationWorker:
         admin_name = 업데이트정보['admin_name']
         object_code_new = 업데이트정보['object_code_new']
         request_code = 업데이트정보['request_code']
-        object_type1, object_type2, land_code = 업데이트정보.get('object_type1', ''), 업데이트정보.get('object_type2', ''), 업데이트정보.get('land_code', '')
-        building_code, room_code, tr_target = 업데이트정보.get('building_code', ''), 업데이트정보.get('room_code', ''), 업데이트정보.get('tr_target', '')
+        # [2026-09-16 수정 — 다른 세션 DB 마이그레이션 반영] auto.py의 obang_data()가 이제
+        # land_code/building_code/room_code 대신 land_group_code/building_group_code/
+        # room_group_code를 담아 보낸다(아래 세 변수는 실제로 이 함수 안에서 쓰이지 않는
+        # 값이라 이름만 맞춰둔다 — 366번째 줄 주석 처리된 디버그 로그가 유일한 참조).
+        object_type1, object_type2, land_code = 업데이트정보.get('object_type1', ''), 업데이트정보.get('object_type2', ''), 업데이트정보.get('land_group_code', '')
+        building_code, room_code, tr_target = 업데이트정보.get('building_group_code', ''), 업데이트정보.get('room_group_code', ''), 업데이트정보.get('tr_target', '')
         object_type, object_ttype = 업데이트정보.get('object_type', ''), 업데이트정보.get('object_ttype', '')
         
         obinfo_trading = '' if 업데이트정보['request_trading'] =='' else 업데이트정보['request_trading']
