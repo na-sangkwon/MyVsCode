@@ -530,6 +530,67 @@ def obang_data(before_day, 오방_선택=True, 당근_선택=True):
         '당근_거래완료목록': list(dang_complete_set)
     }
 
+
+def 오방_단일매물_정보조회(새홈_타겟_번호):
+    """
+    [단독 테스트 모드 전용] obang_data()는 최근 N일 이내 의뢰수정 매물 + 관심(즐겨찾기) 매물만
+    스캔하므로, 그 범위 밖의 매물은 obang_data()가 만드는 obang_map(오방매물정보)에 아예 잡히지
+    않는다. 그런데 단독 테스트 모드는 스캔 범위와 무관하게 "새홈번호 하나만" 항상 조회할 수
+    있어야 하므로(관심 매물이 아니어도, 최근 의뢰수정이 아니어도), 이 함수는 obang_data()의
+    스캔을 거치지 않고 지정된 새홈번호 하나에 대해서만 독립적으로 같은 형태의 데이터를 조회한다.
+    아래 두 쿼리는 obang_data()의 o_query(389번째 줄)/recently_res 쿼리(359번째 줄)와 각각
+    동일한 조인 구조를 쓴다 — 둘 중 하나의 조인/필터를 고치면 반드시 다른 하나도 맞출 것.
+    반환: (오방코드, obang_map과 동일한 형태의 딕셔너리) — 조회 실패 시 딕셔너리 자리는 None.
+    """
+    conn = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', charset='utf8')
+    cursor = conn.cursor(pymysql.cursors.DictCursor)
+    cursor.execute('USE obangkr;')
+    try:
+        cursor.execute('SELECT land_group_code, building_group_code, room_group_code, object_code_obang FROM pr_object WHERE object_code_new = %s AND object_del = "N"', (새홈_타겟_번호,))
+        obj_row = cursor.fetchone()
+        if not obj_row or not obj_row.get('object_code_obang'):
+            return '', None
+        오방_고유_번호 = str(obj_row['object_code_obang']).strip()
+
+        o_query = '''SELECT o.object_code_new, o.land_group_code, o.building_group_code, o.room_group_code, o.object_code_obang, o.object_type, o.object_ttype, o.object_rtype, o.object_del, o.object_ori_img,
+            l.land_do, l.land_si, l.land_dong, l.land_li, l.land_main, l.land_jibun AS land_jibung, l.land_address, l.land_totarea, l.land_important, l.land_option, l.land_memo,
+            b.building_name, b.building_del, b.building_gate1, b.building_gate2, b.building_parking, b.building_pn, b.building_direction, b.building_bolt, b.building_height, b.building_element, b.building_memo, b.building_important, b.building_option, b.building_purpose, b.building_grndflr, b.building_ugrndflr, b.building_archarea, b.building_totarea, b.building_usedate, b.building_stract, b.building_elvcount,
+            r.room_num, r.room_floor, r.room_status, r.room_nmemo, r.room_gate1, r.room_gate2, r.room_memo, r.room_rcount, r.room_bcount, r.r_direction, r.room_direction, r.room_area1, r.room_areatype1, r.room_area2, r.room_areatype2, r.room_important, r.room_option, r.room_purpose
+            FROM pr_object AS o
+            LEFT JOIN pr_land AS l ON l.land_code = COALESCE(
+                    (SELECT li.land_code FROM pr_land_group_item li
+                     INNER JOIN pr_land il ON il.land_code = li.land_code AND il.land_del = 'N'
+                     WHERE li.land_group_code = o.land_group_code
+                       AND il.land_jibun = (SELECT lgr.representing_jibun FROM pr_land_group lgr WHERE lgr.land_group_code = o.land_group_code)
+                     LIMIT 1),
+                    (SELECT li2.land_code FROM pr_land_group_item li2 WHERE li2.land_group_code = o.land_group_code ORDER BY li2.item_idx ASC LIMIT 1)
+                ) AND l.land_del = 'N'
+            LEFT JOIN pr_building AS b ON b.building_code = (SELECT bi.building_code FROM pr_building_group_item bi WHERE bi.building_group_code = o.building_group_code LIMIT 1) AND b.building_del = 'N'
+            LEFT JOIN pr_room     AS r ON r.room_code     = (SELECT ri.room_code FROM pr_room_group_item ri WHERE ri.room_group_code = o.room_group_code LIMIT 1) AND r.room_del = 'N'
+            WHERE o.object_del = 'N' AND o.land_group_code = %s AND o.building_group_code = %s AND o.room_group_code = %s LIMIT 1;'''
+        cursor.execute(o_query, (obj_row['land_group_code'], obj_row.get('building_group_code', ''), obj_row.get('room_group_code', '')))
+        o_row = cursor.fetchone()
+        if not o_row:
+            return 오방_고유_번호, None
+
+        r_query = '''SELECT p.request_code, p.tr_target, p.object_type1, p.object_type2, p.admin_name, p.request_date, p.request_udate, p.request_wdate,
+            c.land_group_code, c.building_group_code, c.room_group_code, c.request_trading, c.request_deposit1, c.request_deposit2, c.request_deposit3,
+            c.request_rent1, c.request_rent2, c.request_rent3, c.request_manager, c.request_mmoney, c.request_mlist, c.tr_memo,
+            c.request_area1, c.request_area2, c.request_areatype1, c.request_areatype2, c.first_trade
+            FROM pr_request AS p LEFT JOIN pr_request_give AS c ON p.request_code = c.request_code
+            WHERE p.request_del="N" AND c.land_group_code = %s AND c.building_group_code = %s AND c.room_group_code = %s
+            AND p.request_main != "전체" AND p.tr_type = "내놓기" AND (p.request_status = "접수" OR p.request_status = "진행")
+            ORDER BY p.request_date DESC LIMIT 1'''
+        cursor.execute(r_query, (obj_row['land_group_code'], obj_row.get('building_group_code', ''), obj_row.get('room_group_code', '')))
+        row = cursor.fetchone()
+        if not row:
+            return 오방_고유_번호, None
+
+        return 오방_고유_번호, {**row, **o_row}
+    finally:
+        cursor.close(); conn.close()
+
+
 # 🎯 [2026-09-06 통합] 당근 루프 검증 단계 전용 디버그 로그 — auto.py는 GUI 경로에 별도
 # 로그파일이 없어서(콘솔 print만 있음), 이 신규 통합 지점만이라도 나중에 원인 추적이 가능하게
 # 독립된 로그 파일을 둔다. cwd에 따라 엉뚱한 위치에 생기지 않도록 이 파일 자신의 위치 기준
@@ -796,6 +857,31 @@ def update_start():
                 obangData['당근_일반수정'] = 0
                 obangData['당근_거래완료목록'] = [당근_고유_번호]
                 obangData['당근_거래완료'] = 1
+
+            # 🎯 [오방 지원] 위 역추적/선로배정 로직은 원래 당근 전용으로만 만들어져 있어서,
+            # 오방이 선택된 상태로 이 테스트 모드를 쓰면 obangData['업데이트매물']이 위에서 빈 리스트로
+            # 초기화된 채 다시 채워지지 않아 오방 쪽(비공개→공개 전환 포함 모든 업데이트 로직)이
+            # 전혀 실행되지 않는 문제가 있었다. 또한 obang_data()의 오방매물정보는 최근 N일
+            # 의뢰수정/관심 매물만 스캔하므로, 그 범위 밖의 매물은 obang_data() 결과에 애초에
+            # 존재하지 않는다 — 단독 테스트는 스캔 범위와 무관하게 항상 동작해야 하므로
+            # 오방_단일매물_정보조회()로 스캔을 거치지 않고 이 매물 하나만 독립적으로 조회한다.
+            if user_settings['obang']:
+                오방_고유_번호, 오방_엔트리 = 오방_단일매물_정보조회(새홈_타겟_번호)
+
+                if not 오방_고유_번호:
+                    print(f"   [⚠️ 오방 테스트 제외] 새홈번호 [{새홈_타겟_번호}]에 매핑된 오방 매물번호가 없어 오방 트랙은 건너뜁니다.")
+                elif 오방_엔트리 is None:
+                    print(f"   [⚠️ 오방 테스트 제외] 오방번호 [{오방_고유_번호}]에 매칭되는 활성 의뢰(내놓기/접수·진행)를 찾지 못해 오방 트랙은 건너뜁니다.")
+                else:
+                    obangData['오방매물정보'][오방_고유_번호] = 오방_엔트리
+                    if DB_상태 == "중개요청":
+                        print(f"   [🔄 오방 선로 배정 완료] 오방번호 [{오방_고유_번호}]를 [최신화 업데이트] 트랙에 단독 주입합니다.")
+                        obangData['업데이트매물'] = [오방_고유_번호]
+                        obangData['거래완료매물'] = []
+                    else:
+                        print(f"   [🔒 오방 선로 배정 완료] 오방번호 [{오방_고유_번호}]를 [거래완료 비공개] 트랙에 단독 주입합니다.")
+                        obangData['업데이트매물'] = []
+                        obangData['거래완료매물'] = [오방_고유_번호]
         # =================================================================
 
         # 🎯 프리뷰 창에서 [이대로 작업 개시]를 누르면 True가 반환되어 루프를 깨고 탈출합니다.
