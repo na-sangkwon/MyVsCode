@@ -65,6 +65,7 @@ from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import (
     NoSuchElementException, UnexpectedAlertPresentException, WebDriverException,
     NoSuchWindowException, InvalidSessionIdException,
@@ -729,7 +730,27 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail)
         owner_masked = ''
     print(f'[진행] 대상 부동산 1건 특정 — 소유자(마스킹)={owner_masked}', flush=True)
 
-    _js_click(driver, row.find_element(By.CSS_SELECTOR, 'td[data-col_id="rad_sel"]'))
+    # [2026-09-18 수정 — 실사용 재현으로 원인 확인] 이 줄 선택 칸(WebSquare 그리드)은 execute_script
+    # 클릭(_js_click)으로는 화면상 아무 문제 없어 보여도 그리드 내부 선택 상태가 실제로는 안 바뀐다 —
+    # 검색결과가 1건뿐이던 경우엔 등기소가 그 유일한 행을 자동으로 선택된 것으로 취급해 문제가 안
+    # 드러났을 뿐이다(매물 490302/861597). 검색결과가 여러 건이라 코드로 하나를 골라야 하는 경우
+    # (매물 854687, 동 표시로 좁힌 사례)는 정말로 선택 상태를 만들어야 하는데, 그때 이 문제가 드러나
+    # "열람발급할 부동산을 선택하시기 바랍니다" 알림에 막혀 다음 화면으로 못 넘어갔다(직접 재현·확인).
+    # "실제 결제" 버튼과 같은 이유로 진짜 마우스 클릭(표준 click())으로 바꾼다 — 요소가 다른 것에
+    # 가려질 가능성은 낮지만, 혹시 실패하면 기존 방식으로 한 번 더 시도한다.
+    # [2026-09-18 추가 수정 — 실사용 재현으로 확인] td 자체에 표준 click()을 시도하면
+    # ElementNotInteractableException으로 실패한다(td에 렌더링된 크기가 없어서로 보임 — 안의
+    # <span>이 실제 클릭 영역). ActionChains로 뷰포트 중앙까지 스크롤한 뒤 마우스를 옮겨 클릭하면
+    # 진짜 마우스 이벤트로 처리돼 그리드 선택 상태가 제대로 바뀐다(직접 재현으로 확인) — 그래도
+    # 실패하면 마지막 수단으로 execute_script 클릭을 시도한다(이 경우 선택이 안 될 수 있다는 걸
+    # 알고 있음 — 위 "열람발급할 부동산을 선택하시기 바랍니다" 알림으로 이어질 수 있다).
+    sel_cell = row.find_element(By.CSS_SELECTOR, 'td[data-col_id="rad_sel"]')
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", sel_cell)
+        ActionChains(driver).move_to_element(sel_cell).click().perform()
+    except Exception as e:
+        print(f'[진행] 부동산 선택 표준 클릭 실패({type(e).__name__}) — execute_script 방식으로 재시도', flush=True)
+        _js_click(driver, sel_cell)
     time.sleep(0.6)
 
     nb = _next_button(driver)
