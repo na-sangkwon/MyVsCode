@@ -187,7 +187,7 @@ def _navigate_home(driver, attempts=3):
             stuck = False
         if not stuck:
             return True
-        time.sleep(1.5)
+        time.sleep(0.5)
     return False
 
 
@@ -465,7 +465,7 @@ def _pick_kind_cls_radio(driver, radio_id_fragment, property_category, _fail):
     if not picked:
         return _fail(f'부동산구분 "{property_category}" 항목을 찾지 못했습니다 — 실제 화면에 있던 항목: {seen_labels}')
     print(f'[진행] 부동산구분 "{property_category}" 선택 완료 (화면 항목: {seen_labels})', flush=True)
-    time.sleep(1.2)
+    time.sleep(0.2)
     return None
 
 
@@ -512,7 +512,7 @@ def _click_search_button(driver, _fail):
         return _fail('검색 버튼을 찾지 못했습니다.')
     print('[진행] 검색 버튼 클릭', flush=True)
     _js_click(driver, search_btn)
-    time.sleep(5)
+    time.sleep(0.5)
     return None
 
 
@@ -533,7 +533,7 @@ def _search_via_simple_search(driver, wait, payload, property_category, loc, _fa
     tab = wait.until(_find_smpl_srch_tab)
     print('[진행] 간편검색 탭 찾음, 클릭', flush=True)
     _js_click(driver, tab)
-    time.sleep(1.5)
+    time.sleep(0.5)
     _guard_not_stuck_on_security_page(driver)
     print('[진행] 간편검색 탭 진입 확인', flush=True)
 
@@ -585,7 +585,7 @@ def _search_via_location_search(driver, wait, payload, property_category, loc, _
     tab = wait.until(_find_loc_srch_tab)
     print('[진행] 소재지번검색 탭 찾음, 클릭', flush=True)
     _js_click(driver, tab)
-    time.sleep(1.5)
+    time.sleep(0.5)
     _guard_not_stuck_on_security_page(driver)
     print('[진행] 소재지번검색 탭 진입 확인', flush=True)
 
@@ -608,7 +608,7 @@ def _search_via_location_search(driver, wait, payload, property_category, loc, _
     _type_into_field(driver, dongli_el, loc['dong_or_li'])
     time.sleep(0.3)
     _type_into_field(driver, jibun_el, loc['jibun'])
-    time.sleep(0.6)
+    time.sleep(0.3)
     print(f'[진행] 동/리·지번 입력 완료 — {loc["dong_or_li"]} {loc["jibun"]}', flush=True)
 
     if property_category == '집합건물' and (loc.get('building_dong_no') or loc.get('room_no')):
@@ -619,7 +619,7 @@ def _search_via_location_search(driver, wait, payload, property_category, loc, _
         _dismiss_alert_if_present(driver)
         try:
             _js_click(driver, driver.find_element(By.CSS_SELECTOR, f'label[for="{BASE}_rad_loc_dong_room_sel_input_{mode_index}"]'))
-            time.sleep(1)
+            time.sleep(0.5)
         except NoSuchElementException:
             pass
         if loc.get('building_dong_no'):
@@ -648,7 +648,7 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail)
     btn = wait.until(lambda d: _home_entry_button(d))
     print('[진행] "부동산 열람·발급" 버튼 찾음, 클릭', flush=True)
     _js_click(driver, btn)
-    time.sleep(2)
+    time.sleep(0.5)
     _guard_not_stuck_on_security_page(driver)  # [2026-09-07] 홈 진입 클릭 뒤에도 튕길 수 있다 — 다음 20초 대기 전에 먼저 확인
     print(f'[진행] 부동산 열람·발급 화면 진입 확인 — url={driver.current_url}', flush=True)
 
@@ -757,7 +757,7 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail)
     if not nb:
         return _fail('[다음] 버튼을 찾지 못했습니다(부동산 선택 후).', owner_masked)
     _js_click(driver, nb)
-    time.sleep(1.5)
+    time.sleep(0.5)
     print('[진행] 부동산 선택 완료, 다음 화면으로 이동', flush=True)
 
     record_select_el = None
@@ -774,7 +774,7 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail)
                 nb2 = _next_button(driver)
                 if nb2:
                     _js_click(driver, nb2)
-            time.sleep(1)
+            time.sleep(0.5)
     if record_select_el is None:
         return _fail('등기기록유형 선택 화면에 도달하지 못했습니다.', owner_masked)
     print('[진행] 등기기록유형 선택 화면 도달', flush=True)
@@ -802,7 +802,7 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail)
         # 다른 시각엔 같은 지점을 통과했으므로 등기소 응답이 느린 순간을 실패로 오판한 것(994214,
         # 2026-09-08 17:18 진행로그) — 비어 있으면 [다음]을 누르지 않고 이 루프 안에서 다시 기다린다.
         if not titles:
-            time.sleep(2.5)
+            time.sleep(1.5)
             continue
         last_titles = titles
         if any(k in t for t in titles for k in PAYMENT_TITLES):
@@ -814,12 +814,12 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail)
         if not nb3:
             return _fail(f'[다음] 버튼을 찾지 못했습니다 — {titles}', owner_masked)
         _js_click(driver, nb3)
-        time.sleep(2.5)
+        time.sleep(1.5)
 
     if reached != 'payment':
         return _fail(f'결제대상 확인 화면에 도달하지 못했습니다(마지막으로 본 화면 제목={last_titles}).', owner_masked)
     print('[진행] 결제대상 확인 화면 도달', flush=True)
-    time.sleep(1)
+    time.sleep(0.5)
 
     pay_tbody = driver.find_element(By.ID, f'{BASE}_grd_bpay_obj_list_body_tbody')
     pay_rows = [tr for tr in pay_tbody.find_elements(By.TAG_NAME, 'tr')
@@ -946,7 +946,7 @@ def _handle_duplicate_payment_screen(driver):
     if not move_btn:
         return False
     _js_click(driver, move_btn)
-    time.sleep(3)
+    time.sleep(1)
     return True
 
 
@@ -976,7 +976,7 @@ def _fill_login_popup_if_present(driver, credentials):
     except NoSuchElementException:
         return {'shown': True, 'ok': False, 'message': '로그인 버튼을 찾지 못했습니다.'}
     _js_click(driver, login_btn)
-    time.sleep(5)
+    time.sleep(2)
     return {'shown': True, 'ok': True}
 
 
@@ -1031,7 +1031,7 @@ def _prepare_payment_screen(driver, credentials):
         tab = driver.find_element(By.ID, f'{BASE}_tac_bpay_mthd_tab_tab_pp_tabHTML')
         if tab.is_displayed():
             _js_click(driver, tab)
-            time.sleep(1.2)
+            time.sleep(0.2)
     except NoSuchElementException:
         return {'ready': False, 'message': '결제수단(선불전자지급수단) 탭을 찾지 못했습니다.'}
 
@@ -1084,13 +1084,13 @@ def _finish_after_payment_confirm(driver):
     if not confirm_btn:
         return {'ok': False, 'message': f'결제요청 확인 팝업의 [확인] 버튼을 찾지 못했습니다. | {_diag_snapshot(driver)}'}
     _js_click(driver, confirm_btn)
-    time.sleep(3.5)
+    time.sleep(1.5)
 
     try:
         result_btn = driver.find_element(By.CSS_SELECTOR, 'input[id$="_btn_cfrm"]')
         if result_btn.is_displayed():
             _js_click(driver, result_btn)
-            time.sleep(3)
+            time.sleep(1)
     except NoSuchElementException:
         pass
     return {'ok': True, 'message': ''}
@@ -1147,7 +1147,7 @@ def _view_and_save(driver, payload, download_dir):
     if not view_btn:
         return {'ok': False, 'message': f'목록에서 [열람] 버튼을 찾지 못했습니다. | {_diag_snapshot(driver)}'}
     _js_click(driver, view_btn)
-    time.sleep(6)
+    time.sleep(1)
 
     try:
         save_btn = driver.find_element(By.CSS_SELECTOR, 'input[id$="_btn_download"]')
@@ -1320,7 +1320,7 @@ def issue_real_estate_register(payload, credentials, options=None):
         print('[진행] [결제] 버튼(첫 번째) 클릭 — 아직 청구되지 않음', flush=True)
         pay_btn = driver.find_element(By.ID, f'{BASE}_btn_bpay')
         _js_click(driver, pay_btn)
-        time.sleep(4)
+        time.sleep(1)
 
         routed = _route_after_payment_click(driver, credentials)
         print(f'[진행] 결제 클릭 후 라우팅 결과 = {routed}', flush=True)
