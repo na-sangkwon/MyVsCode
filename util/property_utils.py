@@ -1132,7 +1132,7 @@ def 데이터베이스_다중_가격스펙_전수조회(item_code, ad_site=None)
                    c.request_trading 
             FROM pr_externalad AS e
             JOIN pr_object AS o ON e.object_code_new = o.object_code_new
-            JOIN pr_request_give AS c ON o.land_code = c.land_code AND o.building_code = c.building_code AND o.room_code = c.room_code
+            JOIN pr_request_give AS c ON o.land_group_code = c.land_group_code AND o.building_group_code = c.building_group_code AND o.room_group_code = c.room_group_code
         """
         
         # 🎯 [소장님 지시 규칙] ad_site 존재 여부에 따른 동적 관문 분기 생성
