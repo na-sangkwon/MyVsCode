@@ -2148,6 +2148,13 @@ def _pipeline_find_duplicates(driver, payload, keywords):
         _pipeline_log('[등록] 중복 확인 건너뜀 — 목록 검색칸 없음(오방 로그인 상태 확인)')
         return []
     _pipeline_reset_list_keyword(driver)
+    # 한 페이지 20건이 기본이라 같은 지번에 매물이 많으면 뒷장에 숨는다 — "100개씩 보기"로 늘린다
+    # (바꿔도 화면 이동 없이 그 자리에서 다시 그려짐, 2026-09-17 실측). content_obang.js와 동일.
+    per_page = _pipeline_find_one(driver, By.CSS_SELECTOR, 'select[name="per_page"]')
+    per_page_before = (per_page.get_attribute('value') or '') if per_page is not None else ''
+    if per_page is not None and per_page_before != '100':
+        driver.execute_script("arguments[0].value='100'; arguments[0].dispatchEvent(new Event('change',{bubbles:true}));", per_page)
+        time.sleep(2.5)
     jibun_token = keywords[0].split(' ')[-1]
     _pipeline_log(f'[등록] 오방 목록에서 지번 "{jibun_token}" 검색 — 이미 올라간 매물이 있는지 확인')
     _pipeline_set_value(driver, box, jibun_token)
@@ -2173,7 +2180,14 @@ def _pipeline_find_duplicates(driver, payload, keywords):
         if category and category not in _pipeline_clean(row.text):
             continue
         found.append({'code': _pipeline_clean(strong.text), 'address': address})
+    m = re.search(r'검색 매물 수\s*:\s*(\d+)건', driver.find_element(By.TAG_NAME, 'body').text or '')
+    total = int(m.group(1)) if m else 0
+    shown = len(driver.find_elements(By.CSS_SELECTOR, '#search-items tr .help-block'))
+    if total > shown:
+        _pipeline_log(f'[등록] ⚠ 같은 지번 매물이 {total}건이라 앞 {shown}건만 대조 — 못 잡은 매물이 있을 수 있음')
     _pipeline_set_value(driver, box, '')   # 검색어를 남기지 않는다
+    if per_page is not None and per_page_before and per_page_before != '100':
+        driver.execute_script("arguments[0].value=arguments[1]; arguments[0].dispatchEvent(new Event('change',{bubbles:true}));", per_page, per_page_before)
     return found
 
 
