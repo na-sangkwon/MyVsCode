@@ -7,7 +7,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import tkinter as tk
 from tkinter import messagebox
 import pymysql
@@ -861,6 +861,30 @@ def 당근_팝업창_가격_동기화_처리_엔진(driver, popup_element, ad_co
 
 # fileName: util/property_utils.py
 
+def 당근_쿨타임_문구에서_남은시간_파싱(title_text):
+    """
+    [2026-09-17 신규 — 사용자 요청] 당근의 끌올 쿨타임 팝업 제목("8일 17시간 53분 뒤에
+    끌어올릴 수 있어요." 같은 형식)에서 남은 시간을 timedelta로 파싱한다.
+
+    일/시간/분 중 없는 단위는 0으로 취급한다(예: "45분 뒤에 끌어올릴 수 있어요."도 인식).
+    쿨타임 문구가 아니거나(예: "가격을 낮추고 게시글을 끌어올려 보세요") 형식이 달라 셋 다
+    못 찾으면 None을 반환 — 호출부가 이 값의 유무로 "이번 관측에서 절대시각을 계산할 근거가
+    있었는지"를 판단한다(파싱 실패를 0분 남음으로 착각해 엉뚱한 시각을 저장하면 안 되므로).
+    """
+    if not title_text or '뒤에' not in title_text:
+        return None
+    일_매치 = re.search(r'(\d+)\s*일', title_text)
+    시간_매치 = re.search(r'(\d+)\s*시간', title_text)
+    분_매치 = re.search(r'(\d+)\s*분', title_text)
+    if not (일_매치 or 시간_매치 or 분_매치):
+        return None
+    return timedelta(
+        days=int(일_매치.group(1)) if 일_매치 else 0,
+        hours=int(시간_매치.group(1)) if 시간_매치 else 0,
+        minutes=int(분_매치.group(1)) if 분_매치 else 0,
+    )
+
+
 def 당근_끌어올리기_마스터_통합엔진(driver, row_element, ad_code, current_status, price_specs, unattended=False, 끌올관측_수집함=None):
     """
     [소장님 지시 반영 - 숨김해제 독립 분리 버전]
@@ -873,7 +897,10 @@ def 당근_끌어올리기_마스터_통합엔진(driver, row_element, ad_code, 
         이 함수의 반환값(결과 코드 문자열)을 호출자들이 == 비교로 분기하고 있어, 반환 형태를 바꾸면
         호출자 두 곳(carrot_worker.py·daangn.py)이 모두 깨진다. 그래서 기존 반환은 그대로 두고,
         필요한 쪽만 이 dict를 건네받아 가져가는 방식으로 넓혔다. 안 건네면 아무 일도 일어나지 않는다.
-        [무엇을 담나] 팝업 제목(당근이 알려주는 남은 쿨타임 원문)과 쿨타임 여부.
+        [무엇을 담나] 팝업 제목(당근이 알려주는 남은 쿨타임 원문)과 쿨타임 여부, 그리고
+        [2026-09-17 추가] 그 원문을 미리 절대시각으로 환산한 '다음끌올가능시각'(파싱 실패 시 None) —
+        나중에 알고리즘을 분석할 때마다 한국어 문구를 다시 파싱하지 않아도 되고, carrot_worker.py가
+        이 값을 ad_end 최소보장 갱신에도 그대로 쓴다(끌어올리기_실행() 참고).
         '다음 끌올 가능 시각'을 우리가 상수로 추정하지 않고 당근이 준 값 그대로 쓰기 위한 것이다 —
         쿨타임은 고정값이 아니다(2026-09-05 실측 14일, 과거 5일이던 시기가 있었다는 사용자 확인).
     """
@@ -912,6 +939,12 @@ def 당근_끌어올리기_마스터_통합엔진(driver, row_element, ad_code, 
         if 끌올관측_수집함 is not None:
             끌올관측_수집함['팝업제목'] = title_text
             끌올관측_수집함['쿨타임여부'] = is_cooldown_active
+            # [2026-09-17 추가 — 사용자 요청] "N일 M시간 L분 뒤에"를 이 순간(지금) 기준 절대시각으로
+            # 미리 계산해 함께 남긴다. 파싱 실패(쿨타임 문구가 아니거나 형식이 다름)면 None.
+            남은시간 = 당근_쿨타임_문구에서_남은시간_파싱(title_text)
+            끌올관측_수집함['다음끌올가능시각'] = (
+                (datetime.now() + 남은시간).isoformat(timespec='minutes') if 남은시간 is not None else None
+            )
 
         if is_cooldown_active:
             print(f"   [⚠️ 쿨타임 제한 검지 - {ad_code}] 쿨타임 락이 걸려있지만, 금액 조율을 위해 스킵하지 않고 계속 전진합니다.")
