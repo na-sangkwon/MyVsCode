@@ -779,12 +779,24 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail)
     # 실패하면 마지막 수단으로 execute_script 클릭을 시도한다(이 경우 선택이 안 될 수 있다는 걸
     # 알고 있음 — 위 "열람발급할 부동산을 선택하시기 바랍니다" 알림으로 이어질 수 있다).
     sel_cell = row.find_element(By.CSS_SELECTOR, 'td[data-col_id="rad_sel"]')
+    # [2026-09-18 추가 — 실사용 재현으로 확인] 위 주석대로 검색결과 1건이면 등기소가 이미 그 행을
+    # 선택된 상태(<input type="radio" checked>)로 그려준다 — 그런데 아래 클릭이 이 상태를 확인하지
+    # 않고 무조건 눌러서, 이미 선택된 걸 다시 눌러 선택이 풀려버리는 사고가 있었다(매물 400603,
+    # 화면 캡처로 확인 — "1건(0건 선택)"). 클릭 전에 안의 <input>이 이미 checked인지부터 본다.
+    already_selected = False
     try:
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", sel_cell)
-        ActionChains(driver).move_to_element(sel_cell).click().perform()
-    except Exception as e:
-        print(f'[진행] 부동산 선택 표준 클릭 실패({type(e).__name__}) — execute_script 방식으로 재시도', flush=True)
-        _js_click(driver, sel_cell)
+        already_selected = sel_cell.find_element(By.CSS_SELECTOR, 'input').is_selected()
+    except NoSuchElementException:
+        pass
+    if already_selected:
+        print('[진행] 부동산 선택 — 이미 선택된 상태라 다시 클릭하지 않음', flush=True)
+    else:
+        try:
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", sel_cell)
+            ActionChains(driver).move_to_element(sel_cell).click().perform()
+        except Exception as e:
+            print(f'[진행] 부동산 선택 표준 클릭 실패({type(e).__name__}) — execute_script 방식으로 재시도', flush=True)
+            _js_click(driver, sel_cell)
     time.sleep(0.6)
 
     nb = _next_button(driver)

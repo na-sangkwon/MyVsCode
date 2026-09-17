@@ -157,7 +157,7 @@ class MyApp(QWidget):
 
     self.objectLabel = QLabel('새홈 번호: ')
     self.objectInput = QLineEdit(self)
-    self.objectInput.setText('859241') # 10172 745958 705914
+    self.objectInput.setText('400603') # 10172 745958 705914
     # self.objectInput.setText('670983,343799,248831') # 10172 543937
     self.objectInput.textChanged.connect(self.update_button_state) #self.objectInput의 textChanged 시그널을 self.update_button_state 슬롯에 연결
     self.objectInput.selectAll() #모든 텍스트를 선택
@@ -453,7 +453,7 @@ class MyApp(QWidget):
     with urllib.request.urlopen(req, timeout=15) as resp:
         res = json.loads(resp.read().decode('utf-8'))
     if not res.get('ok'):
-        raise RuntimeError(f'등기소 계정정보 조회 실패: {res}')
+        raise RuntimeError(f'등기소 계정정보 조회 실패: {res}') 
     return res['data']
 
   def login_and_fetch_external_ad_payload(self, server, site_key, object_code_new):
