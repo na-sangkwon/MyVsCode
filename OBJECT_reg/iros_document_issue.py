@@ -310,6 +310,20 @@ def _row_category_text(tr):
     return ''
 
 
+def _find_row_addr_cell(tr):
+    """[2026-09-18 추가 — 실사용 재현으로 확인] 검색결과 줄에서 주소가 적힌 칸을 찾는다. 소재지번검색
+    결과는 data-col_id="real_addr_prt"인데, 간편검색 결과는 같은 자리가 "rd_addr_prt"로 이름이
+    다르다(직접 DOM으로 확인, 2026-09-18) — 매물 400603(간편검색 경로)에서 시/군/구·지번 좁히기가
+    조용히 아무것도 못 찾아 그냥 통과되던 원인이었다. _row_category_text()가 이미 쓰던 것과 같은
+    방식(여러 후보 이름을 순서대로 시도)으로 두 검색 방식 모두 지원한다."""
+    for col in ('real_addr_prt', 'rd_addr_prt'):
+        try:
+            return tr.find_element(By.CSS_SELECTOR, f'td[data-col_id="{col}"]')
+        except NoSuchElementException:
+            continue
+    return None
+
+
 def _squash(s):
     return re.sub(r'\s', '', s or '')
 
@@ -676,13 +690,34 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail)
     if len(matched) > 1 and loc.get('sigungu'):
         narrowed = []
         for tr in matched:
-            try:
-                addr_td = tr.find_element(By.CSS_SELECTOR, 'td[data-col_id="real_addr_prt"]')
-            except NoSuchElementException:
+            addr_td = _find_row_addr_cell(tr)
+            if addr_td is None:
                 continue
             if loc['sigungu'] in addr_td.text:
                 narrowed.append(tr)
         if 0 < len(narrowed) < len(matched):
+            matched = narrowed
+
+    # [2026-09-18 추가 — 사용자 발견, 실사용 재현으로 확인] 간편검색은 지번을 느슨하게 매칭한다 —
+    # "수청동 620-1"로 검색했는데 바로 옆 필지(620-3/620-4/620-5)의 건물까지 결과에 섞여 나온 사례
+    # (매물 400603, 4건 중 3건이 다른 지번)로 재현·확인했다. 검색결과 주소란에는 실제 지번이 그대로
+    # 찍혀 있으므로("[ 수청동 620-1 ]" 형식), 동/리+지번을 붙인 문자열이 그대로 포함된 줄로 좁힌다 —
+    # 854687(동일 지번, 동만 다른 경우)과는 반대 상황이라 이 좁히기로는 안 줄어들 수 있는데, 그때는
+    # 그대로 두고 아래 동 표시 좁히기가 마저 처리한다(순서상 서로 방해되지 않음). "620"이 "620-1"의
+    # 앞부분으로 잘못 걸리지 않도록(둘 다 우리 지번보다 긴 지번의 일부일 수 있음) 뒤에 "-숫자" 또는
+    # 숫자가 더 이어지지 않는지 확인한다(위 동 표시 좁히기와 같은 이유의 경계 확인).
+    if len(matched) > 1 and loc.get('dong_or_li') and loc.get('jibun'):
+        dongJibun = _squash(loc['dong_or_li'] + loc['jibun'])
+        dongJibunPattern = re.compile(r'(?<!\d)' + re.escape(dongJibun) + r'(?!-?\d)')
+        narrowed = []
+        for tr in matched:
+            addr_td = _find_row_addr_cell(tr)
+            if addr_td is None:
+                continue
+            if dongJibunPattern.search(_squash(addr_td.text)):
+                narrowed.append(tr)
+        if 0 < len(narrowed) < len(matched):
+            print(f'[진행] 검색결과 {len(matched)}건 — 지번("{loc["jibun"]}")으로 {len(narrowed)}건으로 좁힘', flush=True)
             matched = narrowed
 
     # [2026-09-17 추가 — 사용자 발견, 실사용 재현·웹 조사로 확인] 한 지번 위에 일반건물이 2동 이상이면
@@ -705,9 +740,8 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail)
             dongPattern = re.compile(r'(?<!\d)' + re.escape(dongName))
             narrowed = []
             for tr in matched:
-                try:
-                    addr_td = tr.find_element(By.CSS_SELECTOR, 'td[data-col_id="real_addr_prt"]')
-                except NoSuchElementException:
+                addr_td = _find_row_addr_cell(tr)
+                if addr_td is None:
                     continue
                 if dongPattern.search(_squash(addr_td.text)):
                     narrowed.append(tr)
@@ -827,9 +861,8 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail)
 
     dong_jibun = _squash(loc['dong_or_li']) + _squash(loc['jibun'])
     for tr in pay_rows:
-        try:
-            addr_td = tr.find_element(By.CSS_SELECTOR, 'td[data-col_id="real_addr_prt"]')
-        except NoSuchElementException:
+        addr_td = _find_row_addr_cell(tr)
+        if addr_td is None:
             continue
         addr_text = addr_td.text.strip()
         if loc.get('sigungu') and _squash(loc['sigungu']) not in _squash(addr_text):
