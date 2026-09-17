@@ -2082,9 +2082,30 @@ def _pipeline_match_keywords(fields):
     return keywords
 
 
+def _pipeline_reset_list_keyword(driver):
+    """[2026-09-17 추가 — 사용자 요청] 매물목록에 들어오면 검색칸(#search_id)에 남아 있는 이전 키워드부터
+    지운다 — 걸러진 목록에서는 방금 올린 매물이나 고칠 매물이 안 보여 "찾지 못함"으로 끝나기 때문.
+    오방은 검색 시 화면 이동 없이 그 자리에서 목록을 다시 그린다(2026-09-17 실측). 값이 비어 있으면
+    아무 것도 하지 않는다(불필요한 재검색으로 느려지지 않게). content_obang.js::resetListKeywordIfAny()와 짝."""
+    box = _pipeline_find_one(driver, By.ID, 'search_id')
+    btn = _pipeline_find_one(driver, By.ID, 'go_keyword')
+    if box is None or btn is None:
+        return False
+    leftover = (box.get_attribute('value') or '').strip()
+    if leftover == '':
+        return False
+    _pipeline_log(f"[목록] 검색칸에 남아 있던 '{leftover}' 를 지우고 목록을 다시 불러옵니다")
+    _pipeline_set_value(driver, box, '')
+    _pipeline_click(driver, btn)
+    time.sleep(1.5)   # 그 자리에서 다시 그려질 시간
+    return True
+
+
 def _pipeline_find_registered_code(driver, keywords):
     """등록 후 목록에서 방금 올린 매물의 오방매물번호 — 주소(.help-block)에 지번·건물명·호실이 모두 든
     줄의 두 번째 칸 굵은 글씨(첫 줄을 그냥 집으면 남이 그 사이 올린 매물번호를 저장한다)."""
+    _pipeline_wait(lambda: _pipeline_find_one(driver, By.ID, 'search_id'), 15)
+    _pipeline_reset_list_keyword(driver)
     rows = _pipeline_wait(lambda: driver.find_elements(By.CSS_SELECTOR, '#search-items tr') or None, 15)
     if not rows:
         return {'ok': False, 'reason': '등록 후 매물목록이 뜨지 않았습니다'}
@@ -2154,6 +2175,7 @@ def _pipeline_search_row(driver, code):
     search_btn = _pipeline_find_one(driver, By.ID, 'go_keyword')
     if search_box is None or search_btn is None:
         raise RuntimeError('오방 매물목록의 검색칸을 찾지 못했습니다 — 로그인 상태를 확인해주세요.')
+    _pipeline_reset_list_keyword(driver)   # 남은 키워드가 있으면 먼저 비우고 전체 목록으로 되돌린다
     _pipeline_set_value(driver, search_box, code)
     _pipeline_click(driver, search_btn)
     row = _pipeline_wait(lambda: _pipeline_find_one(driver, By.ID, f'tr_{code}'), 20)
