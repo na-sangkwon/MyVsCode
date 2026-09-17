@@ -2123,9 +2123,68 @@ def _pipeline_find_registered_code(driver, keywords):
     return {'ok': False, 'reason': f"방금 올린 매물을 목록에서 찾지 못했습니다(찾던 말: {' / '.join(keywords)}) · 목록: {' · '.join(seen[:5])}"}
 
 
+def _pipeline_dong_token(payload):
+    """요약 주소("경기 오산시 은계동 92-4")에서 동/리 이름 하나 — 다른 동의 같은 지번을 걸러내는 데 쓴다."""
+    tokens = [t for t in str((payload.get('summary') or {}).get('주소', '')).split() if t]
+    for t in reversed(tokens):
+        if re.search(r'(동|리|가|읍|면)$', t) and not re.search(r'\d', t):
+            return t
+    return ''
+
+
+def _pipeline_find_duplicates(driver, payload, keywords):
+    """[2026-09-17 추가 — 사용자 지적 "파이썬의 중복등록 방지가 빠졌다"] 신규등록 전에 매물목록을 주소로
+    검색해 이미 올라간 매물을 찾는다 — 위 macro()(639~713)가 하던 것을 파이프라인에도 넣은 것.
+    content_obang.js::runDuplicateCheck()와 같은 기준(층호수: 지번+호실/건물명, 그 외: 지번+매물종류)이고,
+    오방 검색어는 낱말 하나만 통째로 대조하므로 지번만 넣어 줄인 뒤 나머지는 줄마다 대조한다.
+    @return [{'code','address'}] — 비어 있으면 중복 없음"""
+    if not keywords:
+        _pipeline_log('[등록] 중복 확인 건너뜀 — 지번 없음')
+        return []
+    driver.get(_PIPELINE_LIST_URL)
+    box = _pipeline_wait(lambda: _pipeline_find_one(driver, By.ID, 'keyword'), 15)
+    btn = _pipeline_find_one(driver, By.ID, 'go_keyword')
+    if box is None or btn is None:
+        _pipeline_log('[등록] 중복 확인 건너뜀 — 목록 검색칸 없음(오방 로그인 상태 확인)')
+        return []
+    _pipeline_reset_list_keyword(driver)
+    jibun_token = keywords[0].split(' ')[-1]
+    _pipeline_log(f'[등록] 오방 목록에서 지번 "{jibun_token}" 검색 — 이미 올라간 매물이 있는지 확인')
+    _pipeline_set_value(driver, box, jibun_token)
+    _pipeline_click(driver, btn)
+    time.sleep(2.5)
+    unit_words = keywords[1:]
+    by_label = {f.get('label'): f for f in payload.get('fields') or []}
+    category = '' if unit_words else _pipeline_clean((by_label.get('매물종류') or {}).get('value'))
+    words = list(keywords)
+    dong = _pipeline_dong_token(payload)
+    if dong:
+        words.append(dong)
+    found = []
+    for row in driver.find_elements(By.CSS_SELECTOR, '#search-items tr'):
+        address_box = _pipeline_find_one(None, By.CSS_SELECTOR, '.help-block', scope=row)
+        cells = row.find_elements(By.TAG_NAME, 'td')
+        strong = _pipeline_find_one(None, By.TAG_NAME, 'strong', scope=cells[1]) if len(cells) > 1 else None
+        if address_box is None or strong is None:
+            continue
+        address = _pipeline_clean(address_box.text)
+        if not all(w in address for w in words):
+            continue
+        if category and category not in _pipeline_clean(row.text):
+            continue
+        found.append({'code': _pipeline_clean(strong.text), 'address': address})
+    _pipeline_set_value(driver, box, '')   # 검색어를 남기지 않는다
+    return found
+
+
 def _pipeline_register(driver, payload, result):
     fields = payload.get('fields') or []
     by_label = {f.get('label'): f for f in fields}
+    duplicates = _pipeline_find_duplicates(driver, payload, _pipeline_match_keywords(fields))
+    if duplicates:
+        raise RuntimeError('오방에 같은 주소의 매물이 이미 있어 신규등록을 중단했습니다: '
+                           + ' · '.join(f"{d['code']}({d['address']})" for d in duplicates)
+                           + ' — 외부광고 관리에서 그 오방매물번호를 연결한 뒤 수정으로 진행해주세요.')
     driver.get(_PIPELINE_ADD_URL)
     _pipeline_enter_register_form(driver)
     _pipeline_fill_address(driver,
