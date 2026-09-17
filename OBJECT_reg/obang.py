@@ -2087,15 +2087,24 @@ def _pipeline_reset_list_keyword(driver):
     지운다 — 걸러진 목록에서는 방금 올린 매물이나 고칠 매물이 안 보여 "찾지 못함"으로 끝나기 때문.
     오방은 검색 시 화면 이동 없이 그 자리에서 목록을 다시 그린다(2026-09-17 실측). 값이 비어 있으면
     아무 것도 하지 않는다(불필요한 재검색으로 느려지지 않게). content_obang.js::resetListKeywordIfAny()와 짝."""
-    box = _pipeline_find_one(driver, By.ID, 'search_id')
+    # [2026-09-17 수정 — 실사용 재현] 남는 것은 매물번호 칸(#search_id)이 아니라 **키워드 칸(#keyword)** —
+    # 오방이 키워드 검색을 서버 세션에 기억해 목록을 새로 열어도 채워진 채 걸러져 뜬다. 둘 다 비운다.
+    code_box = _pipeline_find_one(driver, By.ID, 'search_id')
+    keyword_box = _pipeline_find_one(driver, By.ID, 'keyword')
     btn = _pipeline_find_one(driver, By.ID, 'go_keyword')
-    if box is None or btn is None:
+    if btn is None or (code_box is None and keyword_box is None):
         return False
-    leftover = (box.get_attribute('value') or '').strip()
-    if leftover == '':
+    leftovers = []
+    for label, el in (('매물번호', code_box), ('키워드', keyword_box)):
+        v = (el.get_attribute('value') or '').strip() if el is not None else ''
+        if v:
+            leftovers.append(f"{label} '{v}'")
+    if not leftovers:
         return False
-    _pipeline_log(f"[목록] 검색칸에 남아 있던 '{leftover}' 를 지우고 목록을 다시 불러옵니다")
-    _pipeline_set_value(driver, box, '')
+    _pipeline_log(f"[목록] 검색칸에 남아 있던 {', '.join(leftovers)} 를 지우고 목록을 다시 불러옵니다")
+    for el in (code_box, keyword_box):
+        if el is not None:
+            _pipeline_set_value(driver, el, '')
     _pipeline_click(driver, btn)
     time.sleep(1.5)   # 그 자리에서 다시 그려질 시간
     return True
@@ -2185,7 +2194,10 @@ def _pipeline_find_duplicates(driver, payload, keywords):
     shown = len(driver.find_elements(By.CSS_SELECTOR, '#search-items tr .help-block'))
     if total > shown:
         _pipeline_log(f'[등록] ⚠ 같은 지번 매물이 {total}건이라 앞 {shown}건만 대조 — 못 잡은 매물이 있을 수 있음')
-    _pipeline_set_value(driver, box, '')   # 검색어를 남기지 않는다
+    # 검색어를 남기지 않는다 — 값만 지우면 안 되고 빈 검색을 한 번 더 해야 한다(오방이 키워드를 세션에 기억)
+    _pipeline_set_value(driver, box, '')
+    _pipeline_click(driver, btn)
+    time.sleep(1.5)
     if per_page is not None and per_page_before and per_page_before != '100':
         driver.execute_script("arguments[0].value=arguments[1]; arguments[0].dispatchEvent(new Event('change',{bubbles:true}));", per_page, per_page_before)
     return found
