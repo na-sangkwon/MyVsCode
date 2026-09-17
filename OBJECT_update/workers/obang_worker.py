@@ -4,6 +4,7 @@ import datetime
 import random
 import platform
 import pyautogui
+import pymysql
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -70,6 +71,20 @@ class ObangAutomationWorker:
 
     def 비공개여부(self, 토글):
         return (toggle_state.strip() == "1") if (toggle_state := 토글.get_attribute("data-state")) else False
+
+    def 데이터베이스_공개상태_동기화(self, 새홈매물번호, 공개여부):
+        # [근본수정] process_updates()가 오방 관리화면 토글에서 읽은 실제 공개/비공개 상태를
+        # pr_object.obang_open_yn에 반영한다. 이 동기화가 없으면 오방 사이트에서는 이미
+        # 공개(또는 비공개)로 확인됐어도 DB는 예전 값 그대로 남아, 그 값을 보는 화면의
+        # 아이콘이 실제 상태와 계속 어긋나게 된다.
+        try:
+            conn = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', database='obangkr', charset='utf8')
+            cur = conn.cursor()
+            cur.execute("UPDATE pr_object SET obang_open_yn=%s WHERE object_code_new=%s", ('Y' if 공개여부 else 'N', 새홈매물번호))
+            conn.commit()
+            cur.close(); conn.close()
+        except Exception as e:
+            print(f"[❌ obang_open_yn 동기화 실패] 새홈번호:{새홈매물번호} 오류:{e}")
 
     def 비공개로_전환(self, 매물번호, timeout=6):
         행 = WebDriverWait(self.driver, timeout).until(EC.presence_of_element_located((By.CSS_SELECTOR, f"#tr_{매물번호}")))
@@ -428,7 +443,12 @@ class ObangAutomationWorker:
                 제목 = 행.find_element(By.CSS_SELECTOR, "td:nth-of-type(9) .admin_title_section").text
                 print("조회수입력란 찾음")
 
-                if self.비공개여부(토글) and not 제목 in ['상가/사무실','원룸','투룸','테스트','투룸/쓰리룸+']:
+                # [근본수정] 아래 if/else 어느 쪽을 타든 마지막에는 실제 토글 상태를 DB(obang_open_yn)에
+                # 동기화한다 — 조건 판정에 쓴 값을 그대로 재사용(중복 DOM 조회 방지)하기 위해 미리 읽어둔다.
+                현재_비공개여부 = self.비공개여부(토글)
+                새홈매물번호 = (오방매물정보.get(update_code) or {}).get('object_code_new', '')
+
+                if 현재_비공개여부 and not 제목 in ['상가/사무실','원룸','투룸','테스트','투룸/쓰리룸+']:
                     print(f"기본제목을 사용하지 않는 비공개매물 오방코드:{update_code}")
                     try:
                         # 1. viewbadge span 클릭해서 input 보이게 하기
@@ -441,10 +461,15 @@ class ObangAutomationWorker:
 
                         토글.click() #공개로 전환
                         print("공개전환 완료")
-                        self.restart_ok += 1  
+                        self.restart_ok += 1
                     except Exception as e:
                         print("조회수 초기화 및 공개전환 실패")
                         self._경고_또는_로그(f"[오방코드:{update_code}] 토글버튼을 찾을 수 없습니다: {e}")
+
+                    # 클릭 시도가 실제로 먹혔는지는 예외 발생 여부만으로 단정할 수 없으므로,
+                    # 토글을 다시 읽어 최종 상태 그대로 DB에 반영한다(추정이 아니라 실측).
+                    if 새홈매물번호:
+                        self.데이터베이스_공개상태_동기화(새홈매물번호, 공개여부=not self.비공개여부(토글))
 
                     #수정페이지로 전환
                     행.find_element(By.CSS_SELECTOR, "td:nth-child(14) > div:nth-child(1)").click() #관리 클릭
@@ -459,6 +484,11 @@ class ObangAutomationWorker:
                     print("----- 이미 공개된 매물")
                     # continue
                     # pyautogui.alert(f"이미 공개된 매물 오방코드:{update_code}")
+                    # 여기로 온 이유는 (1) 이미 공개상태이거나 (2) 비공개지만 기본제목이라 자동공개를
+                    # 건너뛴 경우, 둘 중 하나다 — 토글을 건드리지 않았으므로 위에서 읽어둔 현재
+                    # 상태(현재_비공개여부) 그대로 DB에 반영한다(무조건 'Y'로 쓰면 (2)의 경우를 틀리게 만든다).
+                    if 새홈매물번호:
+                        self.데이터베이스_공개상태_동기화(새홈매물번호, 공개여부=not 현재_비공개여부)
                     print("----- 5.past Date! update")
                     행.find_element(By.CSS_SELECTOR, "td:nth-child(14) > div:nth-child(1)").click() #관리 클릭
                     print("----- 5-1.관리 클릭")
