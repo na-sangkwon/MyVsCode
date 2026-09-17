@@ -684,6 +684,36 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail)
         if 0 < len(narrowed) < len(matched):
             matched = narrowed
 
+    # [2026-09-17 추가 — 사용자 발견, 실사용 재현·웹 조사로 확인] 한 지번 위에 일반건물이 2동 이상이면
+    # 「건축물대장의 기재 및 관리 등에 관한 규칙」 제5조에 따라 총괄표제부에 "제1동"/"제2동"처럼 동
+    # 단위로 구분 표기하는 게 법정 표준이다(매물 854687로 재현: 소재지번검색·도로명주소검색 둘 다
+    # "...외 1필지 1동"/"...외 1필지 2동" 2건으로 갈렸고, 소유자도 마스킹돼 같아서 구분 불가였다 —
+    # 도로명주소도 두 건물이 완전히 동일해서 소용없었음, 이 함수 docstring/커밋이력 참고). 이 동
+    # 번호는 매물번호 기반 payload는 'brtit_dong_name'("제1동" 형식, getIrosIssuePayload()가 채움)에,
+    # 직접입력 payload는 location_search.building_dong_no(숫자만, buildManualIrosPayload() 참고)에
+    # 있다 — 둘 다 값의 출처만 다를 뿐 검색결과 주소란 텍스트와 대조하는 용도는 같으므로 나란히
+    # 확인한다. "1동"이 "21동"의 부분 문자열로 잘못 걸리지 않도록 숫자 경계를 확인한다(정규식 음성
+    # 전방탐색).
+    if len(matched) > 1:
+        dongName = re.sub(r'^제\s*', '', str(payload.get('brtit_dong_name') or '').strip())
+        if not dongName:
+            buildingDongNo = str(loc.get('building_dong_no') or '').strip()
+            if buildingDongNo:
+                dongName = buildingDongNo + '동'
+        if dongName and re.match(r'^\d+동$', dongName):
+            dongPattern = re.compile(r'(?<!\d)' + re.escape(dongName))
+            narrowed = []
+            for tr in matched:
+                try:
+                    addr_td = tr.find_element(By.CSS_SELECTOR, 'td[data-col_id="real_addr_prt"]')
+                except NoSuchElementException:
+                    continue
+                if dongPattern.search(_squash(addr_td.text)):
+                    narrowed.append(tr)
+            if 0 < len(narrowed) < len(matched):
+                print(f'[진행] 검색결과 {len(matched)}건 — 동 표시("{dongName}")로 {len(narrowed)}건으로 좁힘', flush=True)
+                matched = narrowed
+
     if len(matched) == 0:
         return _fail('검색결과에서 일치하는 부동산을 찾지 못했습니다.')
     if len(matched) > 1:
