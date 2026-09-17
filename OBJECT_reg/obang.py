@@ -2156,17 +2156,17 @@ def _pipeline_find_duplicates(driver, payload, keywords):
         driver.execute_script("arguments[0].value='100'; arguments[0].dispatchEvent(new Event('change',{bubbles:true}));", per_page)
         time.sleep(2.5)
     jibun_token = keywords[0].split(' ')[-1]
-    _pipeline_log(f'[등록] 오방 목록에서 지번 "{jibun_token}" 검색 — 이미 올라간 매물이 있는지 확인')
-    _pipeline_set_value(driver, box, jibun_token)
-    _pipeline_click(driver, btn)
-    time.sleep(2.5)
+    # 대조 기준을 먼저 정해 로그에 그대로 남긴다 — "지번만 검색"으로 보이면 호실을 안 보는 줄 오해한다
     unit_words = keywords[1:]
     by_label = {f.get('label'): f for f in payload.get('fields') or []}
     category = '' if unit_words else _pipeline_clean((by_label.get('매물종류') or {}).get('value'))
-    words = list(keywords)
     dong = _pipeline_dong_token(payload)
-    if dong:
-        words.append(dong)
+    words = ([dong] if dong else []) + list(keywords)
+    criteria = '[' + ' · '.join(words + ([category] if category else [])) + ']'
+    _pipeline_log(f'[등록] 오방 목록에서 지번 "{jibun_token}"으로 검색한 뒤, 주소에 {criteria}가 모두 있는 매물만 중복으로 봅니다')
+    _pipeline_set_value(driver, box, jibun_token)
+    _pipeline_click(driver, btn)
+    time.sleep(2.5)
     found = []
     for row in driver.find_elements(By.CSS_SELECTOR, '#search-items tr'):
         address_box = _pipeline_find_one(None, By.CSS_SELECTOR, '.help-block', scope=row)
@@ -2179,7 +2179,7 @@ def _pipeline_find_duplicates(driver, payload, keywords):
             continue
         if category and category not in _pipeline_clean(row.text):
             continue
-        found.append({'code': _pipeline_clean(strong.text), 'address': address})
+        found.append({'code': _pipeline_clean(strong.text), 'address': address, 'criteria': criteria})
     m = re.search(r'검색 매물 수\s*:\s*(\d+)건', driver.find_element(By.TAG_NAME, 'body').text or '')
     total = int(m.group(1)) if m else 0
     shown = len(driver.find_elements(By.CSS_SELECTOR, '#search-items tr .help-block'))
@@ -2196,7 +2196,7 @@ def _pipeline_register(driver, payload, result):
     by_label = {f.get('label'): f for f in fields}
     duplicates = _pipeline_find_duplicates(driver, payload, _pipeline_match_keywords(fields))
     if duplicates:
-        raise RuntimeError('오방에 같은 주소의 매물이 이미 있어 신규등록을 중단했습니다: '
+        raise RuntimeError(f"오방에 같은 주소 {duplicates[0].get('criteria', '')}의 매물이 이미 있어 신규등록을 중단했습니다: "
                            + ' · '.join(f"{d['code']}({d['address']})" for d in duplicates)
                            + ' — 외부광고 관리에서 그 오방매물번호를 연결한 뒤 수정으로 진행해주세요.')
     driver.get(_PIPELINE_ADD_URL)
