@@ -1,4 +1,4 @@
-# repos_python/OBJECT_reg/iros_document_issue.py
+﻿# repos_python/OBJECT_reg/iros_document_issue.py
 # (2026-09-06 iros_address_lookup.py로 시작 → 2026-09-07 등기부등본 "발급"까지 확장하며 이 이름으로
 #  변경 — 처음엔 "주소만 조회"하는 좁은 범위였지만, 지금은 결제·열람·다운로드까지 다루므로 파일명도
 #  실제 범위(등기부등본 "발급")에 맞춰 넓혔다. 함수는 새로 창작하지 않고 전부 크롬확장
@@ -50,6 +50,8 @@
 #   ⑩ 결제 → 확인 팝업          사람 askyesno (551)                 auto_confirm이면 자동, _finish_after_payment_confirm()
 #   ⑪ 열람·저장                열람 후 최종 alert (623)             _view_and_save() → 임시폴더, NAS 이동은 main.py 책임
 #   (추가) 보안프로그램 alert     사람이 닫음                          _dismiss_alert_if_present() — 클릭·폴링마다 흡수
+#   (추가) 미결제 건 안내 팝업     -                                  _dismiss_cart_payment_reminder_popup_if_present() — run_search_once()
+#                                                                   진입 직후 흡수(이전 실행이 결제 전에 멈춰 장바구니에 남긴 건)
 #   (추가) 진행 로그             print                              print('[진행] …') → main.py가 파일로 받아 화면(테스트페이지)까지 전달
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -58,6 +60,7 @@ import time
 import os
 import tempfile
 import uuid
+import pyautogui
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -131,17 +134,39 @@ def _launch_chrome(chrome_options):
             return webdriver.Chrome(options=chrome_options)
 
 
-def _js_click(driver, el):
-    """WebDriver의 좌표 기반 click()이 커스텀 위젯(라디오/체크박스 td)에서 종종
-    ElementNotInteractableException/ElementClickInterceptedException을 낸다(실측 확인, 2026-09-06 —
-    검색결과 행의 rad_sel 셀, 결제대상 표의 체크박스, 플로팅 "맨 위로" 버튼에 가려진 [다음] 버튼).
-    execute_script로 DOM에 직접 click 이벤트를 보내면 좌표·가시성 판정을 건너뛰어 더 안정적이다
-    (content_iros.js의 .click()과 동일한 효과).
+def _click_with_fallback(driver, el):
+    """클릭 공용 헬퍼. 먼저 Selenium 표준 클릭과 ActionChains 클릭을 시도하고,
+    커스텀 위젯/가림 요소 때문에 실패할 때만 마지막 수단으로 DOM click을 사용한다.
 
     [2026-09-07 추가 — 본섭 데이터(999071)로 재현] "보안프로그램 설치" alert는 접속 초기뿐 아니라
     흐름 중 아무 클릭 뒤에나 뜰 수 있다는 게 실측으로 확인됐다 — 클릭마다 즉시 흡수해야 어디서
     뜨든 다음 동작이 막히지 않는다(페이지 자체가 설치 안내로 넘어간 경우는 여기서 못 잡고 그
-    클릭의 호출부가 반환값/다음 화면 판정으로 알아채게 된다)."""
+    클릭의 호출부가 반환값/다음 화면 판정으로 알아채게 된다).
+
+    [2026-09-19 추가 — 실사용 재현으로 확인] "결제할 등기사항증명서가 존재합니다" 안내창(장바구니에
+    남은 미결제 건)도 화면 진입 시 한 번만이 아니라 탭 전환 등 흐름 중 아무 때나 다시 뜰 수 있는
+    게 확인됐다 — 클릭을 시도하기 **전에** 이 안내창부터 치운다(이미 화면을 가리고 있는 요소라
+    alert처럼 클릭 후 처리로는 늦다 — 클릭 자체가 가로막힌다)."""
+    _dismiss_cart_payment_reminder_popup_if_present(driver)
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", el)
+    except Exception:
+        pass
+
+    for clicker in (
+        lambda: el.click(),
+        lambda: ActionChains(driver).move_to_element(el).pause(0.1).click().perform(),
+    ):
+        try:
+            clicker()
+            _dismiss_alert_if_present(driver)
+            return
+        except UnexpectedAlertPresentException:
+            _dismiss_alert_if_present(driver)
+            return
+        except Exception:
+            pass
+
     driver.execute_script('arguments[0].click();', el)
     _dismiss_alert_if_present(driver)
 
@@ -154,11 +179,18 @@ def _type_into_field(driver, el, value):
     사이트에서 흔히 쓰는 "키보드보안" 프로그램(AhnLab Safe Transaction, nProtect 등 — 이 PC에도
     설치·실행 중인 것 확인됨)은 정확히 이런 방식(진짜 키 입력이 아닌 값 주입)으로 채워진 입력을
     무효로 처리하도록 설계된 프로그램이라 이 증상과 정확히 들어맞는다. 그래서 결제 관련 입력칸은
-    자바스크립트 주입 대신 진짜 키 입력처럼 한 글자씩 타이핑한다."""
+    자바스크립트 주입 대신 실제 키 입력 이벤트가 문자마다 발생하도록 한 글자씩 타이핑한다.
+
+    [2026-09-19 추가 — 실사용 재현으로 확인] 이 함수는 _click_with_fallback()과 달리 el.click()을
+    직접 호출해서, "결제할 등기사항증명서가 존재합니다" 안내창이 입력칸을 가리고 있으면 위
+    _click_with_fallback() 주석과 같은 이유로 ElementClickInterceptedException이 난다 — 클릭
+    전에 먼저 안내창부터 치운다."""
+    _dismiss_cart_payment_reminder_popup_if_present(driver)
     el.click()
     el.send_keys(Keys.CONTROL, 'a')
     el.send_keys(Keys.DELETE)
-    el.send_keys(value)
+    for ch in str(value):
+        el.send_keys(ch)
     # [2026-09-08 추가 — 사용자 지적으로 재검토] 타이핑만 하고 포커스를 그대로 두면, 값 확정을
     # blur(포커스 이탈) 이벤트로 판단하는 사이트는 여전히 "미입력"으로 볼 수 있다 — Tab으로 포커스를
     # 옮겨서 blur를 명시적으로 발생시킨다.
@@ -204,6 +236,66 @@ def _dismiss_alert_if_present(driver):
         return True
     except Exception:
         return False
+
+
+def _dismiss_cart_payment_reminder_popup_if_present(driver):
+    """[2026-09-18 추가 — 실사용 재현으로 원인 확인] 이전 실행이 결제 전에 멈춘 채로 끝나면(예:
+    "결제 전에 멈춤" 옵션으로 테스트) 인터넷등기소 장바구니에 미결제 등기사항증명서가 남는다. 이
+    상태에서 "부동산 열람·발급" 화면에 들어가면 사이트가 "결제할 등기사항증명서가 존재합니다 —
+    결제하려면 확인, 추가하려면 취소" 안내창을 화면 진입 직후 자동으로 띄운다. 네이티브 alert()가
+    아니라 사이트 내부 HTML 팝업이라 위 _dismiss_alert_if_present()로는 못 닫고, 이 안내창에 가려
+    주소 입력칸 클릭이 ElementClickInterceptedException으로 막히는 게 실사용 로그로 확인됐다.
+
+    [동작 결정 — 사용자 확인, 2026-09-18] 이 자동화는 매 실행마다 요청받은 매물 하나만 조회·발급하는
+    게 목적이라, 장바구니에 남은 예전 미결제 건을 지금 대신 결제하면 안 된다 — "취소"(추가) 버튼을
+    눌러 그 미결제 건은 장바구니에 그대로 둔 채 지금 요청받은 조회를 계속 진행한다.
+    @return bool 안내창이 있어서 닫았으면 True, 애초에 없었으면 False
+    """
+    popup_text = '결제할 등기사항증명서가 존재합니다'
+    if not any(el.is_displayed() for el in driver.find_elements(By.XPATH, f'//*[contains(text(), "{popup_text}")]')):
+        return False
+    print('[진행] "결제할 등기사항증명서 존재" 안내창 발견 — 취소(추가) 클릭 후 계속 진행', flush=True)
+
+    # [2026-09-19 수정 — 실사용 재현으로 원인 확인] 처음엔 안내창 텍스트의 조상 요소에서 "취소"라는
+    # 정확한 텍스트를 가진 버튼을 찾았는데, 실사용에서 매번 "취소 버튼을 찾지 못함"으로 실패했다 —
+    # 조상 탐색이 실제 팝업 컨테이너를 못 찾거나(WebSquare가 조상 id에 "message_popup"을 안 붙이는
+    # 구조일 수 있음), 버튼의 렌더링 텍스트가 예상과 다를 가능성이 있다(직접 확인은 못 함 — 사이트
+    # DOM을 코드에서 직접 들여다볼 수 없어 실패 로그로만 추정). 그래서 ①실패 시 클릭 전 예외로 뜬
+    # 실제 버튼 id 패턴(message_popup<숫자>_wframe_btn_cancel2)을 우선 매칭하고, ②그래도 못 찾으면
+    # 화면 전체에서 "취소"가 "포함된"(완전일치가 아니라) 보이는 버튼으로 폭을 넓히고, ③팝업이 막 뜬
+    # 직후엔 버튼이 아직 안 붙어있을 수 있어 최대 2초 폴링한다.
+    cancel_btn = None
+    for _ in range(10):
+        cancel_btn = _find_first_visible(driver, [
+            'a[id*="message_popup"][id*="btn_cancel"]',
+            'button[id*="message_popup"][id*="btn_cancel"]',
+            'input[id*="message_popup"][id*="btn_cancel"]',
+        ])
+        if not cancel_btn:
+            for el in driver.find_elements(By.CSS_SELECTOR, 'a, button, input'):
+                if el.is_displayed() and '취소' in (el.text or el.get_attribute('value') or ''):
+                    cancel_btn = el
+                    break
+        if cancel_btn:
+            break
+        time.sleep(0.2)
+
+    if not cancel_btn:
+        print('[진행] 안내창의 취소 버튼을 찾지 못해 그대로 진행', flush=True)
+        return False
+
+    # 여기서 _click_with_fallback()을 쓰지 않는다 — 그 함수 자체가 클릭 전에 이 함수를 먼저 부르도록
+    # 아래에서 엮여 있어(재귀 방지), 이 함수 안에서는 최소한의 클릭만 직접 시도한다.
+    try:
+        cancel_btn.click()
+    except Exception:
+        try:
+            driver.execute_script('arguments[0].click();', cancel_btn)
+        except Exception:
+            print('[진행] 안내창의 취소 버튼 클릭에 실패해 그대로 진행', flush=True)
+            return False
+    time.sleep(0.5)
+    return True
 
 
 def _diag_snapshot(driver):
@@ -399,7 +491,7 @@ def _guard_not_stuck_on_security_page(driver):
         raise _StuckOnSecurityPage()
 
 
-def verify_register_target(driver, payload):
+def verify_register_target(driver, payload, credentials=None):
     """
     [재사용 가능한 핵심 함수 — 사용자 요청, 2026-09-07] 로그인이 필요 없는 단계까지만 진행해서
     등기상주소·소유주(마스킹)·고유번호를 확인한다. 결제 버튼은 절대 누르지 않는다.
@@ -421,6 +513,10 @@ def verify_register_target(driver, payload):
     프로세스가 응답 없이 사라지는 더 나쁜 결과로 이어졌다). 대신 alert/리다이렉트를 최대한 빨리
     감지해서 불필요한 긴 대기를 건너뛴다.
 
+    credentials: [2026-09-18 신규, 선택값] 검색이 로그인화면(캡차 포함)으로 튕겼을 때 아이디/비번을
+        미리 채워주는 용도로만 쓴다({'iros_id','iros_pw'}) — 안 넘기면(find_register_address()처럼)
+        캡차가 떠도 자동채움 없이 기존처럼 담당자가 전부 입력한다.
+
     @return {'ok': bool, 'address': str, 'unique_no': str, 'owner_masked': str, 'message': str}
     """
     property_category = payload.get('property_category') or ''
@@ -435,7 +531,7 @@ def verify_register_target(driver, payload):
 
     print(f'[진행] verify_register_target 시작 — 부동산구분={property_category}, 동/리={loc.get("dong_or_li")}, 지번={loc.get("jibun")}', flush=True)
     try:
-        result = _verify_register_target_body(driver, payload, property_category, loc, _fail)
+        result = _verify_register_target_body(driver, payload, property_category, loc, _fail, credentials)
         print(f'[진행] verify_register_target 종료 — ok={result.get("ok")}, message={result.get("message")}', flush=True)
         return result
     except UnexpectedAlertPresentException as e:
@@ -473,7 +569,7 @@ def _pick_kind_cls_radio(driver, radio_id_fragment, property_category, _fail):
             or (property_category in ('토지', '건물') and label_text == '토지+건물')
         )
         if is_match:
-            _js_click(driver, label)
+            _click_with_fallback(driver, label)
             picked = True
             break
     if not picked:
@@ -525,7 +621,7 @@ def _click_search_button(driver, _fail):
     if not search_btn:
         return _fail('검색 버튼을 찾지 못했습니다.')
     print('[진행] 검색 버튼 클릭', flush=True)
-    _js_click(driver, search_btn)
+    _click_with_fallback(driver, search_btn)
     time.sleep(0.5)
     return None
 
@@ -546,7 +642,7 @@ def _search_via_simple_search(driver, wait, payload, property_category, loc, _fa
         return d.find_element(By.ID, f'{BASE}_tac_rlrg_appl_tab_tab_smpl_srch_tabHTML')
     tab = wait.until(_find_smpl_srch_tab)
     print('[진행] 간편검색 탭 찾음, 클릭', flush=True)
-    _js_click(driver, tab)
+    _click_with_fallback(driver, tab)
     time.sleep(0.5)
     _guard_not_stuck_on_security_page(driver)
     print('[진행] 간편검색 탭 진입 확인', flush=True)
@@ -598,7 +694,7 @@ def _search_via_location_search(driver, wait, payload, property_category, loc, _
         return d.find_element(By.ID, f'{BASE}_tac_rlrg_appl_tab_tab_loc_srch_tabHTML')
     tab = wait.until(_find_loc_srch_tab)
     print('[진행] 소재지번검색 탭 찾음, 클릭', flush=True)
-    _js_click(driver, tab)
+    _click_with_fallback(driver, tab)
     time.sleep(0.5)
     _guard_not_stuck_on_security_page(driver)
     print('[진행] 소재지번검색 탭 진입 확인', flush=True)
@@ -629,10 +725,10 @@ def _search_via_location_search(driver, wait, payload, property_category, loc, _
         mode_index = 0 if (loc.get('building_dong_no') and loc.get('room_no')) else (1 if loc.get('building_dong_no') else 2)
         # [2026-09-07 추가 — 본섭 데이터(999071)로 재현] 이 지점 직전에 "보안프로그램 설치" alert가
         # 뜨어있으면 바로 다음 줄의 find_element()가 UnexpectedAlertPresentException으로 죽는다 —
-        # 클릭 뒤(_js_click 안)만이 아니라 클릭 **전** DOM 조회 시점에도 alert가 열려있을 수 있다.
+        # 클릭 뒤(_click_with_fallback 안)만이 아니라 클릭 **전** DOM 조회 시점에도 alert가 열려있을 수 있다.
         _dismiss_alert_if_present(driver)
         try:
-            _js_click(driver, driver.find_element(By.CSS_SELECTOR, f'label[for="{BASE}_rad_loc_dong_room_sel_input_{mode_index}"]'))
+            _click_with_fallback(driver, driver.find_element(By.CSS_SELECTOR, f'label[for="{BASE}_rad_loc_dong_room_sel_input_{mode_index}"]'))
             time.sleep(0.5)
         except NoSuchElementException:
             pass
@@ -650,30 +746,48 @@ def _search_via_location_search(driver, wait, payload, property_category, loc, _
     return _click_search_button(driver, _fail)
 
 
-def _verify_register_target_body(driver, payload, property_category, loc, _fail):
+def _verify_register_target_body(driver, payload, property_category, loc, _fail, credentials=None):
     """verify_register_target()의 실제 로직 — 위 함수가 alert/설치페이지 예외를 잡아 즉시 실패로
-    확정할 수 있도록 try 블록으로 감쌀 본체만 분리했다(로직 자체는 기존과 동일)."""
+    확정할 수 있도록 try 블록으로 감쌀 본체만 분리했다(로직 자체는 기존과 동일).
+    credentials는 캡차화면에서 아이디/비번을 미리 채우는 용도로만 쓴다(2026-09-18 신규) — 조회
+    전용 호출부(find_register_address())는 여전히 안 넘겨도 된다(그러면 자동채움 없이 기존처럼
+    사람이 전부 입력)."""
     wait = WebDriverWait(driver, 20)
 
-    print('[진행] 등기소 홈 접속 시도', flush=True)
-    if not _navigate_home(driver):
-        return _fail('"보안프로그램 설치" 안내 페이지에서 벗어나지 못했습니다(3회 재시도).')
-    print(f'[진행] 홈 접속 완료 — url={driver.current_url}', flush=True)
-    btn = wait.until(lambda d: _home_entry_button(d))
-    print('[진행] "부동산 열람·발급" 버튼 찾음, 클릭', flush=True)
-    _js_click(driver, btn)
-    time.sleep(0.5)
-    _guard_not_stuck_on_security_page(driver)  # [2026-09-07] 홈 진입 클릭 뒤에도 튕길 수 있다 — 다음 20초 대기 전에 먼저 확인
-    print(f'[진행] 부동산 열람·발급 화면 진입 확인 — url={driver.current_url}', flush=True)
+    # [2026-09-18 추가 — 사용자 발견, 실사용 재현으로 확인] 등기소가 반복된 자동화 접속을 감지해
+    # 검색 버튼을 누르면 결과 대신 로그인화면(캡차 포함)으로 튕기기 시작했다(원래 조회 단계는 로그인이
+    # 필요 없었다 — 위 함수 안내 주석 ② 참고). 홈 접속부터 검색 제출까지를 한 덩어리로 묶어, 캡차를
+    # 만나면 사람이 로그인을 마친 뒤 처음부터 한 번 더 시도할 수 있게 한다(로그인 화면으로 튕기면
+    # 입력해둔 검색 폼 상태가 사라지므로, 중간부터 이어갈 방법이 없다).
+    def run_search_once():
+        print('[진행] 등기소 홈 접속 시도', flush=True)
+        if not _navigate_home(driver):
+            return _fail('"보안프로그램 설치" 안내 페이지에서 벗어나지 못했습니다(3회 재시도).')
+        print(f'[진행] 홈 접속 완료 — url={driver.current_url}', flush=True)
+        btn = wait.until(lambda d: _home_entry_button(d))
+        print('[진행] "부동산 열람·발급" 버튼 찾음, 클릭', flush=True)
+        _click_with_fallback(driver, btn)
+        time.sleep(0.5)
+        _guard_not_stuck_on_security_page(driver)  # [2026-09-07] 홈 진입 클릭 뒤에도 튕길 수 있다 — 다음 20초 대기 전에 먼저 확인
+        print(f'[진행] 부동산 열람·발급 화면 진입 확인 — url={driver.current_url}', flush=True)
+        _dismiss_cart_payment_reminder_popup_if_present(driver)
+        if _is_captcha_required(driver):
+            _prefill_login_page_credentials(driver, credentials)
+            if not _wait_for_human_to_clear_captcha(driver):
+                return _fail('로그인화면 캡차 입력 대기시간을 초과했습니다.')
+            print('[진행] 로그인 완료 확인 — 검색을 처음부터 다시 시도', flush=True)
+            fail = run_search_once()
+            if fail is not None:
+                return fail
+        # [2026-09-14 변경 — 사용자 발견, 실사용 재현으로 확인] 간편검색은 집합건물의 "동 정보 공백"
+        # 문제는 풀어주지만, 토지·일반건물에서는 부번 없는 지번일 때 오히려 여러 건물을 한꺼번에 찾아버려
+        # 새 문제가 됐다 — "간편검색이 항상 더 낫다"가 아니라 "집합건물만 간편검색이 필요"했던 것.
+        # 부동산구분에 따라 검색 방식 자체를 가른다.
+        if property_category == '집합건물':
+            return _search_via_simple_search(driver, wait, payload, property_category, loc, _fail)
+        return _search_via_location_search(driver, wait, payload, property_category, loc, _fail)
 
-    # [2026-09-14 변경 — 사용자 발견, 실사용 재현으로 확인] 간편검색은 집합건물의 "동 정보 공백"
-    # 문제는 풀어주지만, 토지·일반건물에서는 부번 없는 지번일 때 오히려 여러 건물을 한꺼번에 찾아버려
-    # 새 문제가 됐다 — "간편검색이 항상 더 낫다"가 아니라 "집합건물만 간편검색이 필요"했던 것.
-    # 부동산구분에 따라 검색 방식 자체를 가른다.
-    if property_category == '집합건물':
-        fail = _search_via_simple_search(driver, wait, payload, property_category, loc, _fail)
-    else:
-        fail = _search_via_location_search(driver, wait, payload, property_category, loc, _fail)
+    fail = run_search_once()
     if fail is not None:
         return fail
 
@@ -765,7 +879,7 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail)
     print(f'[진행] 대상 부동산 1건 특정 — 소유자(마스킹)={owner_masked}', flush=True)
 
     # [2026-09-18 수정 — 실사용 재현으로 원인 확인] 이 줄 선택 칸(WebSquare 그리드)은 execute_script
-    # 클릭(_js_click)으로는 화면상 아무 문제 없어 보여도 그리드 내부 선택 상태가 실제로는 안 바뀐다 —
+    # 클릭(_click_with_fallback)으로는 화면상 아무 문제 없어 보여도 그리드 내부 선택 상태가 실제로는 안 바뀐다 —
     # 검색결과가 1건뿐이던 경우엔 등기소가 그 유일한 행을 자동으로 선택된 것으로 취급해 문제가 안
     # 드러났을 뿐이다(매물 490302/861597). 검색결과가 여러 건이라 코드로 하나를 골라야 하는 경우
     # (매물 854687, 동 표시로 좁힌 사례)는 정말로 선택 상태를 만들어야 하는데, 그때 이 문제가 드러나
@@ -796,13 +910,13 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail)
             ActionChains(driver).move_to_element(sel_cell).click().perform()
         except Exception as e:
             print(f'[진행] 부동산 선택 표준 클릭 실패({type(e).__name__}) — execute_script 방식으로 재시도', flush=True)
-            _js_click(driver, sel_cell)
+            _click_with_fallback(driver, sel_cell)
     time.sleep(0.6)
 
     nb = _next_button(driver)
     if not nb:
         return _fail('[다음] 버튼을 찾지 못했습니다(부동산 선택 후).', owner_masked)
-    _js_click(driver, nb)
+    _click_with_fallback(driver, nb)
     time.sleep(0.5)
     print('[진행] 부동산 선택 완료, 다음 화면으로 이동', flush=True)
 
@@ -819,7 +933,7 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail)
             if any('소재지번 선택' in t for t in titles):
                 nb2 = _next_button(driver)
                 if nb2:
-                    _js_click(driver, nb2)
+                    _click_with_fallback(driver, nb2)
             time.sleep(0.5)
     if record_select_el is None:
         return _fail('등기기록유형 선택 화면에 도달하지 못했습니다.', owner_masked)
@@ -859,7 +973,7 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail)
         nb3 = _next_button(driver)
         if not nb3:
             return _fail(f'[다음] 버튼을 찾지 못했습니다 — {titles}', owner_masked)
-        _js_click(driver, nb3)
+        _click_with_fallback(driver, nb3)
         time.sleep(1.5)
 
     if reached != 'payment':
@@ -884,7 +998,7 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail)
         try:
             checkbox = tr.find_element(By.CSS_SELECTOR, 'td[data-col_id="chk_sel"] input[type="checkbox"]')
             if not checkbox.is_selected():
-                _js_click(driver, tr.find_element(By.CSS_SELECTOR, 'td[data-col_id="chk_sel"] label'))
+                _click_with_fallback(driver, tr.find_element(By.CSS_SELECTOR, 'td[data-col_id="chk_sel"] label'))
                 time.sleep(0.8)
         except NoSuchElementException:
             pass
@@ -925,7 +1039,7 @@ def find_register_address(payload):
     driver = _launch_chrome(options)
     try:
         driver.set_window_size(1280, 1000)
-        driver.set_window_position(-32000, -32000)  # 화면 밖으로 이동 — 진짜 창이지만 안 보이게
+        driver.set_window_position(80, 40)  # 사용자 확인이 가능하도록 보이는 위치에서 실행
         result = verify_register_target(driver, payload)
         return {'ok': result['ok'], 'address': result['address'], 'unique_no': result['unique_no'],
                 'owner_masked': result.get('owner_masked', ''), 'message': result['message'],
@@ -990,9 +1104,72 @@ def _handle_duplicate_payment_screen(driver):
             break
     if not move_btn:
         return False
-    _js_click(driver, move_btn)
+    _click_with_fallback(driver, move_btn)
     time.sleep(1)
     return True
+
+
+def _is_captcha_required(driver):
+    """로그인화면에 캡차(자동입력 방지문자)가 나타났는지 확인한다. [2026-09-18 신규 — 실사용 중
+    발견] 등기소가 반복된 자동화 접속을 감지해 로그인에 캡차를 요구하기 시작했다(매물 400603/854687
+    반복 테스트 중 재현). 캡차는 사람이 직접 읽고 입력해야 하는 값이라 자동으로 풀 수 없다(정책상
+    시도하지 않음) — 이 함수는 캡차가 나타났는지만 판별해서 사람에게 알리고 기다리는 용도로만 쓴다.
+    선택자는 실제 로그인화면 HTML로 확인한 값(2026-09-18, 사용자 제공)."""
+    try:
+        answer_input = driver.find_element(By.CSS_SELECTOR, 'input[id$="_answer___input"]')
+    except NoSuchElementException:
+        return False
+    return answer_input.is_displayed()
+
+
+def _prefill_login_page_credentials(driver, credentials):
+    """검색이 로그인화면(독립 페이지, 결제 팝업과는 다른 화면)으로 튕겼을 때 아이디/비번칸을
+    미리 채운다 — 담당자는 캡차만 입력하면 된다. [2026-09-18 신규 — 사용자 요청] 로그인 버튼은
+    누르지 않는다(_fill_login_popup_if_present()와 다른 점) — 캡차를 아직 안 입력한 상태라 눌러도
+    실패하므로, 로그인 자체는 사람이 캡차 입력 후 직접 완료한다. 선택자는 실제 로그인화면 HTML로
+    확인한 값(2026-09-18, 사용자 제공) — 결제 팝업의 popup_user_id_g/popup_mbr_pw_g와는 다른
+    네임스페이스(sbx_user_id_g/sct_mbr_pw_g)를 쓰는 별개의 화면이다."""
+    iros_id = (credentials or {}).get('iros_id') or ''
+    iros_pw = (credentials or {}).get('iros_pw') or ''
+    if not iros_id or not iros_pw:
+        return
+    try:
+        id_input = driver.find_element(By.CSS_SELECTOR, 'input[id$="sbx_user_id_g___input"]')
+        if id_input.is_displayed() and not id_input.get_attribute('value'):
+            _type_into_field(driver, id_input, iros_id)
+    except NoSuchElementException:
+        pass
+    try:
+        pw_input = driver.find_element(By.CSS_SELECTOR, 'input[id$="sct_mbr_pw_g"]')
+        if pw_input.is_displayed() and not pw_input.get_attribute('value'):
+            _type_into_field(driver, pw_input, iros_pw)
+    except NoSuchElementException:
+        pass
+
+
+def _wait_for_human_to_clear_captcha(driver, timeout_seconds=300):
+    """캡차가 화면에서 사라질 때까지(=사람이 캡차를 직접 입력하고 로그인을 완료할 때까지) 기다린다.
+    [2026-09-18 신규 — 사용자 요청] 알림창은 발견 시 한 번만 띄운다 — 담당자가 그 창을 닫기 전에
+    이미 캡차를 입력해뒀을 수도 있으므로, 창을 띄우자마자 폴링을 시작해 그런 경우 곧바로 이어간다."""
+    print('[진행] 로그인화면에 캡차(자동입력 방지문자) 발견 — 담당자 입력 대기', flush=True)
+    try:
+        import pyautogui
+        pyautogui.alert(
+            '인터넷등기소 로그인에 자동입력 방지문자(캡차)가 나타났습니다.\n\n'
+            '아이디/비밀번호는 이미 입력해뒀습니다 — 캡차만 입력하고 로그인해주세요.\n'
+            '로그인이 완료되면 자동으로 이어서 진행됩니다.',
+            '[인터넷등기소] 캡차 입력 필요',
+        )
+    except Exception:
+        pass
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        if not _is_captcha_required(driver):
+            print('[진행] 캡차 화면이 사라짐 — 로그인 완료로 보고 이어서 진행', flush=True)
+            return True
+        time.sleep(1)
+    print('[진행] 캡차 입력 대기시간을 초과함', flush=True)
+    return False
 
 
 def _fill_login_popup_if_present(driver, credentials):
@@ -1010,18 +1187,43 @@ def _fill_login_popup_if_present(driver, credentials):
     if not iros_id or not iros_pw:
         return {'shown': True, 'ok': False, 'message': '등기소 로그인 정보가 없습니다.'}
 
-    driver.execute_script("arguments[0].value = arguments[1];", id_input, iros_id)
+    # [2026-09-18 수정 — 사용자 요청 "캡차 떠도 아이디/비번은 자동으로 채워주자"] 캡차가 있든
+    # 없든 아이디/비번은 먼저 채운다 — 이 둘은 캡차와 무관하게 항상 채울 수 있는 값이라, 담당자가
+    # 캡차만 입력하면 되게 한다.
+    _type_into_field(driver, id_input, iros_id)
     try:
         pw_input = driver.find_element(By.CSS_SELECTOR, 'input[id$="popup_mbr_pw_g"]')
-        driver.execute_script("arguments[0].value = arguments[1];", pw_input, iros_pw)
     except NoSuchElementException:
-        pass
+        return {'shown': True, 'ok': False, 'message': '비밀번호 입력칸을 찾지 못했습니다.'}
+    _type_into_field(driver, pw_input, iros_pw)
+
+    # 캡차가 떠 있으면 로그인 버튼은 누르지 않는다 — 캡차 없이 제출하면 실패한다. 담당자가 캡차만
+    # 입력하고 직접 로그인 버튼을 누르면 된다.
+    if _is_captcha_required(driver):
+        if _wait_for_human_to_clear_captcha(driver):
+            return {'shown': True, 'ok': True}
+        return {'shown': True, 'ok': False, 'message': '캡차 입력 대기시간을 초과했습니다.'}
+
     try:
         login_btn = driver.find_element(By.CSS_SELECTOR, 'input[id$="btn_popup_login_g"]')
     except NoSuchElementException:
         return {'shown': True, 'ok': False, 'message': '로그인 버튼을 찾지 못했습니다.'}
-    _js_click(driver, login_btn)
-    time.sleep(2)
+    _click_with_fallback(driver, login_btn)
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        _dismiss_alert_if_present(driver)
+        try:
+            if not id_input.is_displayed():
+                break
+        except Exception:
+            break
+        try:
+            pay_tab = driver.find_element(By.ID, f'{BASE}_tac_bpay_mthd_tab_tab_pp_tabHTML')
+            if pay_tab.is_displayed():
+                break
+        except NoSuchElementException:
+            pass
+        time.sleep(0.2)
     return {'shown': True, 'ok': True}
 
 
@@ -1075,7 +1277,7 @@ def _prepare_payment_screen(driver, credentials):
     try:
         tab = driver.find_element(By.ID, f'{BASE}_tac_bpay_mthd_tab_tab_pp_tabHTML')
         if tab.is_displayed():
-            _js_click(driver, tab)
+            _click_with_fallback(driver, tab)
             time.sleep(0.2)
     except NoSuchElementException:
         return {'ready': False, 'message': '결제수단(선불전자지급수단) 탭을 찾지 못했습니다.'}
@@ -1084,7 +1286,7 @@ def _prepare_payment_screen(driver, credentials):
         agree_label = driver.find_element(By.CSS_SELECTOR, f'#{BASE}_chk_whl_agree li label')
         agree_input = driver.find_element(By.CSS_SELECTOR, f'#{BASE}_chk_whl_agree input[type="checkbox"]')
         if not agree_input.is_selected():
-            _js_click(driver, agree_label)
+            _click_with_fallback(driver, agree_label)
             time.sleep(0.6)
     except NoSuchElementException:
         return {'ready': False, 'message': '이용동의 항목을 찾지 못했습니다.'}
@@ -1128,13 +1330,13 @@ def _finish_after_payment_confirm(driver):
         time.sleep(0.5)
     if not confirm_btn:
         return {'ok': False, 'message': f'결제요청 확인 팝업의 [확인] 버튼을 찾지 못했습니다. | {_diag_snapshot(driver)}'}
-    _js_click(driver, confirm_btn)
+    _click_with_fallback(driver, confirm_btn)
     time.sleep(1.5)
 
     try:
         result_btn = driver.find_element(By.CSS_SELECTOR, 'input[id$="_btn_cfrm"]')
         if result_btn.is_displayed():
-            _js_click(driver, result_btn)
+            _click_with_fallback(driver, result_btn)
             time.sleep(1)
     except NoSuchElementException:
         pass
@@ -1191,14 +1393,14 @@ def _view_and_save(driver, payload, download_dir):
                 break
     if not view_btn:
         return {'ok': False, 'message': f'목록에서 [열람] 버튼을 찾지 못했습니다. | {_diag_snapshot(driver)}'}
-    _js_click(driver, view_btn)
+    _click_with_fallback(driver, view_btn)
     time.sleep(1)
 
     try:
         save_btn = driver.find_element(By.CSS_SELECTOR, 'input[id$="_btn_download"]')
     except NoSuchElementException:
         return {'ok': False, 'message': f'저장 버튼을 찾지 못했습니다 — 열람까지는 진행됐습니다(결제취소 불가 상태). | {_diag_snapshot(driver)}'}
-    _js_click(driver, save_btn)
+    _click_with_fallback(driver, save_btn)
 
     downloaded = _wait_for_download(download_dir, timeout=60)
     if not downloaded:
@@ -1338,7 +1540,7 @@ def issue_real_estate_register(payload, credentials, options=None):
         print(f'[진행] issue_real_estate_register 시작 — headless={headless}, true_headless_test={IROS_TRUE_HEADLESS_FOR_TEST}, lookup_only={lookup_only}, auto_confirm={auto_confirm}, stop_before_view={stop_before_view}', flush=True)
         driver.set_window_size(1280, 1000)
         if headless and not IROS_TRUE_HEADLESS_FOR_TEST:
-            driver.set_window_position(-32000, -32000)  # 화면 밖으로 이동 — 진짜 창이지만 안 보이게
+            driver.set_window_position(80, 40)  # 사용자 확인이 가능하도록 보이는 위치에서 실행
         if headless and IROS_TRUE_HEADLESS_FOR_TEST:
             # --window-size 플래그로는 안 바뀌던 screen.width/height(가짜 800x600)를 CDP로 직접
             # 덮어쓴다 — 보임모드 실측값(1920x1080)에 맞춘다.
@@ -1347,7 +1549,7 @@ def issue_real_estate_register(payload, credentials, options=None):
                 'screenWidth': 1920, 'screenHeight': 1080,
             })
 
-        target = verify_register_target(driver, payload)
+        target = verify_register_target(driver, payload, credentials)
         result['address'] = target.get('address', '')
         result['unique_no'] = target.get('unique_no', '')
         result['owner_masked'] = target.get('owner_masked', '')
@@ -1364,7 +1566,7 @@ def issue_real_estate_register(payload, credentials, options=None):
         # 뿐인 버튼, content_iros.js::proceedToPaymentScreen() 주석 참고).
         print('[진행] [결제] 버튼(첫 번째) 클릭 — 아직 청구되지 않음', flush=True)
         pay_btn = driver.find_element(By.ID, f'{BASE}_btn_bpay')
-        _js_click(driver, pay_btn)
+        _click_with_fallback(driver, pay_btn)
         time.sleep(1)
 
         routed = _route_after_payment_click(driver, credentials)
@@ -1405,14 +1607,26 @@ def issue_real_estate_register(payload, credentials, options=None):
                 pay_btn2.click()
             except Exception as e:
                 print(f'[진행] 표준 click() 실패({type(e).__name__}) — execute_script 방식으로 재시도', flush=True)
-                _js_click(driver, pay_btn2)
+                _click_with_fallback(driver, pay_btn2)
         else:
             # [2026-09-07 신규 — 사용자 요청] "신청확인 자동 진행"이 꺼져 있으면(창이 실제로 보이는
             # 상태다 — headless일 땐 위에서 이미 auto_confirm을 강제로 켰다) 결제 버튼을 직접 누르지
             # 않는다. 화면이 진짜로 사람 눈앞에 떠 있으므로, 담당자가 자기 마우스로 직접 눌러도 된다
             # — 그동안 이 스크립트는 결제요청 확인 팝업이 뜨는지만 기다린다(content_iros.js가
             # auto_pay_registry_fee===false일 때 버튼만 남겨두고 사람 클릭을 기다리는 것과 같은 방식).
+            # [2026-09-18 추가 — 사용자 요청] 캡차 대기(_wait_for_human_to_clear_captcha)와 같은 방식으로
+            # 알림창을 띄운다 — 화면이 보임모드라도 담당자가 다른 일을 하다 놓칠 수 있으므로, [결제]를
+            # 직접 눌러야 한다는 것과 최대 대기시간을 명시적으로 알려준다.
             print(f'[진행] 사람이 직접 [결제] 누르길 최대 {HUMAN_CONFIRM_TIMEOUT_SEC}초 대기 중...', flush=True)
+            try:
+                import pyautogui
+                pyautogui.alert(
+                    '인터넷등기소 화면에서 [결제] 버튼을 직접 눌러주세요.\n\n'
+                    f'확인 후 최대 {HUMAN_CONFIRM_TIMEOUT_SEC}초({HUMAN_CONFIRM_TIMEOUT_SEC // 60}분) 동안 기다립니다.',
+                    '[인터넷등기소] 결제 버튼 확인 필요',
+                )
+            except Exception:
+                pass
             confirm_appears = False
             deadline = time.time() + HUMAN_CONFIRM_TIMEOUT_SEC
             while time.time() < deadline:
