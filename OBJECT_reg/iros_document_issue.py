@@ -109,7 +109,16 @@ BASE = 'mf_wfm_potal_main_wfm_content'
 # 매번 똑같지 않고 이 확인 화면이 추가로 끼는 경우가 있다("외부사이트 화면 다양성" 원칙 — 특정
 # 화면 순서를 고정으로 가정하지 않는다).
 PASS_THROUGH_TITLES = ['용도 및 추가사항 선택', '등기기록유형 선택', '(주민)등록번호 공개여부 확인',
-                       '등기신청사건 처리여부 확인', '부동산 소재지번 선택']
+                       '등기신청사건 처리여부 확인', '부동산 소재지번 선택',
+                       # [2026-09-19 추가 — 실사용 재현으로 확인, 매물 10385] 조회 대상이 이미 "결제대상"
+                       # 으로 등록돼 있으면(반복 테스트 등으로) 등기기록유형 선택 직후 이 확인 화면이
+                       # 끼어든다 — 화면 안내문 그대로("중복하여 열람·발급 하려면 '다음' 버튼을 선택")
+                       # [다음]으로 통과시킨다. 결제 버튼을 누른 뒤에만 뜨는 것으로 알고 있던 같은 화면이
+                       # 조회(verify_register_target) 도중에도 뜰 수 있다는 뜻 — 그쪽 화면(결제 이후)에서
+                       # 쓰는 _handle_duplicate_payment_screen()의 "이동"(기존 결제건으로 갈아타기)은
+                       # 여기서는 쓰지 않는다 — 지금 조회 중인 매물의 등기상주소·소유주를 못 읽게 될 수
+                       # 있기 때문이다(이 함수는 결제 버튼 자체를 안 누르므로 "다음"으로 넘겨도 안전하다).
+                       '중복결제 확인']
 PAYMENT_TITLES = ['결제대상 확인']
 
 # [2026-09-07 신규] 결제 버튼을 누른 뒤 사람이 직접 누를 때까지 기다리는 최대 시간(초) —
@@ -296,6 +305,38 @@ def _dismiss_cart_payment_reminder_popup_if_present(driver):
             return False
     time.sleep(0.5)
     return True
+
+
+def _is_selection_required_popup_visible(driver):
+    """"열람발급할 부동산을 선택하시기 바랍니다" 안내창이 떠 있는지 확인한다. [2026-09-19 추가 —
+    실사용 재현으로 원인 확인] "부동산 소재지번 선택" 화면의 체크박스가 실제로 선택됐는지는 DOM
+    선택자로 알아내려다 계속 어긋났다(td[data-col_id="rad_sel"] 안에서 input을 못 찾아 매번
+    "선택 안 됨"으로 잘못 판단 → 이미 사이트가 자동 선택해둔 체크박스를 다시 눌러 꺼버리는 사고로
+    이어짐, 매물 10385로 재현). DOM 구조를 더 정밀하게 추측하는 대신, [다음]을 누른 뒤 **사이트가
+    스스로 이 안내창을 띄우는지**로 "정말 선택이 안 됐는지"를 판단한다 — 이게 선택 여부를 가장
+    확실하게 알려주는 신호다(사이트 자신의 유효성 검사이므로).
+    @return bool 안내창이 보이면 True
+    """
+    return any(el.is_displayed() for el in
+               driver.find_elements(By.XPATH, '//*[contains(text(), "열람발급할 부동산을 선택하시기 바랍니다")]'))
+
+
+def _dismiss_selection_required_popup(driver):
+    """위 _is_selection_required_popup_visible()이 True일 때만 부른다 — "확인" 버튼 하나뿐인
+    안내창을 닫는다(위 _dismiss_cart_payment_reminder_popup_if_present()와 같은 방식, 이쪽은
+    버튼이 "취소"가 아니라 "확인" 하나뿐이라는 점만 다르다)."""
+    for el in driver.find_elements(By.CSS_SELECTOR, 'a, button, input'):
+        if el.is_displayed() and '확인' in (el.text or el.get_attribute('value') or ''):
+            try:
+                el.click()
+            except Exception:
+                try:
+                    driver.execute_script('arguments[0].click();', el)
+                except Exception:
+                    return False
+            time.sleep(0.3)
+            return True
+    return False
 
 
 def _diag_snapshot(driver):
@@ -569,7 +610,20 @@ def _pick_kind_cls_radio(driver, radio_id_fragment, property_category, _fail):
             or (property_category in ('토지', '건물') and label_text == '토지+건물')
         )
         if is_match:
-            _click_with_fallback(driver, label)
+            # [2026-09-19 추가 — 실사용 재현으로 확인] 아래 클릭이 예외 없이 끝나도 실제로 라디오가
+            # 선택됐는지 확인 안 하고 넘어갔다 — 부동산 선택 체크박스(rad_sel)에서 같은 유형의 문제가
+            # 실측으로 확인된 적이 있어(주석 참고, 클릭은 "성공한 것처럼" 끝나도 그리드 내부 선택
+            # 상태가 안 바뀔 때가 있음) 여기도 클릭 후 확인·재시도를 추가한다. 새 클릭 방식을 따로
+            # 만들지 않고 _click_with_fallback()을 그대로 다시 쓴다 — 그 함수는 항상 진짜 마우스
+            # 이벤트(표준 click → ActionChains)를 먼저 쓰고 execute_script는 최후의 수단으로만 써서,
+            # 반복 호출해도 기계적인 강제 클릭이 새로 늘어나지 않는다.
+            for _ in range(2):
+                _click_with_fallback(driver, label)
+                time.sleep(0.3)
+                if r.is_selected():
+                    break
+            if not r.is_selected():
+                return _fail(f'부동산구분 "{property_category}" 라디오를 클릭했지만 선택 상태가 되지 않았습니다.')
             picked = True
             break
     if not picked:
@@ -727,11 +781,26 @@ def _search_via_location_search(driver, wait, payload, property_category, loc, _
         # 뜨어있으면 바로 다음 줄의 find_element()가 UnexpectedAlertPresentException으로 죽는다 —
         # 클릭 뒤(_click_with_fallback 안)만이 아니라 클릭 **전** DOM 조회 시점에도 alert가 열려있을 수 있다.
         _dismiss_alert_if_present(driver)
+        radio_id = f'{BASE}_rad_loc_dong_room_sel_input_{mode_index}'
         try:
-            _click_with_fallback(driver, driver.find_element(By.CSS_SELECTOR, f'label[for="{BASE}_rad_loc_dong_room_sel_input_{mode_index}"]'))
-            time.sleep(0.5)
+            mode_label = driver.find_element(By.CSS_SELECTOR, f'label[for="{radio_id}"]')
+            mode_radio = driver.find_element(By.ID, radio_id)
         except NoSuchElementException:
-            pass
+            mode_label = None
+            mode_radio = None
+        if mode_label is not None and mode_radio is not None:
+            # [2026-09-19 추가 — 위 _pick_kind_cls_radio()와 같은 이유] 클릭 후 실제로 선택됐는지
+            # 확인 안 하고 넘어갔다 — 확인·재시도를 추가하되, 이 라디오는 부동산구분과 달리 "정확히
+            # 좁히기 위한" 보조 입력이라(못 찾으면 원래도 그냥 넘어가던 곳) 그래도 안 되면 경고만
+            # 남기고 계속 진행한다(검색결과가 여러 건으로 남으면 뒤에서 이미 "자동으로 고르지 않음"
+            # 으로 걸러진다).
+            for _ in range(2):
+                _click_with_fallback(driver, mode_label)
+                time.sleep(0.5)
+                if mode_radio.is_selected():
+                    break
+            if not mode_radio.is_selected():
+                print('[진행] 동/호수 입력모드 라디오를 클릭했지만 선택 상태를 확인하지 못함 — 그대로 진행', flush=True)
         if loc.get('building_dong_no'):
             dong_el = _find_first_visible(driver, [f'#{BASE}_sbx_loc_buld_no_buld___input'])
             if dong_el:
@@ -878,46 +947,57 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
         owner_masked = ''
     print(f'[진행] 대상 부동산 1건 특정 — 소유자(마스킹)={owner_masked}', flush=True)
 
-    # [2026-09-18 수정 — 실사용 재현으로 원인 확인] 이 줄 선택 칸(WebSquare 그리드)은 execute_script
-    # 클릭(_click_with_fallback)으로는 화면상 아무 문제 없어 보여도 그리드 내부 선택 상태가 실제로는 안 바뀐다 —
-    # 검색결과가 1건뿐이던 경우엔 등기소가 그 유일한 행을 자동으로 선택된 것으로 취급해 문제가 안
-    # 드러났을 뿐이다(매물 490302/861597). 검색결과가 여러 건이라 코드로 하나를 골라야 하는 경우
-    # (매물 854687, 동 표시로 좁힌 사례)는 정말로 선택 상태를 만들어야 하는데, 그때 이 문제가 드러나
-    # "열람발급할 부동산을 선택하시기 바랍니다" 알림에 막혀 다음 화면으로 못 넘어갔다(직접 재현·확인).
-    # "실제 결제" 버튼과 같은 이유로 진짜 마우스 클릭(표준 click())으로 바꾼다 — 요소가 다른 것에
-    # 가려질 가능성은 낮지만, 혹시 실패하면 기존 방식으로 한 번 더 시도한다.
-    # [2026-09-18 추가 수정 — 실사용 재현으로 확인] td 자체에 표준 click()을 시도하면
-    # ElementNotInteractableException으로 실패한다(td에 렌더링된 크기가 없어서로 보임 — 안의
-    # <span>이 실제 클릭 영역). ActionChains로 뷰포트 중앙까지 스크롤한 뒤 마우스를 옮겨 클릭하면
-    # 진짜 마우스 이벤트로 처리돼 그리드 선택 상태가 제대로 바뀐다(직접 재현으로 확인) — 그래도
-    # 실패하면 마지막 수단으로 execute_script 클릭을 시도한다(이 경우 선택이 안 될 수 있다는 걸
-    # 알고 있음 — 위 "열람발급할 부동산을 선택하시기 바랍니다" 알림으로 이어질 수 있다).
+    # [2026-09-19 수정 — 실사용 재현으로 원인 확인, 매물 10385] 예전엔 이 줄 선택 칸(WebSquare 그리드)
+    # 안에서 <input>을 찾아 "이미 체크됐는지" 확인한 뒤에만 클릭했는데, 그 선택자가 실제로는 input을
+    # 못 찾아(NoSuchElementException) 매번 "체크 안 됨"으로 잘못 판단했다 — 그 결과 검색결과가 1건이라
+    # 사이트가 이미 자동으로 체크해둔 행을(위쪽 "검색결과 0건" 처리 부분 참고, 매물 490302/861597로
+    # 이미 확인된 사이트 동작) 다시 눌러서 꺼버리는 사고로 이어졌다(담당자가 화면에서 체크 해제되는
+    # 걸 직접 목격 — 예전에 고쳤다고 여겼던 매물 400603과 같은 유형의 사고가 감지 실패로 재발).
+    #
+    # DOM 선택자를 더 정밀하게 맞추려고 또 추측하는 대신, 이미 확실히 알고 있는 사실 두 가지로
+    # 접근을 바꾼다: ①원본 검색결과(len(rows), 위에서 이미 구함)가 1건이면 사이트가 자동 선택하므로
+    # 아예 클릭하지 않는다 — 여러 건 중 우리가 동/지번으로 좁혀 1건만 골랐을 때(len(rows) > 1)만
+    # 사이트가 선택을 안 해주므로 그때만 클릭한다. ②"진짜 선택됐는지"는 DOM 상태를 우리가 추측하지
+    # 않고, [다음]을 누른 뒤 사이트 자신이 "열람발급할 부동산을 선택하시기 바랍니다" 안내창을
+    # 띄우는지로 판단한다 — 이게 선택 여부를 가장 확실하게 알려주는 신호다.
     sel_cell = row.find_element(By.CSS_SELECTOR, 'td[data-col_id="rad_sel"]')
-    # [2026-09-18 추가 — 실사용 재현으로 확인] 위 주석대로 검색결과 1건이면 등기소가 이미 그 행을
-    # 선택된 상태(<input type="radio" checked>)로 그려준다 — 그런데 아래 클릭이 이 상태를 확인하지
-    # 않고 무조건 눌러서, 이미 선택된 걸 다시 눌러 선택이 풀려버리는 사고가 있었다(매물 400603,
-    # 화면 캡처로 확인 — "1건(0건 선택)"). 클릭 전에 안의 <input>이 이미 checked인지부터 본다.
-    already_selected = False
-    try:
-        already_selected = sel_cell.find_element(By.CSS_SELECTOR, 'input').is_selected()
-    except NoSuchElementException:
-        pass
-    if already_selected:
-        print('[진행] 부동산 선택 — 이미 선택된 상태라 다시 클릭하지 않음', flush=True)
-    else:
+
+    def _click_selection_cell():
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", sel_cell)
         try:
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", sel_cell)
             ActionChains(driver).move_to_element(sel_cell).click().perform()
         except Exception as e:
-            print(f'[진행] 부동산 선택 표준 클릭 실패({type(e).__name__}) — execute_script 방식으로 재시도', flush=True)
+            print(f'[진행] 부동산 선택 클릭 실패({type(e).__name__}) — execute_script 방식으로 재시도', flush=True)
             _click_with_fallback(driver, sel_cell)
-    time.sleep(0.6)
+        time.sleep(0.5)
+
+    if len(rows) == 1:
+        print('[진행] 부동산 선택 — 검색결과 원본이 1건이라 사이트가 이미 선택한 상태로 보고 클릭하지 않음', flush=True)
+    else:
+        print(f'[진행] 부동산 선택 — 원본 검색결과 {len(rows)}건 중 조건에 맞는 1건을 좁혔으므로 직접 클릭', flush=True)
+        _click_selection_cell()
 
     nb = _next_button(driver)
     if not nb:
         return _fail('[다음] 버튼을 찾지 못했습니다(부동산 선택 후).', owner_masked)
     _click_with_fallback(driver, nb)
-    time.sleep(0.5)
+    time.sleep(0.6)
+
+    if _is_selection_required_popup_visible(driver):
+        # 예상과 반대로 선택이 안 돼 있었던 경우(또는 반대로 이미 선택된 걸 눌러 꺼버린 경우) —
+        # 사이트가 직접 알려준 신호이므로 추측 없이 그대로 따른다: 안내창을 닫고 체크박스를 눌러
+        # 다시 선택한 뒤 [다음]을 한 번 더 시도한다.
+        print('[진행] "열람발급할 부동산을 선택하시기 바랍니다" 안내창 발견 — 다시 선택 후 재시도', flush=True)
+        _dismiss_selection_required_popup(driver)
+        _click_selection_cell()
+        nb2 = _next_button(driver)
+        if not nb2:
+            return _fail('[다음] 버튼을 찾지 못했습니다(부동산 재선택 후).', owner_masked)
+        _click_with_fallback(driver, nb2)
+        time.sleep(0.6)
+        if _is_selection_required_popup_visible(driver):
+            return _fail('부동산을 선택했지만 "열람발급할 부동산을 선택하시기 바랍니다" 안내창이 계속 뜹니다.', owner_masked)
+
     print('[진행] 부동산 선택 완료, 다음 화면으로 이동', flush=True)
 
     record_select_el = None
