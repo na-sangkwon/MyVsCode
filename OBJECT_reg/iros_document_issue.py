@@ -823,6 +823,44 @@ def _search_via_location_search(driver, wait, payload, property_category, loc, _
     return _click_search_button(driver, _fail)
 
 
+def _wait_for_human_to_pick_property(driver, candidate_count, timeout_seconds=300):
+    """검색결과가 여러 건이라 좁히기(시군구·지번·동 표시)로도 하나로 못 골랐을 때, 사람이 브라우저
+    창에서 직접 체크박스를 선택하고 [다음]을 눌러 다음 화면(등기기록유형 선택)으로 넘어가길 기다린다.
+
+    [2026-09-19 신규 — 사용자 지적 "여러 건이면 조용히 실패하고 끝나는 게 문제"] 그동안은 이 경우
+    바로 실패 처리하고 끝났다 — 캡차·결제확인처럼 사람 판단이 필요한 상황인데도 사람에게 알리지
+    않고 조용히 죽는 셈이었다. 실제로 겪은 사례(매물 278720)에서 확인했듯, 어느 물건이 맞는지는
+    저장된 정보(소유자 등)만으로 구분이 안 될 수 있어(건축물대장이 이름미확인이거나, 두 후보의
+    차이가 저장 안 해둔 정보일 때) 사람이 직접 판단해야 한다 — 자동으로 아무거나 고르면 안 된다.
+
+    화면 전환 감지는 등기기록유형 선택 화면 대기 로직(_verify_register_target_body() 안의
+    record_select_el 폴링)과 같은 신호를 쓴다 — 사람이 직접 체크+[다음]까지 마치면 그 신호가
+    똑같이 나타나므로, 호출부는 이 함수가 True를 반환하면 곧장 그 폴링 루프로 이어가면 된다
+    (선택 과정 자체를 다시 자동화하지 않는다)."""
+    print(f'[진행] 검색결과 {candidate_count}건 — 담당자 직접 선택 대기', flush=True)
+    try:
+        import pyautogui
+        pyautogui.alert(
+            f'검색결과가 {candidate_count}건이라 자동으로 고르지 못했습니다.\n\n'
+            '이 창을 닫고, 열려있는 등기소 창에서 정확한 부동산을 직접 선택(체크)한 뒤 [다음]을 눌러주세요.\n'
+            '다음 화면으로 넘어가면 자동으로 이어서 진행됩니다.',
+            '[인터넷등기소] 부동산 선택 필요',
+        )
+    except Exception:
+        pass
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        try:
+            driver.find_element(By.ID, f'{BASE}_sel_cpab_kncd_input_0')
+            print('[진행] 담당자가 부동산을 선택하고 다음 화면으로 넘어감 — 이어서 진행', flush=True)
+            return True
+        except NoSuchElementException:
+            pass
+        time.sleep(1)
+    print('[진행] 부동산 선택 대기시간을 초과함', flush=True)
+    return False
+
+
 def _verify_register_target_body(driver, payload, property_category, loc, _fail, credentials=None):
     """verify_register_target()의 실제 로직 — 위 함수가 alert/설치페이지 예외를 잡아 즉시 실패로
     확정할 수 있도록 try 블록으로 감쌀 본체만 분리했다(로직 자체는 기존과 동일).
@@ -941,71 +979,80 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
 
     if len(matched) == 0:
         return _fail('검색결과에서 일치하는 부동산을 찾지 못했습니다.')
+
+    owner_masked = ''
     if len(matched) > 1:
-        return _fail(f'검색결과가 {len(matched)}건이라 자동으로 고르지 않았습니다 — 매물의 저장된 동/호 정보가 부족할 수 있습니다.')
-
-    row = matched[0]
-    # [2026-09-07 추가 — 사용자 요청] 소유자 대조 — 등기소는 소유자를 "지**"처럼 가려서 보여준다
-    # (content_iros.js에서 라이브로 확인된 사실, 2026-08-23). 완전일치 검사는 애초에 불가능하므로,
-    # 담당자가 눈으로 대조할 수 있게 값만 그대로 돌려준다(자동 판정/중단에는 쓰지 않는다).
-    try:
-        owner_masked = row.find_element(By.CSS_SELECTOR, 'td[data-col_id="nomprs_name"]').text.strip()
-    except NoSuchElementException:
-        owner_masked = ''
-    print(f'[진행] 대상 부동산 1건 특정 — 소유자(마스킹)={owner_masked}', flush=True)
-
-    # [2026-09-19 수정 — 실사용 재현으로 원인 확인, 매물 10385] 예전엔 이 줄 선택 칸(WebSquare 그리드)
-    # 안에서 <input>을 찾아 "이미 체크됐는지" 확인한 뒤에만 클릭했는데, 그 선택자가 실제로는 input을
-    # 못 찾아(NoSuchElementException) 매번 "체크 안 됨"으로 잘못 판단했다 — 그 결과 검색결과가 1건이라
-    # 사이트가 이미 자동으로 체크해둔 행을(위쪽 "검색결과 0건" 처리 부분 참고, 매물 490302/861597로
-    # 이미 확인된 사이트 동작) 다시 눌러서 꺼버리는 사고로 이어졌다(담당자가 화면에서 체크 해제되는
-    # 걸 직접 목격 — 예전에 고쳤다고 여겼던 매물 400603과 같은 유형의 사고가 감지 실패로 재발).
-    #
-    # DOM 선택자를 더 정밀하게 맞추려고 또 추측하는 대신, 이미 확실히 알고 있는 사실 두 가지로
-    # 접근을 바꾼다: ①원본 검색결과(len(rows), 위에서 이미 구함)가 1건이면 사이트가 자동 선택하므로
-    # 아예 클릭하지 않는다 — 여러 건 중 우리가 동/지번으로 좁혀 1건만 골랐을 때(len(rows) > 1)만
-    # 사이트가 선택을 안 해주므로 그때만 클릭한다. ②"진짜 선택됐는지"는 DOM 상태를 우리가 추측하지
-    # 않고, [다음]을 누른 뒤 사이트 자신이 "열람발급할 부동산을 선택하시기 바랍니다" 안내창을
-    # 띄우는지로 판단한다 — 이게 선택 여부를 가장 확실하게 알려주는 신호다.
-    sel_cell = row.find_element(By.CSS_SELECTOR, 'td[data-col_id="rad_sel"]')
-
-    def _click_selection_cell():
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", sel_cell)
-        try:
-            ActionChains(driver).move_to_element(sel_cell).click().perform()
-        except Exception as e:
-            print(f'[진행] 부동산 선택 클릭 실패({type(e).__name__}) — execute_script 방식으로 재시도', flush=True)
-            _click_with_fallback(driver, sel_cell)
-        time.sleep(0.5)
-
-    if len(rows) == 1:
-        print('[진행] 부동산 선택 — 검색결과 원본이 1건이라 사이트가 이미 선택한 상태로 보고 클릭하지 않음', flush=True)
+        # [2026-09-19 재설계 — 사용자 지적 "여러 건이면 조용히 실패하고 끝나는 게 문제"] 예전엔 여기서
+        # 바로 실패 처리했다 — 캡차·결제확인처럼 사람 판단이 필요한 상황인데 사람에게 알리지도 않고
+        # 조용히 죽는 셈이었다(매물 278720 실사용 재현 — 저장된 정보만으로는 두 후보를 구분할 수
+        # 없었다). 대신 사람에게 알리고, 브라우저 창에서 직접 체크+[다음]까지 마치고 넘어가길 기다린다
+        # (_wait_for_human_to_pick_property() 참고) — 성공하면 아래 등기기록유형 선택 대기 루프로
+        # 곧장 이어간다(사람이 이미 선택·[다음]까지 마쳤으므로 자동 선택 코드는 건너뛴다).
+        if not _wait_for_human_to_pick_property(driver, len(matched)):
+            return _fail(f'검색결과가 {len(matched)}건이라 자동으로 고르지 못했고, 담당자 선택도 시간 내에 끝나지 않았습니다.')
     else:
-        print(f'[진행] 부동산 선택 — 원본 검색결과 {len(rows)}건 중 조건에 맞는 1건을 좁혔으므로 직접 클릭', flush=True)
-        _click_selection_cell()
+        row = matched[0]
+        # [2026-09-07 추가 — 사용자 요청] 소유자 대조 — 등기소는 소유자를 "지**"처럼 가려서 보여준다
+        # (content_iros.js에서 라이브로 확인된 사실, 2026-08-23). 완전일치 검사는 애초에 불가능하므로,
+        # 담당자가 눈으로 대조할 수 있게 값만 그대로 돌려준다(자동 판정/중단에는 쓰지 않는다).
+        try:
+            owner_masked = row.find_element(By.CSS_SELECTOR, 'td[data-col_id="nomprs_name"]').text.strip()
+        except NoSuchElementException:
+            owner_masked = ''
+        print(f'[진행] 대상 부동산 1건 특정 — 소유자(마스킹)={owner_masked}', flush=True)
 
-    nb = _next_button(driver)
-    if not nb:
-        return _fail('[다음] 버튼을 찾지 못했습니다(부동산 선택 후).', owner_masked)
-    _click_with_fallback(driver, nb)
-    time.sleep(0.6)
+        # [2026-09-19 수정 — 실사용 재현으로 원인 확인, 매물 10385] 예전엔 이 줄 선택 칸(WebSquare 그리드)
+        # 안에서 <input>을 찾아 "이미 체크됐는지" 확인한 뒤에만 클릭했는데, 그 선택자가 실제로는 input을
+        # 못 찾아(NoSuchElementException) 매번 "체크 안 됨"으로 잘못 판단했다 — 그 결과 검색결과가 1건이라
+        # 사이트가 이미 자동으로 체크해둔 행을(위쪽 "검색결과 0건" 처리 부분 참고, 매물 490302/861597로
+        # 이미 확인된 사이트 동작) 다시 눌러서 꺼버리는 사고로 이어졌다(담당자가 화면에서 체크 해제되는
+        # 걸 직접 목격 — 예전에 고쳤다고 여겼던 매물 400603과 같은 유형의 사고가 감지 실패로 재발).
+        #
+        # DOM 선택자를 더 정밀하게 맞추려고 또 추측하는 대신, 이미 확실히 알고 있는 사실 두 가지로
+        # 접근을 바꾼다: ①원본 검색결과(len(rows), 위에서 이미 구함)가 1건이면 사이트가 자동 선택하므로
+        # 아예 클릭하지 않는다 — 여러 건 중 우리가 동/지번으로 좁혀 1건만 골랐을 때(len(rows) > 1)만
+        # 사이트가 선택을 안 해주므로 그때만 클릭한다. ②"진짜 선택됐는지"는 DOM 상태를 우리가 추측하지
+        # 않고, [다음]을 누른 뒤 사이트 자신이 "열람발급할 부동산을 선택하시기 바랍니다" 안내창을
+        # 띄우는지로 판단한다 — 이게 선택 여부를 가장 확실하게 알려주는 신호다.
+        sel_cell = row.find_element(By.CSS_SELECTOR, 'td[data-col_id="rad_sel"]')
 
-    if _is_selection_required_popup_visible(driver):
-        # 예상과 반대로 선택이 안 돼 있었던 경우(또는 반대로 이미 선택된 걸 눌러 꺼버린 경우) —
-        # 사이트가 직접 알려준 신호이므로 추측 없이 그대로 따른다: 안내창을 닫고 체크박스를 눌러
-        # 다시 선택한 뒤 [다음]을 한 번 더 시도한다.
-        print('[진행] "열람발급할 부동산을 선택하시기 바랍니다" 안내창 발견 — 다시 선택 후 재시도', flush=True)
-        _dismiss_selection_required_popup(driver)
-        _click_selection_cell()
-        nb2 = _next_button(driver)
-        if not nb2:
-            return _fail('[다음] 버튼을 찾지 못했습니다(부동산 재선택 후).', owner_masked)
-        _click_with_fallback(driver, nb2)
+        def _click_selection_cell():
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", sel_cell)
+            try:
+                ActionChains(driver).move_to_element(sel_cell).click().perform()
+            except Exception as e:
+                print(f'[진행] 부동산 선택 클릭 실패({type(e).__name__}) — execute_script 방식으로 재시도', flush=True)
+                _click_with_fallback(driver, sel_cell)
+            time.sleep(0.5)
+
+        if len(rows) == 1:
+            print('[진행] 부동산 선택 — 검색결과 원본이 1건이라 사이트가 이미 선택한 상태로 보고 클릭하지 않음', flush=True)
+        else:
+            print(f'[진행] 부동산 선택 — 원본 검색결과 {len(rows)}건 중 조건에 맞는 1건을 좁혔으므로 직접 클릭', flush=True)
+            _click_selection_cell()
+
+        nb = _next_button(driver)
+        if not nb:
+            return _fail('[다음] 버튼을 찾지 못했습니다(부동산 선택 후).', owner_masked)
+        _click_with_fallback(driver, nb)
         time.sleep(0.6)
-        if _is_selection_required_popup_visible(driver):
-            return _fail('부동산을 선택했지만 "열람발급할 부동산을 선택하시기 바랍니다" 안내창이 계속 뜹니다.', owner_masked)
 
-    print('[진행] 부동산 선택 완료, 다음 화면으로 이동', flush=True)
+        if _is_selection_required_popup_visible(driver):
+            # 예상과 반대로 선택이 안 돼 있었던 경우(또는 반대로 이미 선택된 걸 눌러 꺼버린 경우) —
+            # 사이트가 직접 알려준 신호이므로 추측 없이 그대로 따른다: 안내창을 닫고 체크박스를 눌러
+            # 다시 선택한 뒤 [다음]을 한 번 더 시도한다.
+            print('[진행] "열람발급할 부동산을 선택하시기 바랍니다" 안내창 발견 — 다시 선택 후 재시도', flush=True)
+            _dismiss_selection_required_popup(driver)
+            _click_selection_cell()
+            nb2 = _next_button(driver)
+            if not nb2:
+                return _fail('[다음] 버튼을 찾지 못했습니다(부동산 재선택 후).', owner_masked)
+            _click_with_fallback(driver, nb2)
+            time.sleep(0.6)
+            if _is_selection_required_popup_visible(driver):
+                return _fail('부동산을 선택했지만 "열람발급할 부동산을 선택하시기 바랍니다" 안내창이 계속 뜹니다.', owner_masked)
+
+        print('[진행] 부동산 선택 완료, 다음 화면으로 이동', flush=True)
 
     record_select_el = None
     for _ in range(20):
