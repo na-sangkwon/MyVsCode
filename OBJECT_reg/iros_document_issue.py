@@ -6,12 +6,21 @@
 #  (그 파일 자체가 "화면 구성이 다양하니 범용판별 우선" 원칙으로 이미 여러 차례 실사용 검증을 거쳤다
 #  — 원본 deunggi.py보다 그쪽을 정본으로 삼는다).
 #
-# [이 파일의 두 진입점]
-#   find_register_address(payload)            — 결제 없이 등기상 주소·고유번호만 조회 (기존, 그대로 유지)
-#   issue_real_estate_register(payload, credentials, options) — 로그인부터 결제·열람·다운로드까지 전체 발급 (신규)
-# 두 진입점 모두 verify_register_target(driver, payload) 하나를 공유한다 — "등기상주소·소유주를
-# 확인하는 과정"은 이 함수 하나뿐이고, 다른 곳에서 필요해지면 이 함수를 그대로 재사용하면 된다
-# (사용자 요청, 2026-09-07 — 검증 로직을 두 곳에 따로 두면 한쪽만 고치는 사고로 이어지기 쉽다).
+# [이 파일의 진입점]
+#   issue_real_estate_register(payload, credentials, options) — 로그인부터 결제·열람·다운로드까지 전체 발급.
+#     options.lookup_only=True로 부르면 verify_register_target()까지만 하고 결제 없이 등기상
+#     주소·고유번호만 조회한다 — 예전엔 이 용도로 find_register_address(payload)라는 별도
+#     진입점(계정정보를 아예 안 받는, "조회는 로그인이 필요 없다"는 낡은 전제로 만든 경량 경로)이
+#     따로 있었는데, 등기소가 조회 단계에도 캡차/로그인을 요구하기 시작하면서 그 전제가 깨졌다
+#     (verify_register_target()의 _is_captcha_required() 관련 주석 참고). 두 경로가 결국 같은
+#     verify_register_target()을 공유하면서도 한쪽만 계정정보를 받다 보니 "캡차 화면에서 아이디/
+#     비번이 자동입력 안 됨" 같은 사고가 났었다(2026-09-19, 사용자 리포트) — find_register_address()를
+#     걷어내고 lookup_only 옵션 하나로 합쳤다(local_helper/main.py::run_iros_address_lookup_headless()/
+#     handle_iros_address_lookup(), web/_shared/external_ad_popup.js::exAdRequestRegisterAddressLookup(),
+#     chrome_extension의 OBANG_IROS_ADDRESS_LOOKUP 중계도 함께 제거).
+# 조회·발급 모두 verify_register_target(driver, payload, credentials) 하나를 공유한다 — "등기상주소·
+# 소유주를 확인하는 과정"은 이 함수 하나뿐이고, 다른 곳에서 필요해지면 이 함수를 그대로 재사용하면
+# 된다(사용자 요청, 2026-09-07 — 검증 로직을 두 곳에 따로 두면 한쪽만 고치는 사고로 이어지기 쉽다).
 #
 # 결제(700원 열람)는 크롬확장의 실사용 기본값과 동일하게 사람 확인 없이 자동으로 진행한다(사용자
 # 확정, 2026-09-07) — 다만 auto_confirm=False로 부르면(예: 담당자가 "몰래작동"을 끄고 직접 지켜보는
@@ -127,7 +136,7 @@ HUMAN_CONFIRM_TIMEOUT_SEC = 600
 
 
 def _launch_chrome(chrome_options):
-    """find_register_address()/issue_real_estate_register() 공용 — Chrome을 띄우는 지점을 하나로
+    """issue_real_estate_register() 공용 — Chrome을 띄우는 지점을 하나로
     모아, chromedriver에 새 콘솔을 명시적으로 준다(위 파일 상단 CREATE_NEW_CONSOLE 주석 참고 —
     콘솔 없는 DETACHED_PROCESS에서 chromedriver가 응답 없이 사라지던 문제의 핵심 원인으로 실측
     확인됨). Job 분리(CREATE_BREAKAWAY_FROM_JOB)가 거부되는 환경(handle_iros_issue()의 자기 자신
@@ -537,9 +546,8 @@ def verify_register_target(driver, payload, credentials=None):
     [재사용 가능한 핵심 함수 — 사용자 요청, 2026-09-07] 로그인이 필요 없는 단계까지만 진행해서
     등기상주소·소유주(마스킹)·고유번호를 확인한다. 결제 버튼은 절대 누르지 않는다.
 
-    driver는 호출부가 만들어서 넘긴다(생성·quit 여부는 호출부 책임) — find_register_address()
-    (주소만 필요한 호출부)와 issue_real_estate_register()(이 결과를 이어받아 결제까지 진행)가
-    이 함수 하나를 공유한다.
+    driver는 호출부가 만들어서 넘긴다(생성·quit 여부는 호출부 책임) — issue_real_estate_register()가
+    lookup_only=True(주소만 필요한 호출)든 결제까지 이어가든 이 함수 하나를 공유한다.
 
     payload: {
         'property_category': '토지'|'건물'|'집합건물',
@@ -555,8 +563,8 @@ def verify_register_target(driver, payload, credentials=None):
     감지해서 불필요한 긴 대기를 건너뛴다.
 
     credentials: [2026-09-18 신규, 선택값] 검색이 로그인화면(캡차 포함)으로 튕겼을 때 아이디/비번을
-        미리 채워주는 용도로만 쓴다({'iros_id','iros_pw'}) — 안 넘기면(find_register_address()처럼)
-        캡차가 떠도 자동채움 없이 기존처럼 담당자가 전부 입력한다.
+        미리 채워주는 용도로만 쓴다({'iros_id','iros_pw'}) — 안 넘기면 캡차가 떠도 자동채움 없이
+        기존처럼 담당자가 전부 입력한다.
 
     @return {'ok': bool, 'address': str, 'unique_no': str, 'owner_masked': str, 'message': str}
     """
@@ -818,9 +826,8 @@ def _search_via_location_search(driver, wait, payload, property_category, loc, _
 def _verify_register_target_body(driver, payload, property_category, loc, _fail, credentials=None):
     """verify_register_target()의 실제 로직 — 위 함수가 alert/설치페이지 예외를 잡아 즉시 실패로
     확정할 수 있도록 try 블록으로 감쌀 본체만 분리했다(로직 자체는 기존과 동일).
-    credentials는 캡차화면에서 아이디/비번을 미리 채우는 용도로만 쓴다(2026-09-18 신규) — 조회
-    전용 호출부(find_register_address())는 여전히 안 넘겨도 된다(그러면 자동채움 없이 기존처럼
-    사람이 전부 입력)."""
+    credentials는 캡차화면에서 아이디/비번을 미리 채우는 용도로만 쓴다(2026-09-18 신규) — 안
+    넘기면(예: 계정정보 조회 자체가 실패한 경우) 자동채움 없이 기존처럼 사람이 전부 입력한다."""
     wait = WebDriverWait(driver, 20)
 
     # [2026-09-18 추가 — 사용자 발견, 실사용 재현으로 확인] 등기소가 반복된 자동화 접속을 감지해
@@ -1091,61 +1098,6 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
         return {'ok': True, 'address': addr_text, 'unique_no': unique_no, 'owner_masked': owner_masked, 'message': ''}
 
     return _fail('결제대상 표에서 일치하는 줄을 찾지 못했습니다.', owner_masked)
-
-
-def find_register_address(payload):
-    """[기존 시그니처 그대로 유지] 결제 없이 등기상 주소·고유번호만 조회한다.
-    local_helper/main.py의 --iros-address-lookup 호출부가 이 함수를 그대로 부르므로 시그니처를
-    바꾸지 않는다. 항상 사람 눈에 안 보이게 돈다("몰래" 조회 용도 — iros_address_lookup.py 시절부터의
-    설계, 2026-09-06/07 확정 사유는 이 파일 상단 주석 참고) — 다만 "안 보이게" 하는 실제 방식은
-    아래 참고.
-
-    [2026-09-10 수정 — 사용자 리포트로 원인 파악, 실사용 오류 재현] 이 함수는 verify_register_target()
-    을 거쳐 "결제대상 확인" 화면까지 들어가는데(issue_real_estate_register()와 같은 지점), 그동안
-    여기만 --headless=new(진짜 헤드리스)를 그대로 쓰고 있었다 — 그런데 등기소(TouchEn 보안프로그램)
-    가 바로 그 화면 진입 시점에 "진짜 렌더링 창이 있는지"를 확인하고, 없으면 "보안프로그램 설치"
-    안내로 튕겨버린다는 게 issue_real_estate_register()에서 이미 실측으로 확인·수정된 사실이다
-    (2026-09-08, 아래쪽 함수 주석 참고). 정작 그 발급 함수만 고쳐지고 이 조회 함수는 "iros_address_
-    lookup.py 시절 설계"를 그대로 물려받은 채 남아 있었던 것 — 그래서 그 함수와 완전히 같은 방식
-    (진짜 창은 띄우되 화면 밖 좌표로 옮겨서 안 보이게)으로 통일한다.
-    ⚠️ [동기화 경고] 창 숨김 방식은 이 함수와 issue_real_estate_register()가 반드시 같은 원칙을
-    따라야 한다 — 한쪽만 고치면 이번과 같은 사고(한쪽만 등기소 보안프로그램에 막힘)가 재발한다.
-
-    @return {'ok': bool, 'address': str, 'unique_no': str, 'owner_masked': str, 'message': str,
-             'user_cancelled': bool}
-    """
-    options = Options()
-    options.add_argument('--disable-blink-features=AutomationControlled')
-    driver = _launch_chrome(options)
-    try:
-        driver.set_window_size(1280, 1000)
-        driver.set_window_position(80, 40)  # 사용자 확인이 가능하도록 보이는 위치에서 실행
-        result = verify_register_target(driver, payload)
-        return {'ok': result['ok'], 'address': result['address'], 'unique_no': result['unique_no'],
-                'owner_masked': result.get('owner_masked', ''), 'message': result['message'],
-                'user_cancelled': False}
-    except (NoSuchWindowException, InvalidSessionIdException):
-        # [2026-09-12 추가 — 사용자 요청] 담당자가 자동화 창을 직접 닫은 경우다. chrome_extension/
-        # background.js의 chrome.tabs.onRemoved 처리와 구분 기준을 맞춰서, 아래 일반 except의
-        # "자동화 중 오류" 문구(시스템 버그로 오인되는 문구)가 아니라 사용자의 정상적인 취소임이
-        # 드러나는 문구를 쓴다. user_cancelled를 본 호출부(report_iros_address_lookup_result())가
-        # pr_log에 그대로 남긴다.
-        return {'ok': False, 'address': '', 'unique_no': '', 'owner_masked': '',
-                'message': USER_CLOSED_WINDOW_MESSAGE, 'user_cancelled': True}
-    except Exception as e:
-        # [2026-09-07 추가 — 라이브 재현] TimeoutException 등 일부 셀레니움 예외는 str(e)가 빈
-        # 문자열이라(예: "Message: \n") 무슨 예외인지조차 알 수 없었다 — 클래스명을 함께 남긴다.
-        return {'ok': False, 'address': '', 'unique_no': '', 'owner_masked': '',
-                'message': f'자동화 중 오류({type(e).__name__}): {e} | {_diag_snapshot(driver)}',
-                'user_cancelled': False}
-    finally:
-        # [2026-09-12 추가 — 사용자가 창을 이미 닫았으면 driver.quit()도 예외를 낼 수 있다] 방금 위에서
-        # 만든 result가 이 예외로 통째로 덮여 함수 자체가 크래시하지 않도록 보호한다 — 이미 세션이
-        # 끝난 뒤의 quit()은 실패해도 무시해도 되는 정리 동작일 뿐이다.
-        try:
-            driver.quit()
-        except Exception:
-            pass
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -1547,8 +1499,10 @@ def issue_real_estate_register(payload, credentials, options=None):
         'lookup_only': bool = False,    # [2026-09-07 추가 — 사용자 요청] "조회만 진행(결제 안 함)".
             # 켜면 verify_register_target()까지만 하고 반환한다 — 결제 버튼 자체를 누르지 않는다.
             # 숨김모드(headless=True)는 원래 auto_confirm을 강제로 켜서 결제까지 자동으로 나가는데,
-            # 이 옵션으로 숨김모드에서도 결제 없이 조회만 하는 선택지를 남긴다(find_register_address()가
-            # 하던 일과 같은 지점에서 멈추되, 화면 표시 여부·창 닫기 여부는 이 함수의 다른 옵션을 그대로 따른다).
+            # 이 옵션으로 숨김모드에서도 결제 없이 조회만 하는 선택지를 남긴다 — 조회 전용
+            # 진입점이었던 옛 find_register_address()가 하던 일을 이 옵션 하나로 대체했다
+            # (2026-09-19, 위 파일 상단 주석 참고). 화면 표시 여부·창 닫기 여부는 이 함수의 다른
+            # 옵션을 그대로 따른다.
         'stop_before_view': bool = False,  # [2026-09-08 추가 — 사용자 요청, 실결제 검증용 안전장치]
             # 결제(700원)는 실제로 진행하되, [열람] 버튼은 누르지 않고 멈춘다 — 등기소는 열람 전까지는
             # 결제취소가 가능하므로, 결제 자체가 정상적으로 되는지만 안전하게 확인하고 싶을 때 쓴다.
@@ -1585,11 +1539,9 @@ def issue_real_estate_register(payload, credentials, options=None):
     # 보안프로그램)가 결제 진입 시점에 "진짜 렌더링 창이 있는지"를 확인하는 것으로 보인다 — 그래서
     # 창 자체는 진짜로 띄우되(headless 아님), 화면 밖 좌표로 옮겨 직원 모니터에는 보이지 않게 한다.
     # "몰래(창 안 띄우고) 작동" 옵션이 실사용자에게 약속하는 것(창이 안 보임)은 이 방식으로도 그대로
-    # 지켜진다.
-    # ⚠️ [동기화 경고, 2026-09-10] find_register_address()도 이 함수와 같은 "결제대상 확인" 화면을
-    # 거치므로 같은 원칙을 따라야 한다 — 실제로 그 함수만 이 수정을 못 받고 --headless=new로 남아
-    # 있다가 실사용 중 막힌 사고가 있었다(그 함수 docstring 참고). 여기를 또 고칠 때는 그 함수도
-    # 같이 볼 것.
+    # 지켜진다. [2026-09-19] 조회 전용으로 이 화면을 따로 거치던 find_register_address()는 제거되고
+    # lookup_only 옵션으로 이 함수에 합쳐졌다 — 창 숨김 방식을 두 곳에서 따로 맞춰야 했던 동기화
+    # 부담도 함께 없어졌다.
     if headless and IROS_TRUE_HEADLESS_FOR_TEST:
         chrome_options.add_argument('--headless=new')
         # [2026-09-08 임시 진단 — 실측으로 시도했으나 원인이 아닌 것으로 확인됨] 화면밖-창(보임)과
@@ -1637,7 +1589,8 @@ def issue_real_estate_register(payload, credentials, options=None):
             result['message'] = target.get('message', '')
             return result
         if lookup_only:
-            # 여기서 반드시 멈춘다 — [결제] 버튼은 절대 누르지 않는다(find_register_address()와 동일 원칙).
+            # 여기서 반드시 멈춘다 — [결제] 버튼은 절대 누르지 않는다(옛 find_register_address()가
+            # 지키던 원칙 그대로).
             print('[진행] lookup_only — 조회만 하고 종료', flush=True)
             result['ok'] = True
             return result
