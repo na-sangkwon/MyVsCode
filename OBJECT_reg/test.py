@@ -157,7 +157,7 @@ class MyApp(QWidget):
 
     self.objectLabel = QLabel('새홈 번호: ')
     self.objectInput = QLineEdit(self)
-    self.objectInput.setText('400603') # 10172 745958 705914
+    self.objectInput.setText('10385') # 10172 745958 705914
     # self.objectInput.setText('670983,343799,248831') # 10172 543937
     self.objectInput.textChanged.connect(self.update_button_state) #self.objectInput의 textChanged 시그널을 self.update_button_state 슬롯에 연결
     self.objectInput.selectAll() #모든 텍스트를 선택
