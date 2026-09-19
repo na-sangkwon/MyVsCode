@@ -32,6 +32,207 @@ options = Options()
 
 options.add_argument("--disable-blink-features=AutomationControlled")
 
+# [2026-09-19 추가 — 사용자 요청 "크롬확장이 그리는 모양을 셀레니움에서도 그대로"]
+# 홍보확인서 동의칸 체크(V)/서명칸 서명을 Selenium ActionChains(브라우저 드라이버 레벨 마우스
+# 좌표 이동)로 그리던 것을, 정상 동작이 이미 확인된 크롬 확장의 그리기 로직을 그대로 가져와
+# 브라우저 안에서 JS로 실행하는 방식으로 바꾼다.
+# 원본: D:\241103_nsk98\Documents\Atomprojected\obangtest\chrome_extension\serve_autofill\webfax_sign.js
+# (checkMarkPath/scribblePath/humanize/drawSignature) — 반듯한 3점짜리 V 대신, 사람이 실제로
+# 그은 것처럼 휘고 흔들리는 곡선을 만들고, ActionChains 대신 캔버스에 PointerEvent/MouseEvent를
+# 직접 dispatch한다. 확장 전용 부분(패널 UI, chrome.runtime 메시지 전송, 서버 진단 보고)은 빼고
+# 순수 그리기 로직만 옮겼다 — 두 함수(개인정보수집및이용동의체크/매물의뢰인서명날인)가 공유해서
+# 쓰므로, 하나를 고치면 원본 webfax_sign.js와 이 상수 둘 다 맞춰서 고칠 것.
+사람손글씨_체크서명_그리기_JS = r"""
+const canvas = arguments[0];
+const shape = arguments[1];
+const callback = arguments[2];
+
+const rnd = (a, b) => a + Math.random() * (b - a);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function strokeDelay(index) {
+  const pause = (index % 9 === 8) ? rnd(25, 55) : 0;
+  return Math.round(rnd(7, 24) + pause);
+}
+
+function pusher(path, rect) {
+  return (x, y) => path.push([
+    Math.min(Math.max(x, rect.left + 3), rect.right - 3),
+    Math.min(Math.max(y, rect.top + 3), rect.bottom - 3)
+  ]);
+}
+
+function slowWobble(count, amplitude) {
+  const waves = [];
+  for (let i = 0; i < 3; i++) {
+    waves.push({ freq: rnd(0.5, 2.0), phase: rnd(0, Math.PI * 2), amp: amplitude * rnd(0.35, 1.0) });
+  }
+  return (index) => {
+    const t = index / Math.max(1, count - 1);
+    let value = 0;
+    for (const w of waves) value += w.amp * Math.sin(t * Math.PI * 2 * w.freq + w.phase);
+    return value;
+  };
+}
+
+function humanize(path, rect, amount) {
+  const driftX = slowWobble(path.length, rect.height * amount);
+  const driftY = slowWobble(path.length, rect.height * amount);
+  return path.map(([x, y], i) => [
+    Math.min(Math.max(x + driftX(i), rect.left + 3), rect.right - 3),
+    Math.min(Math.max(y + driftY(i), rect.top + 3), rect.bottom - 3)
+  ]);
+}
+
+function checkMarkPath(rect) {
+  const W = rect.width, H = rect.height;
+  const path = [];
+  const push = pusher(path, rect);
+  const tilt = rnd(-0.22, 0.16);
+  const cx = rect.left + W * 0.5, cy = rect.top + H * 0.5;
+  const rot = (x, y) => {
+    const dx = x - cx, dy = y - cy;
+    return [cx + dx * Math.cos(tilt) - dy * Math.sin(tilt), cy + dx * Math.sin(tilt) + dy * Math.cos(tilt)];
+  };
+  const p0 = [rect.left + W * rnd(0.17, 0.28), rect.top + H * rnd(0.34, 0.50)];
+  const p1 = [rect.left + W * rnd(0.38, 0.48), rect.top + H * rnd(0.68, 0.84)];
+  const p2 = [rect.left + W * rnd(0.78, 0.94), rect.top + H * rnd(0.08, 0.24)];
+  push.apply(null, rot(p0[0], p0[1]));
+  for (let i = 1; i <= 9; i++) {
+    const t = i / 9, bow = Math.sin(t * Math.PI) * W * rnd(0.008, 0.026);
+    const [x, y] = rot(p0[0] + (p1[0] - p0[0]) * t - bow, p0[1] + (p1[1] - p0[1]) * t);
+    push(x, y);
+  }
+  for (let i = 1; i <= 14; i++) {
+    const t = Math.pow(i / 14, 0.82), bow = Math.sin(t * Math.PI) * H * rnd(0.03, 0.11);
+    const [x, y] = rot(p1[0] + (p2[0] - p1[0]) * t, p1[1] + (p2[1] - p1[1]) * t - bow);
+    push(x, y);
+  }
+  return humanize(path, rect, 0.030);
+}
+
+function scribblePath(rect) {
+  const W = rect.width, H = rect.height;
+  const path = [];
+  const push = pusher(path, rect);
+  const y0 = rect.top + H * rnd(0.58, 0.66);
+  const rise = H * rnd(0.08, 0.18);
+  const baseAt = (t) => y0 - rise * t;
+  const x0 = rect.left + W * rnd(0.09, 0.14);
+  push(x0, baseAt(0) + H * rnd(0.10, 0.18));
+  for (let i = 1; i <= 8; i++) {
+    const t = i / 8;
+    push(x0 + W * 0.035 * t, baseAt(0) + H * (0.14 - 0.46 * t));
+  }
+  const cx = rect.left + W * rnd(0.16, 0.22);
+  const cy = baseAt(0.08) - H * rnd(0.00, 0.08);
+  const rx = W * rnd(0.040, 0.062), ry = H * rnd(0.15, 0.24);
+  const tilt = rnd(-0.55, -0.15);
+  const angFrom = rnd(-2.7, -2.1);
+  const angTo = angFrom + Math.PI * rnd(1.65, 2.15);
+  for (let i = 1; i <= 20; i++) {
+    const a = angFrom + (angTo - angFrom) * (i / 20);
+    const wobble = 1 + 0.20 * Math.sin(a * 2.3 + 1.1);
+    const px = rx * wobble * Math.cos(a), py = ry * wobble * Math.sin(a);
+    push(cx + px * Math.cos(tilt) - py * Math.sin(tilt), cy + px * Math.sin(tilt) + py * Math.cos(tilt));
+  }
+  let prevX = path[path.length - 1][0];
+  const endX = rect.left + W * rnd(0.72, 0.82);
+  const humps = 3;
+  for (let k = 0; k < humps; k++) {
+    const t1 = (k + 1) / humps;
+    const nextX = prevX + (endX - prevX) * rnd(0.75, 1.0) / (humps - k);
+    const peakY = baseAt(t1) - H * rnd(0.20, 0.46);
+    const valleyY = baseAt(t1) + H * rnd(0.00, 0.12);
+    const fromY = path[path.length - 1][1];
+    const crest = rnd(0.48, 0.58);
+    const up = Math.round(rnd(6, 9));
+    for (let i = 1; i <= up; i++) {
+      const t = i / up;
+      push(prevX + (nextX - prevX) * t * crest, fromY + (peakY - fromY) * t);
+    }
+    const down = Math.round(rnd(6, 9));
+    for (let i = 1; i <= down; i++) {
+      const t = i / down;
+      push(prevX + (nextX - prevX) * (crest + (1 - crest) * t), peakY + (valleyY - peakY) * t);
+    }
+    prevX = nextX;
+  }
+  const tailEnd = rect.left + W * rnd(0.86, 0.94);
+  const tailFromY = path[path.length - 1][1];
+  const tailRise = H * rnd(0.26, 0.36);
+  for (let i = 1; i <= 10; i++) {
+    const t = Math.pow(i / 10, 0.8);
+    push(prevX + (tailEnd - prevX) * t, tailFromY - tailRise * t);
+  }
+  return humanize(path, rect, 0.018);
+}
+
+(async () => {
+  const rect = canvas.getBoundingClientRect();
+  if (rect.width < 10 || rect.height < 10) { callback({drawn: false, reason: '캔버스가 너무 작음'}); return; }
+
+  const path = (shape === 'check') ? checkMarkPath(rect) : scribblePath(rect);
+  const snapshot = () => { try { return canvas.toDataURL(); } catch (e) { return null; } };
+  const before = snapshot();
+
+  const firePointer = async () => {
+    const init = (x, y) => ({ bubbles: true, cancelable: true, view: window, clientX: x, clientY: y,
+                              button: 0, buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true });
+    const send = (type, x, y) => {
+      try { canvas.dispatchEvent(new PointerEvent('pointer' + type, init(x, y))); } catch (e) {}
+      canvas.dispatchEvent(new MouseEvent('mouse' + type, init(x, y)));
+    };
+    send('down', path[0][0], path[0][1]);
+    for (let i = 0; i < path.length; i++) {
+      send('move', path[i][0], path[i][1]);
+      await sleep(strokeDelay(i));
+    }
+    send('up', path[path.length - 1][0], path[path.length - 1][1]);
+  };
+
+  const fireTouch = async () => {
+    const makeTouch = (x, y) => new Touch({ identifier: 1, target: canvas, clientX: x, clientY: y });
+    const send = (type, x, y) => {
+      const touches = type === 'end' ? [] : [makeTouch(x, y)];
+      canvas.dispatchEvent(new TouchEvent('touch' + type, {
+        bubbles: true, cancelable: true, touches: touches,
+        targetTouches: touches, changedTouches: [makeTouch(x, y)]
+      }));
+    };
+    send('start', path[0][0], path[0][1]);
+    for (let i = 0; i < path.length; i++) {
+      send('move', path[i][0], path[i][1]);
+      await sleep(strokeDelay(i));
+    }
+    send('end', path[path.length - 1][0], path[path.length - 1][1]);
+  };
+
+  await firePointer();
+  await sleep(200);
+  if (before === null || snapshot() !== before) { callback({drawn: true}); return; }
+
+  try { await fireTouch(); } catch (e) { callback({drawn: false, reason: '터치 신호 실패: ' + e.message}); return; }
+  await sleep(200);
+  if (snapshot() !== before) { callback({drawn: true, note: '터치 신호로 그림'}); return; }
+
+  callback({drawn: false, reason: '신호를 보냈지만 그려지지 않음'});
+})();
+"""
+
+
+def 사람손글씨로_캔버스에_그리기(driver, canvas, shape):
+    """
+    캔버스에 체크(V, shape='check') 또는 서명(shape='sign')을 사람 손글씨처럼 그린다.
+    실패해도 예외를 올리지 않고 {'drawn': False, 'reason': ...}을 돌려준다 — 호출부(
+    개인정보수집및이용동의체크/매물의뢰인서명날인)가 이미 그리기 실패를 자체 except로 감싸고
+    있으므로, 원인 문구를 그대로 돌려줘서 print에 남게 한다.
+    """
+    try:
+        return driver.execute_async_script(사람손글씨_체크서명_그리기_JS, canvas, shape)
+    except Exception as e:
+        return {'drawn': False, 'reason': f'execute_async_script 오류: {e}'}
+
 
 
 from PyQt5.QtCore import QThread, pyqtSignal
@@ -803,83 +1004,15 @@ class NaverThread(QThread):
                         EC.presence_of_element_located((By.XPATH, canvas1_xpath))
                     )
 
-                    # 캔버스의 실제 크기와 스타일 확인
-                    canvas1_info = driver.execute_script("""
-                        const canvas = arguments[0];
-                        return {
-                            width: canvas.width,
-                            height: canvas.height,
-                            styleWidth: canvas.style.width,
-                            styleHeight: canvas.style.height,
-                            offsetWidth: canvas.offsetWidth,
-                            offsetHeight: canvas.offsetHeight
-                        };
-                    """, canvas1)
-                    # print(f"Canvas 정보: {canvas1_info}")
-
-                    # 2) 캔버스 위치/크기 가져오기
-                    rect = driver.execute_script("""
-                        const c = arguments[0].getBoundingClientRect();
-                        return {left: c.left, top: c.top, width: c.width, height: c.height};
-                    """, canvas1)
-
-
-                    # w, h = rect['width'], rect['height']
-                    # print(f"canvas w:{w}, h:{h}")
-                    # # V자 좌표 (캔버스 내 상대좌표)
-                    # sx, sy = w * 0.2, h * 0.2        # p1: 좌측 상단
-                    # mx, my = w * 0.4, h * 0.6        # p2: 하단 중간
-                    # ex, ey = w * 0.6, h * 0.2        # p3: 우측 상단        
-
-                    left, top, w, h = rect['left'], rect['top'], rect['width'], rect['height']
-                    # V 모양의 첫 번째 선용 포인트 계산
-                    sx, sy = left + w * 0.4, top + h * 0.2        # p1: 좌측 상단
-                    mx, my = left + w * 0.6, top + h * 1.0        # p2: 하단 중간
-                    ex, ey = left + w * 0.8, top + h * 0.2        # p3: 우측 상단
-                    # print(f"left={left}, top={top}, w={w}, h={h}, sx={sx}, sy={sy}, mx={mx}, my={my}, ex={ex}, ey={ey}")
-                    
-                    # actions = ActionChains(driver)
-                    # actions.move_to_element_with_offset(canvas, int(sx), int(sy))
-                    # actions.click_and_hold()
-                    # actions.move_to_element_with_offset(canvas, int(mx), int(my))
-                    # actions.release()
-                    # actions.perform()
-
-                    # actions = ActionChains(driver)
-                    # actions.move_to_element_with_offset(canvas, int(mx), int(my))
-                    # actions.click_and_hold()
-                    # actions.move_to_element_with_offset(canvas, int(ex), int(ey))
-                    # actions.release()
-                    # actions.perform()
-
-                    # 중간 드래그 보강용 포인트 (시작↔끝 중간)
-                    segx12, segy12 = (sx + mx) / 2, (sy + my) / 2
-                    segx23, segy23 = (mx + ex) / 2, (my + ey) / 2
-          
-                    # 🎯 [2026-09-06 수정 — 실사용 중 재현된 버그] 바로 위에서 캔버스의 실제 위치를
-                    # 기준으로 sx,sy/mx,my/ex,ey/segx12,segy12/segx23,segy23을 정확히 계산해두고도,
-                    # 정작 마우스 이동은 계산값이 아니라 특정 창 배치에서만 맞던 고정 픽셀 좌표를 쓰고
-                    # 있었다 — 그래서 창 배치가 달라지면 캔버스 밖(심하면 뷰포트 밖)을 가리켜
-                    # "move target out of bounds"로 실패했다(새홈 746161 연장등록 라이브 재현으로 확인).
-                    # 계산해둔 값을 그대로 쓰도록 바꾼다.
-                    actions = ActionChains(driver)
-                    actions.w3c_actions.pointer_action.move_to_location(int(sx), int(sy))
-                    actions.w3c_actions.pointer_action.pointer_down()
-                    actions.w3c_actions.pointer_action.pause(0.05)
-                    actions.w3c_actions.pointer_action.move_to_location(int(segx12), int(segy12))
-                    actions.w3c_actions.pointer_action.move_to_location(int(mx), int(my))
-                    actions.w3c_actions.pointer_action.pointer_up()
-                    actions.perform()
-
-                    actions = ActionChains(driver)
-                    actions.w3c_actions.pointer_action.move_to_location(int(mx), int(my))
-                    actions.w3c_actions.pointer_action.pointer_down()
-                    actions.w3c_actions.pointer_action.move_to_location(int(segx23), int(segy23))
-                    actions.w3c_actions.pointer_action.move_to_location(int(ex), int(ey))
-                    actions.w3c_actions.pointer_action.pointer_up()
-                    actions.perform()
-
-                    print("✅ 개인정보 수집 동의 체크 완료")
+                    # [2026-09-19 변경 — 사용자 요청 "정상 동작하는 크롬확장의 모양을 그대로"]
+                    # 좌표 3개짜리 반듯한 V(ActionChains)를 그리는 대신, 정상 동작이 이미 확인된
+                    # 크롬확장(webfax_sign.js)의 손글씨형 체크 그리기 로직을 그대로 가져와 브라우저
+                    # 안에서 실행한다. 상세 설명은 파일 상단 사람손글씨_체크서명_그리기_JS 주석 참고.
+                    결과 = 사람손글씨로_캔버스에_그리기(driver, canvas1, 'check')
+                    if 결과.get('drawn'):
+                        print("✅ 개인정보 수집 동의 체크 완료" + (f" ({결과['note']})" if 결과.get('note') else ""))
+                    else:
+                        print(f"⚠️ 개인정보 수집 동의 체크 실패 — {결과.get('reason')}")
 
                 except Exception as e:
                     print(f"Canvas 서명 오류: {e}")
@@ -893,37 +1026,12 @@ class NaverThread(QThread):
             def 매물의뢰인서명날인():
                 try:
                     print("📌 매물의뢰인서명날인 시작")
-                    canvas1_xpath = '//*[@id="app"]/div/div/div/div[2]/div[2]/div[2]/div[1]/canvas'
-
-                    # 1) 캔버스 요소 찾기
-                    canvas1 = WebDriverWait(driver, 10).until(
-                        EC.presence_of_element_located((By.XPATH, canvas1_xpath))
-                    )
-
-                    # 캔버스의 실제 크기와 스타일 확인
-                    canvas1_info = driver.execute_script("""
-                        const canvas = arguments[0];
-                        return {
-                            width: canvas.width,
-                            height: canvas.height,
-                            styleWidth: canvas.style.width,
-                            styleHeight: canvas.style.height,
-                            offsetWidth: canvas.offsetWidth,
-                            offsetHeight: canvas.offsetHeight
-                        };
-                    """, canvas1)
-                    rect1 = driver.execute_script("""
-                        const c = arguments[0].getBoundingClientRect();
-                        return {left: c.left, top: c.top, width: c.width, height: c.height};
-                    """, canvas1)    
-                    left, top, w, h = rect1['left'], rect1['top'], rect1['width'], rect1['height']
-                    # V 모양의 첫 번째 선용 포인트 계산
-                    sx, sy = left + w * 0.4, top + h * 0.2        # p1: 좌측 상단
-                    mx, my = left + w * 0.6, top + h * 1.0        # p2: 하단 중간
-                    ex, ey = left + w * 0.8, top + h * 0.2        # p3: 우측 상단                
-                    # print(f"Canvas1 정보: {canvas1_info}")
-                    # print(f"left={left}, top={top}, w={w}, h={h}, sx={sx}, sy={sy}, mx={mx}, my={my}, ex={ex}, ey={ey}")
-
+                    # [2026-09-19 제거 — 죽은 코드 정리] 예전에는 이 함수가 canvas1 요소를 찾아
+                    # 좌표(sx,sy/mx,my/ex,ey)까지 계산해뒀지만, 실제 그리기는 항상 canvas2
+                    # 기준으로 다시 계산한 좌표만 썼다 — canvas1 쪽 계산값은 애초에 어디서도
+                    # 참조되지 않는 죽은 코드였다(2026-09-19 재현 테스트 중 발견). 이제 그리기가
+                    # canvas2 요소 자체를 사람손글씨로_캔버스에_그리기()에 넘기는 방식으로 바뀌어
+                    # 좌표 계산 자체가 필요 없어졌으므로, canvas1 조회까지 통째로 걷어낸다.
                     canvas2_xpath = '//*[@id="app"]/div/div/div/div[2]/div[4]/div[2]/div[1]/canvas'
                     # canvas_xpath = '//div[@class="content-area"]/div[4]//canvas'
                     
@@ -945,49 +1053,15 @@ class NaverThread(QThread):
                         };
                     """, canvas2)
 
-                    # 2) 캔버스 위치/크기 가져오기
-                    rect = driver.execute_script("""
-                        const c = arguments[0].getBoundingClientRect();
-                        return {left: c.left, top: c.top, width: c.width, height: c.height};
-                    """, canvas2)
-
-
-                    left, top, w, h = rect['left'], rect['top'], rect['width'], rect['height']
-                    # V 모양의 첫 번째 선용 포인트 계산
-                    sx, sy = left + w * 0.4, top + h * 0.2        # p1: 좌측 상단
-                    mx, my = left + w * 0.6, top + h * 1.0        # p2: 하단 중간
-                    ex, ey = left + w * 0.8, top + h * 0.2        # p3: 우측 상단
-                    # print(f"Canvas2 정보: {canvas2_info}")
-                    # print(f"left={left}, top={top}, w={w}, h={h}, sx={sx}, sy={sy}, mx={mx}, my={my}, ex={ex}, ey={ey}")
-                    # print(f"lt=[{left},{top}], lb=[{left},{top+h}], rt=[{left+w},{top}], rb=[{left+w},{top+h}]")
-                    
-
-
-                    # 중간 드래그 보강용 포인트 (시작↔끝 중간)
-                    segx12, segy12 = (sx + mx) / 2, (sy + my) / 2
-                    segx23, segy23 = (mx + ex) / 2, (my + ey) / 2
-          
-                    # 🎯 [2026-09-06 수정 — 실사용 중 재현된 버그] canvas1과 동일한 문제 — 계산해둔
-                    # sx,sy/mx,my/ex,ey/segx12,segy12/segx23,segy23 대신 고정 픽셀 좌표를 쓰고 있어서
-                    # "move target out of bounds"로 실패했다. 계산값을 그대로 쓰도록 바꾼다.
-                    actions = ActionChains(driver)
-                    actions.w3c_actions.pointer_action.move_to_location(int(sx), int(sy))
-                    actions.w3c_actions.pointer_action.pointer_down()
-                    actions.w3c_actions.pointer_action.pause(0.05)
-                    actions.w3c_actions.pointer_action.move_to_location(int(segx12), int(segy12))
-                    actions.w3c_actions.pointer_action.move_to_location(int(mx), int(my))
-                    actions.w3c_actions.pointer_action.pointer_up()
-                    actions.perform()
-
-                    actions = ActionChains(driver)
-                    actions.w3c_actions.pointer_action.move_to_location(int(mx), int(my))
-                    actions.w3c_actions.pointer_action.pointer_down()
-                    actions.w3c_actions.pointer_action.move_to_location(int(segx23), int(segy23))
-                    actions.w3c_actions.pointer_action.move_to_location(int(ex), int(ey))
-                    actions.w3c_actions.pointer_action.pointer_up()
-                    actions.perform()
-
-                    print("✅ 매물의뢰인서명날인 완료")
+                    # [2026-09-19 변경 — 사용자 요청 "정상 동작하는 크롬확장의 모양을 그대로"]
+                    # 좌표 3개짜리 반듯한 V(ActionChains) 대신, 정상 동작이 이미 확인된 크롬확장
+                    # (webfax_sign.js)의 손글씨형 서명 그리기 로직을 그대로 가져와 실행한다 — 상세
+                    # 설명은 파일 상단 사람손글씨_체크서명_그리기_JS 주석 참고.
+                    결과 = 사람손글씨로_캔버스에_그리기(driver, canvas2, 'sign')
+                    if 결과.get('drawn'):
+                        print("✅ 매물의뢰인서명날인 완료" + (f" ({결과['note']})" if 결과.get('note') else ""))
+                    else:
+                        print(f"⚠️ 매물의뢰인서명날인 실패 — {결과.get('reason')}")
 
                 except Exception as e:
                     print(f"Canvas 서명 오류: {e}")
@@ -1674,7 +1748,7 @@ class NaverThread(QThread):
                 #정상적으로 로그인된 상태가 될 때까지 대기
                 WebDriverWait(driver, 10).until(
                     EC.text_to_be_present_in_element(
-                        (By.XPATH, '//*[@id="app"]/div/div/header/div/div[2]/button[1]/span[3]/span[2]'), 
+                        (By.XPATH, '//*[@id="app"]/div/div/header/div/div[2]/button[1]/span[3]/span[2]'),
                         부동산상호명
                     )
                 )
@@ -1917,7 +1991,8 @@ class NaverThread(QThread):
                     else:
                         print(f"메모에 '모바일확인V2'가 포함되어있습니다.\n등록된 메모:{등록된메모}")
                         # pyautogui.alert(f"메모에 '모바일확인V2'가 포함되어있습니다.\n\n등록된 메모:{등록된메모}")
-                    if 동의결과_msg != "200": 
+
+                    if 동의결과_msg != "200":
                         연장결과_msg += 동의결과_msg
                         pyautogui.alert(f"동의결과_msg: {동의결과_msg}")
                     # [2026-09-15 매물등록_최종제출()로 추출 — 사용자 요청 "간편재등록에도 재사용"]
