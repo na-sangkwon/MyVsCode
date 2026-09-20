@@ -127,7 +127,13 @@ PASS_THROUGH_TITLES = ['용도 및 추가사항 선택', '등기기록유형 선
                        # 쓰는 _handle_duplicate_payment_screen()의 "이동"(기존 결제건으로 갈아타기)은
                        # 여기서는 쓰지 않는다 — 지금 조회 중인 매물의 등기상주소·소유주를 못 읽게 될 수
                        # 있기 때문이다(이 함수는 결제 버튼 자체를 안 누르므로 "다음"으로 넘겨도 안전하다).
-                       '중복결제 확인']
+                       '중복결제 확인',
+                       # [2026-09-20 추가 — 실사용 재현으로 확인, 매물 854687/909667] "이용하시기전
+                       # 확인하세요" — 등기소가 보여주는 이용안내 화면으로, 나타나는 지점이 고정돼있지
+                       # 않다(캡차 로그인 직후에도, 등록번호 공개여부 확인 이후에도 각각 관찰됨 —
+                       # "외부사이트 화면 다양성" 원칙대로 특정 지점 하나로 가정하지 않는다). 처음
+                       # 발견됐을 때(854687)는 이 목록에 없어 "예상하지 못한 화면"으로 실패했었다.
+                       '이용하시기전 확인하세요']
 PAYMENT_TITLES = ['결제대상 확인']
 
 # [2026-09-07 신규] 결제 버튼을 누른 뒤 사람이 직접 누를 때까지 기다리는 최대 시간(초) —
@@ -595,10 +601,17 @@ def verify_register_target(driver, payload, credentials=None):
 def _pick_kind_cls_radio(driver, radio_id_fragment, property_category, _fail):
     """부동산구분 라디오(집합건물/토지/건물)를 라벨 텍스트로 찾아 클릭한다 — 소재지번검색
     (rad_loc_kind_cls)과 간편검색(rad_smpl_kind_cls)이 각자 부르는 공용 로직(2026-09-14 정리,
-    로직은 기존과 동일 — 두 검색 방식으로 갈라지면서 중복될 뻔한 걸 공용 함수로 뺐다)."""
-    picked = False
-    seen_labels = []
+    로직은 기존과 동일 — 두 검색 방식으로 갈라지면서 중복될 뻔한 걸 공용 함수로 뺐다).
+
+    [2026-09-20 재설계 — 사용자 실측 재현으로 확인, 매물 909667] 예전엔 라디오를 DOM 순서대로 하나씩
+    보면서 "정확히 일치"와 "토지+건물 통합 폴백"을 같은 우선순위로 검사해, 화면에 "토지"가 정확히
+    있는데도 그보다 먼저 나온 "토지+건물"을 먼저 찾으면 그대로 선택하고 멈췄다(라이브 화면 캡처로
+    확인 — 실제로는 토지+건물/집합건물/토지/건물 4개가 다 있었는데 첫 번째 것을 집어버림). 화면에
+    있는 라디오를 전부 먼저 모아본 뒤, ①정확히 일치하는 라벨을 최우선으로 찾고, ②그런 라벨이 화면에
+    아예 없을 때만(2026-09-08에 실측된, 토지/건물이 "토지+건물"로 합쳐져 나오는 화면) 통합 라벨로
+    폴백하는 2단계로 바꾼다."""
     _dismiss_alert_if_present(driver)
+    candidates = []  # [(radio_element, label_element, label_text), ...]
     for r in driver.find_elements(By.CSS_SELECTOR, f'#{BASE} input[type="radio"]'):
         rid = r.get_attribute('id') or ''
         if radio_id_fragment not in rid:
@@ -607,36 +620,37 @@ def _pick_kind_cls_radio(driver, radio_id_fragment, property_category, _fail):
             label = driver.find_element(By.CSS_SELECTOR, f'label[for="{rid}"]')
         except NoSuchElementException:
             continue
-        label_text = label.text.strip()
-        seen_labels.append(label_text)
-        # [2026-09-08 변경 — 실측으로 확인] 이 라디오 항목이 항상 "토지"/"건물"/"집합건물" 3개로
-        # 나오는 게 아니라, 어떤 때는 "토지+건물"(둘을 합친 하나) / "집합건물" 2개로만 나온다(실측
-        # 화면캡처로 확인, 2026-09-08) — "외부사이트 화면 다양성" 원칙대로 라벨이 고정돼있다고
-        # 가정하지 않고, 대상이 토지/건물이면 "토지+건물"도 같이 인정한다.
-        is_match = (
-            label_text == property_category
-            or (property_category in ('토지', '건물') and label_text == '토지+건물')
-        )
-        if is_match:
-            # [2026-09-19 추가 — 실사용 재현으로 확인] 아래 클릭이 예외 없이 끝나도 실제로 라디오가
-            # 선택됐는지 확인 안 하고 넘어갔다 — 부동산 선택 체크박스(rad_sel)에서 같은 유형의 문제가
-            # 실측으로 확인된 적이 있어(주석 참고, 클릭은 "성공한 것처럼" 끝나도 그리드 내부 선택
-            # 상태가 안 바뀔 때가 있음) 여기도 클릭 후 확인·재시도를 추가한다. 새 클릭 방식을 따로
-            # 만들지 않고 _click_with_fallback()을 그대로 다시 쓴다 — 그 함수는 항상 진짜 마우스
-            # 이벤트(표준 click → ActionChains)를 먼저 쓰고 execute_script는 최후의 수단으로만 써서,
-            # 반복 호출해도 기계적인 강제 클릭이 새로 늘어나지 않는다.
-            for _ in range(2):
-                _click_with_fallback(driver, label)
-                time.sleep(0.3)
-                if r.is_selected():
-                    break
-            if not r.is_selected():
-                return _fail(f'부동산구분 "{property_category}" 라디오를 클릭했지만 선택 상태가 되지 않았습니다.')
-            picked = True
+        candidates.append((r, label, label.text.strip()))
+    seen_labels = [c[2] for c in candidates]
+
+    target = None
+    for r, label, label_text in candidates:
+        if label_text == property_category:
+            target = (r, label, label_text)
             break
-    if not picked:
+    if target is None and property_category in ('토지', '건물'):
+        for r, label, label_text in candidates:
+            if label_text == '토지+건물':
+                target = (r, label, label_text)
+                break
+    if target is None:
         return _fail(f'부동산구분 "{property_category}" 항목을 찾지 못했습니다 — 실제 화면에 있던 항목: {seen_labels}')
-    print(f'[진행] 부동산구분 "{property_category}" 선택 완료 (화면 항목: {seen_labels})', flush=True)
+
+    r, label, label_text = target
+    # [2026-09-19 추가 — 실사용 재현으로 확인] 아래 클릭이 예외 없이 끝나도 실제로 라디오가 선택됐는지
+    # 확인 안 하고 넘어갔다 — 부동산 선택 체크박스(rad_sel)에서 같은 유형의 문제가 실측으로 확인된
+    # 적이 있어(주석 참고, 클릭은 "성공한 것처럼" 끝나도 그리드 내부 선택 상태가 안 바뀔 때가 있음)
+    # 여기도 클릭 후 확인·재시도를 추가한다. 새 클릭 방식을 따로 만들지 않고 _click_with_fallback()을
+    # 그대로 다시 쓴다 — 그 함수는 항상 진짜 마우스 이벤트(표준 click → ActionChains)를 먼저 쓰고
+    # execute_script는 최후의 수단으로만 써서, 반복 호출해도 기계적인 강제 클릭이 새로 늘어나지 않는다.
+    for _ in range(2):
+        _click_with_fallback(driver, label)
+        time.sleep(0.3)
+        if r.is_selected():
+            break
+    if not r.is_selected():
+        return _fail(f'부동산구분 "{property_category}" 라디오를 클릭했지만 선택 상태가 되지 않았습니다.')
+    print(f'[진행] 부동산구분 "{property_category}" 선택 완료 (화면 항목: {seen_labels}, 실제 선택: {label_text})', flush=True)
     time.sleep(0.2)
     return None
 
@@ -889,6 +903,10 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
             _prefill_login_page_credentials(driver, credentials)
             if not _wait_for_human_to_clear_captcha(driver):
                 return _fail('로그인화면 캡차 입력 대기시간을 초과했습니다.')
+            # [2026-09-20 추가 — 사용자 지적] "로그인 후엔 빈 화면만 남는다"는 게 확인 안 된 추측이었다
+            # — 실제로 어떤 화면인지 남겨서, 나중에 "처음부터 다시" 대신 이 화면에서 바로 이어갈 수
+            # 있는지 판단할 근거로 쓴다(지금 당장은 판단만 하고 동작은 안 바꾼다).
+            print(f'[진행] 캡차 해소 직후 화면 제목={_visible_section_titles(driver)}, url={driver.current_url}', flush=True)
             print('[진행] 로그인 완료 확인 — 검색을 처음부터 다시 시도', flush=True)
             fail = run_search_once()
             if fail is not None:
