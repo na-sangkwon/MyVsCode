@@ -885,8 +885,16 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
     # [2026-09-18 추가 — 사용자 발견, 실사용 재현으로 확인] 등기소가 반복된 자동화 접속을 감지해
     # 검색 버튼을 누르면 결과 대신 로그인화면(캡차 포함)으로 튕기기 시작했다(원래 조회 단계는 로그인이
     # 필요 없었다 — 위 함수 안내 주석 ② 참고). 홈 접속부터 검색 제출까지를 한 덩어리로 묶어, 캡차를
-    # 만나면 사람이 로그인을 마친 뒤 처음부터 한 번 더 시도할 수 있게 한다(로그인 화면으로 튕기면
-    # 입력해둔 검색 폼 상태가 사라지므로, 중간부터 이어갈 방법이 없다).
+    # 만나면 사람이 로그인을 마친 뒤 이어갈 수 있게 한다.
+    def run_search_dispatch():
+        # [2026-09-14 변경 — 사용자 발견, 실사용 재현으로 확인] 간편검색은 집합건물의 "동 정보 공백"
+        # 문제는 풀어주지만, 토지·일반건물에서는 부번 없는 지번일 때 오히려 여러 건물을 한꺼번에 찾아버려
+        # 새 문제가 됐다 — "간편검색이 항상 더 낫다"가 아니라 "집합건물만 간편검색이 필요"했던 것.
+        # 부동산구분에 따라 검색 방식 자체를 가른다.
+        if property_category == '집합건물':
+            return _search_via_simple_search(driver, wait, payload, property_category, loc, _fail)
+        return _search_via_location_search(driver, wait, payload, property_category, loc, _fail)
+
     def run_search_once():
         print('[진행] 등기소 홈 접속 시도', flush=True)
         if not _navigate_home(driver):
@@ -903,21 +911,34 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
             _prefill_login_page_credentials(driver, credentials)
             if not _wait_for_human_to_clear_captcha(driver):
                 return _fail('로그인화면 캡차 입력 대기시간을 초과했습니다.')
-            # [2026-09-20 추가 — 사용자 지적] "로그인 후엔 빈 화면만 남는다"는 게 확인 안 된 추측이었다
-            # — 실제로 어떤 화면인지 남겨서, 나중에 "처음부터 다시" 대신 이 화면에서 바로 이어갈 수
-            # 있는지 판단할 근거로 쓴다(지금 당장은 판단만 하고 동작은 안 바꾼다).
-            print(f'[진행] 캡차 해소 직후 화면 제목={_visible_section_titles(driver)}, url={driver.current_url}', flush=True)
-            print('[진행] 로그인 완료 확인 — 검색을 처음부터 다시 시도', flush=True)
-            fail = run_search_once()
-            if fail is not None:
-                return fail
-        # [2026-09-14 변경 — 사용자 발견, 실사용 재현으로 확인] 간편검색은 집합건물의 "동 정보 공백"
-        # 문제는 풀어주지만, 토지·일반건물에서는 부번 없는 지번일 때 오히려 여러 건물을 한꺼번에 찾아버려
-        # 새 문제가 됐다 — "간편검색이 항상 더 낫다"가 아니라 "집합건물만 간편검색이 필요"했던 것.
-        # 부동산구분에 따라 검색 방식 자체를 가른다.
-        if property_category == '집합건물':
-            return _search_via_simple_search(driver, wait, payload, property_category, loc, _fail)
-        return _search_via_location_search(driver, wait, payload, property_category, loc, _fail)
+            titles = _visible_section_titles(driver)
+            print(f'[진행] 캡차 해소 직후 화면 제목={titles}, url={driver.current_url}', flush=True)
+            # [2026-09-20 재설계 — 사용자 요청 "이어서 진행"] 예전엔 여기서 무조건 처음부터 다시
+            # 시작했다(그리고 재귀호출 뒤에도 return 없이 아래로 흘러내려가 검색을 또 한 번 더
+            # 실행하는 버그까지 있었다 — 로그에 탭클릭→입력→검색 전체가 두 번 찍히는 걸로 실측
+            # 확인됨). 실측해보니 캡차 해소 직후 화면은 "이용하시기전 확인하세요" 같은 통과 가능한
+            # 안내 화면(PASS_THROUGH_TITLES)이었다 — 그 화면들만 [다음]으로 넘겨서 검색 탭이 다시
+            # 보이면 그 자리에서 바로 이어가고, 안 보이면(다른 화면이거나 몇 번 넘겨도 안 됨) 그때만
+            # 안전하게 처음부터 다시 시도한다(계속 확실하게 성공해온 경로라 안전망으로 남긴다).
+            for _ in range(5):
+                titles = _visible_section_titles(driver)
+                if not titles or not any(t in PASS_THROUGH_TITLES for t in titles):
+                    break
+                nb = _next_button(driver)
+                if not nb:
+                    break
+                print(f'[진행] 캡차 이후 안내 화면 통과 시도 — {titles}', flush=True)
+                _click_with_fallback(driver, nb)
+                time.sleep(1.2)
+            if _find_first_visible(driver, [
+                f'#{BASE}_tac_rlrg_appl_tab_tab_smpl_srch_tabHTML',
+                f'#{BASE}_tac_rlrg_appl_tab_tab_loc_srch_tabHTML',
+            ]):
+                print('[진행] 안내 화면을 통과해 검색 화면으로 바로 이어감 — 처음부터 다시 시작하지 않음', flush=True)
+                return run_search_dispatch()
+            print('[진행] 검색 화면으로 바로 이어가지 못함 — 처음부터 다시 시도', flush=True)
+            return run_search_once()
+        return run_search_dispatch()
 
     fail = run_search_once()
     if fail is not None:
