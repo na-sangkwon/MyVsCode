@@ -625,6 +625,28 @@ def 테스트매물_정보조회(새홈번호_목록):
     return request_codes
 
 
+def 테스트_새홈번호별_오방당근코드_조회(새홈번호_목록):
+    """
+    [단독/다중 테스트 모드 전용] "당근 1건" 같은 합계만으로는 입력한 새홈번호 중 어느 것이
+    실제로 그 플랫폼에 존재하는지 알 수 없다(예: 당근 광고 자체가 없는 매물) — obangData의
+    업데이트/거래완료 목록과 대조해 새홈번호별로 어느 트랙에 속하는지 보여주기 위해, 새홈번호별
+    오방코드/당근코드만 조회한다(주소/가격 조회는 obang_data()가 이미 하므로 중복하지 않는다).
+    """
+    if not 새홈번호_목록: return {}, {}
+    conn = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', database='obangkr', charset='utf8')
+    cursor = conn.cursor()
+    자리표시자 = ",".join(["%s"] * len(새홈번호_목록))
+    cursor.execute(f"SELECT object_code_new, object_code_obang FROM pr_object WHERE object_code_new IN ({자리표시자})", tuple(새홈번호_목록))
+    새홈_오방코드 = {str(r[0]): str(r[1] or '').strip() for r in cursor.fetchall()}
+    cursor.execute(
+        f"SELECT object_code_new, ad_code FROM pr_externalad WHERE ad_site='당근' AND ad_del='N' AND object_code_new IN ({자리표시자})",
+        tuple(새홈번호_목록)
+    )
+    새홈_당근코드 = {str(r[0]): str(r[1]) for r in cursor.fetchall()}
+    cursor.close(); conn.close()
+    return 새홈_오방코드, 새홈_당근코드
+
+
 # 🎯 [2026-09-06 통합] 당근 루프 검증 단계 전용 디버그 로그 — auto.py는 GUI 경로에 별도
 # 로그파일이 없어서(콘솔 print만 있음), 이 신규 통합 지점만이라도 나중에 원인 추적이 가능하게
 # 독립된 로그 파일을 둔다. cwd에 따라 엉뚱한 위치에 생기지 않도록 이 파일 자신의 위치 기준
@@ -888,6 +910,24 @@ def update_start():
             print(f"   [🎯 테스트 대상 확정] 오방 {오방_업데이트_건수 + 오방_거래완료_건수}건(업데이트:{오방_업데이트_건수}/거래완료:{오방_거래완료_건수}) "
                   f"/ 당근 {당근_업데이트_건수 + 당근_거래완료_건수}건(업데이트:{당근_업데이트_건수}/거래완료:{당근_거래완료_건수}) "
                   f"— ※ 작업 모드가 [{작업모드_한글(target_mode)}]이므로, 이 중 해당 트랙만 실제 실행됩니다.")
+
+            # [처리결과 가시화] "당근 1건" 같은 합계만으로는 입력한 번호 중 어느 게 그 플랫폼에
+            # 아예 없는지 알 수 없다(691813처럼 당근 광고 자체가 없는 경우가 실제로 있었다) —
+            # 새홈번호 하나하나가 각 플랫폼 어느 트랙에 속하는지(또는 아예 없는지) 직접 보여준다.
+            새홈_오방코드, 새홈_당근코드 = 테스트_새홈번호별_오방당근코드_조회(테스트_새홈번호_목록)
+            print("   [🔍 새홈번호별 상세]")
+            for 번호 in 테스트_새홈번호_목록:
+                오방코드 = 새홈_오방코드.get(번호, '')
+                당근코드 = 새홈_당근코드.get(번호, '')
+                if not 오방코드: 오방상태 = "오방코드 없음"
+                elif 오방코드 in obangData.get('업데이트매물', []): 오방상태 = f"업데이트 대상(코드:{오방코드})"
+                elif 오방코드 in obangData.get('거래완료매물', []): 오방상태 = f"거래완료 대상(코드:{오방코드})"
+                else: 오방상태 = f"코드는 있으나({오방코드}) 두 목록 어디에도 없음 — 확인 필요"
+                if not 당근코드: 당근상태 = "당근 광고 없음"
+                elif 당근코드 in obangData.get('당근_업데이트목록', []): 당근상태 = f"업데이트 대상(코드:{당근코드})"
+                elif 당근코드 in obangData.get('당근_거래완료목록', []): 당근상태 = f"거래완료 대상(코드:{당근코드})"
+                else: 당근상태 = f"코드는 있으나({당근코드}) 두 목록 어디에도 없음 — 확인 필요"
+                print(f"      · {번호} — 오방: {오방상태} | 당근: {당근상태}")
 
         # 🎯 프리뷰 창에서 [이대로 작업 개시]를 누르면 True가 반환되어 루프를 깨고 탈출합니다.
         if show_update_preview(obangData, before_day, user_settings):
