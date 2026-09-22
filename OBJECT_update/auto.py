@@ -821,8 +821,9 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
             # 합친다. 일반 배치 실행에서는 오방_미등록_건수가 없어(0) nf_ok만 그대로 쓰인다.
             오방_미등록_합계 = nf_ok + obangData.get('오방_미등록_건수', 0)
             오방_총건수 = u_ok + e_ok + s_ok + err_ok + 오방_미등록_합계
-            counts['오방_요약'] = f"총 {오방_총건수}건 — 성공:{u_ok} 재등록:{r_ok} 비공개:{e_ok} 건너뜀:{s_ok} 실패:{err_ok} 미등록:{오방_미등록_합계}"
-            progress_callback('obang', 100, 100, f"✅ 오방 업데이트 완료 V \n(총 {오방_총건수}건 - 성공:{u_ok} , 재등록:{r_ok} , 비공개:{e_ok} , 건너뜀:{s_ok} , 실패:{err_ok} , 미등록:{오방_미등록_합계}개)", 'determinate')
+            # (총N건) 형태로 앞자리를 줄여서 진행 대시보드 라벨 한 줄에 다 들어오게 한다.
+            counts['오방_요약'] = f"(총{오방_총건수}건) 성공:{u_ok} 재등록:{r_ok} 비공개:{e_ok} 건너뜀:{s_ok} 실패:{err_ok} 미등록:{오방_미등록_합계}"
+            progress_callback('obang', 100, 100, f"✅ 오방 업데이트 완료 V \n(총{오방_총건수}건) 성공:{u_ok} 재등록:{r_ok} 비공개:{e_ok} 건너뜀:{s_ok} 실패:{err_ok} 미등록:{오방_미등록_합계}", 'determinate')
         else:
             progress_callback('obang', 0, 100, "⏭️ 오방부동산 스킵됨", 'determinate')
 
@@ -841,10 +842,11 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
             # 동일하게 "미등록"으로 합산한다 — 그래야 총건수가 조회한 새홈번호 수와 정확히 맞는다.
             당근_미등록_건수 = obangData.get('당근_미등록_건수', 0)
             당근_총건수 = cc + eo + so + err_c + 당근_미등록_건수
-            counts['당근_요약'] = f"총 {당근_총건수}건 — 끌올:{ro + ho}(일반{ro}/숨김해제{ho}) 수정:{uo} 비공개:{eo} 건너뜀:{so} 실패:{err_c} 미등록:{당근_미등록_건수}"
+            # (총N건) 형태로 앞자리를 줄여서 진행 대시보드 라벨 한 줄에 다 들어오게 한다.
+            counts['당근_요약'] = f"(총{당근_총건수}건) 끌올:{ro + ho}(일반{ro}/숨김해제{ho}) 수정:{uo} 비공개:{eo} 건너뜀:{so} 실패:{err_c} 미등록:{당근_미등록_건수}"
             progress_callback(
                 'carrot', 100, 100,
-                f"✅ 당근 업데이트 완료 V \n(총 {당근_총건수}건 - 끌올 {ro + ho}건 [일반 {ro} / 숨김해제 {ho}] , 수정:{uo} , 비공개:{eo} , 건너뜀:{so} , 실패:{err_c} , 미등록:{당근_미등록_건수}개)",
+                f"✅ 당근 업데이트 완료 V \n(총{당근_총건수}건) 끌올:{ro + ho}(일반{ro}/숨김해제{ho}) 수정:{uo} 비공개:{eo} 건너뜀:{so} 실패:{err_c} 미등록:{당근_미등록_건수}",
                 'determinate'
             )
 
