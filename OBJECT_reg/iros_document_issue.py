@@ -979,8 +979,18 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
         # 대신 도로명주소검색(_search_via_road_address)을 쓴다 — 간편검색은 담당자가 등록한 건물명에
         # 의존하는데, 등기부상 건물명이 그와 달라 0건이 나온 사례가 발견됐다(위 함수 docstring 참고).
         # 도로명주소는 국가 부여값이라 이 불일치가 없다.
+        # [2026-09-22 추가 — 실사용 재현으로 확인] road_search가 비어있는 경로가 실제로 있다
+        # (예: document_issue_test.php의 "주소 직접입력" 모드는 지번주소만 파싱해서 넘기고
+        # road_search 자체를 계산하지 않는다 — 그 경로를 고치는 건 이 자동화 스크립트의 책임 밖이다).
+        # 도로명 정보가 없는 채로 도로명주소검색을 시도하면 "시/도 옵션을 찾지 못했습니다"처럼
+        # 엉뚱한 지점에서 알아보기 힘든 에러로 죽는다 — road_name/road_building_no가 둘 다 있을
+        # 때만 도로명주소검색을 쓰고, 없으면 예전에 쓰던 간편검색으로 안전하게 돌아간다.
         if property_category == '집합건물':
-            return _search_via_road_address(driver, wait, payload, property_category, payload.get('road_search') or {}, _fail)
+            road_loc = payload.get('road_search') or {}
+            if road_loc.get('road_name') and road_loc.get('road_building_no'):
+                return _search_via_road_address(driver, wait, payload, property_category, road_loc, _fail)
+            print('[진행] road_search 데이터 없음 — 간편검색으로 대체', flush=True)
+            return _search_via_simple_search(driver, wait, payload, property_category, loc, _fail)
         return _search_via_location_search(driver, wait, payload, property_category, loc, _fail)
 
     def run_search_once():
