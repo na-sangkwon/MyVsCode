@@ -46,6 +46,11 @@ class ObangAutomationWorker:
         # 사라졌다 — 전체 대상건수와 집계 합계가 안 맞아도 원인을 알 길이 없었다. 이 카운트는
         # 그런 "설명되지 않는 예외"만 별도로 세어 완료 메시지에 드러낸다.
         self.error_count = 0
+        # [처리결과 가시화] 거래완료 비공개 대상(DB완료_set)인데 "공개 상태 매물만" 보여주는
+        # 검색 화면에 애초에 안 잡혀서(이미 비공개 처리돼 있는 등) 성공/스킵/실패 어디에도
+        # 안 남던 건수 — 단독 테스트로 이미 완료된 매물 1건만 넣었는데 결과가 통째로 사라져서
+        # "왜 하나도 표시가 안 되냐"는 질문이 나온 게 계기.
+        self.not_found_count = 0
 
     def _경고_또는_로그(self, message):
         """ 수동 모드는 기존처럼 알림창으로 사람에게 묻고, 무인 모드는 로그로만 남기고 계속 진행한다. """
@@ -147,7 +152,7 @@ class ObangAutomationWorker:
         DB완료_set = set(str(x).strip() for x in (self.data.get('거래완료매물') or []) if str(x).strip())
         총성공, 총스킵, 총실패 = [], [], []
         페이지 = 1
-        
+
         while True:
             print(f"\n=== [{페이지}페이지] 비공개 처리 시작 ===")
             if self.progress_callback:
@@ -161,7 +166,14 @@ class ObangAutomationWorker:
             이동됨 = self.다음페이지로_이동(timeout=timeout)
             if not 이동됨: break
             페이지 += 1
-        return {"성공": 총성공, "이미비공개": 총스킵, "실패": 총실패}
+
+        # [처리결과 가시화] 검색 화면 자체가 "공개 상태인 매물만" 보여주도록 필터돼 있어서
+        # (process_closures()가 #only_public='public'로 걸어둔다), DB완료_set에 있는 매물이
+        # 이미 비공개 처리돼 있거나 어떤 이유로든 목록에 전혀 안 잡히면 성공/스킵/실패 어디에도
+        # 안 남고 조용히 사라졌다 — 페이지를 다 훑고도 못 찾은 나머지를 명시적으로 집계한다.
+        전체_처리된_집합 = set(총성공) | set(총스킵) | set(총실패)
+        총미발견 = sorted(DB완료_set - 전체_처리된_집합)
+        return {"성공": 총성공, "이미비공개": 총스킵, "실패": 총실패, "미발견": 총미발견}
 
     def 메모에마크추가(self, 메모, 마크='-- '):
         if not 메모: return ""            
@@ -549,6 +561,10 @@ class ObangAutomationWorker:
         # 중 몇 건이 실패했는지 알 방법이 없었다.
         self.skip_count += len(결과.get("이미비공개", []))
         self.error_count += len(결과.get("실패", []))
+        미발견_목록 = 결과.get("미발견", [])
+        self.not_found_count += len(미발견_목록)
+        if 미발견_목록:
+            print(f"   [⚠️ 거래완료 대상 미발견] 오방코드 {미발견_목록} — 검색화면(공개 매물만 표시)에서 못 찾음. 이미 비공개 처리돼 있거나 매물번호가 존재하지 않을 수 있습니다.")
 
     def login_and_navigate(self):
         self.driver.implicitly_wait(10)
@@ -609,4 +625,4 @@ class ObangAutomationWorker:
         self.login_and_navigate() 
         if self.mode in ['all', 'update_only']: self.process_updates()
         if self.mode in ['all', 'close_only']: self.process_closures()
-        return self.complete_count, self.restart_ok, self.update_ok, self.end_ok, self.skip_count, self.error_count
+        return self.complete_count, self.restart_ok, self.update_ok, self.end_ok, self.skip_count, self.error_count, self.not_found_count

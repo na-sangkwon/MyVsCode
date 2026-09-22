@@ -698,8 +698,17 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
     # 않는 예외" 건수 — 예전엔 이게 집계 자체가 없어 조용히 사라졌다. '오방_요약'/'당근_요약'은
     # 무인모드가 지금까지 오방+당근을 합산해 하나의 숫자로만 보여주던 것을(어느 플랫폼이
     # 문제였는지 구분 불가) 플랫폼별로 나눠 보여줄 수 있도록, 완료 직후 이 함수 안에서
-    # 바로 조립해 둔다(GUI 최종화면/무인모드 로그 양쪽이 재사용).
-    counts = {'complete': 0, 'restart': 0, 'update': 0, 'end': 0, 'skip': 0, 'error': 0, '오방_요약': None, '당근_요약': None}
+    # 바로 조립해 둔다(GUI 최종화면/무인모드 로그 양쪽이 재사용). 둘 다 처음부터 "선택 안 함"으로
+    # 채워두고, 선택된 경우에만 실제 결과로 덮어쓴다 — 플랫폼을 아예 선택 안 한 것과 결과 조립을
+    # 깜빡한 것을 구분 못 하는 일이 없게(직접 겪음: "결과가 1개만 보이는데 왜?"라는 질문이 나왔던
+    # 이유 중 하나가 당근을 선택 안 했는데도 완료화면에 당근 관련 언급이 아예 없어서였다).
+    작업모드_표시 = {"all": "전체 실행", "update_only": "신규/수정 업데이트만 실행", "close_only": "거래완료(비공개) 처리만 실행"}.get(target_mode, target_mode)
+    counts = {
+        'complete': 0, 'restart': 0, 'update': 0, 'end': 0, 'skip': 0, 'error': 0,
+        '작업모드': 작업모드_표시,
+        '오방_요약': "선택 안 함(스킵됨)", '당근_요약': "선택 안 함(스킵됨)",
+    }
+    print(f"   [⚙️ 작업 모드] {작업모드_표시} | 오방:{'실행' if user_settings['obang'] else '건너뜀'} 당근:{'실행' if user_settings['carrot'] else '건너뜀'}")
 
     options = Options()
     profile_path = os.path.join(os.getcwd(), "daangn_profile")
@@ -742,10 +751,10 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
                 progress_callback=lambda c, t, txt, mode='determinate': progress_callback('obang', c, t, txt, mode),
                 unattended=unattended
             )
-            c_count, r_ok, u_ok, e_ok, s_ok, err_ok = obang_worker.run()
+            c_count, r_ok, u_ok, e_ok, s_ok, err_ok, nf_ok = obang_worker.run()
             counts['complete'] += c_count; counts['restart'] += r_ok; counts['update'] += u_ok; counts['end'] += e_ok; counts['skip'] += s_ok; counts['error'] += err_ok
-            counts['오방_요약'] = f"성공:{u_ok} 재등록:{r_ok} 비공개:{e_ok} 건너뜀:{s_ok} 실패:{err_ok}"
-            progress_callback('obang', 100, 100, f"✅ 오방 업데이트 완료 V \n(성공:{u_ok} , 재등록:{r_ok} , 비공개:{e_ok} , 건너뜀:{s_ok} , 실패:{err_ok}개)", 'determinate')
+            counts['오방_요약'] = f"성공:{u_ok} 재등록:{r_ok} 비공개:{e_ok} 건너뜀:{s_ok} 실패:{err_ok} 미발견:{nf_ok}"
+            progress_callback('obang', 100, 100, f"✅ 오방 업데이트 완료 V \n(성공:{u_ok} , 재등록:{r_ok} , 비공개:{e_ok} , 건너뜀:{s_ok} , 실패:{err_ok} , 미발견:{nf_ok}개)", 'determinate')
         else:
             progress_callback('obang', 0, 100, "⏭️ 오방부동산 스킵됨", 'determinate')
 
@@ -925,13 +934,16 @@ def update_start():
 
             # [처리결과 가시화] 완료 안내문 한 줄로는 실제로 몇 건이 어떻게 처리됐는지 알 수 없어,
             # 진행 중 스쳐 지나간 플랫폼별 라벨(오방_요약/당근_요약)을 최종 화면에도 그대로
-            # 다시 보여준다 — 플랫폼을 선택하지 않았으면 해당 줄은 아예 만들지 않는다.
-            요약_줄들 = []
-            if counts.get('오방_요약'): 요약_줄들.append(f"🟠 오방부동산 — {counts['오방_요약']}")
-            if counts.get('당근_요약'): 요약_줄들.append(f"🥕 당근부동산 — {counts['당근_요약']}")
-            if 요약_줄들:
-                lbl_summary = tk.Label(dash_win, text="\n".join(요약_줄들), font=("Malgun Gothic", 10), fg="#333333", justify="left")
-                lbl_summary.pack(pady=(0, 10))
+            # 다시 보여준다. 어떤 작업 모드로 실행됐는지, 플랫폼을 아예 선택 안 한 건지(그래서
+            # 결과가 없는 건지) 매번 물어보지 않아도 알 수 있게 둘 다 항상 표시한다.
+            lbl_mode = tk.Label(dash_win, text=f"⚙️ 작업 모드: {counts.get('작업모드', '?')}", font=("Malgun Gothic", 10, "bold"), fg="#555555")
+            lbl_mode.pack(pady=(0, 4))
+            요약_줄들 = [
+                f"🟠 오방부동산 — {counts.get('오방_요약')}",
+                f"🥕 당근부동산 — {counts.get('당근_요약')}",
+            ]
+            lbl_summary = tk.Label(dash_win, text="\n".join(요약_줄들), font=("Malgun Gothic", 10), fg="#333333", justify="left")
+            lbl_summary.pack(pady=(0, 10))
 
             btn_frame = tk.Frame(dash_win)
             btn_frame.pack(pady=5)
@@ -1046,9 +1058,10 @@ def run_unattended(log_path):
         counts = run_platform_workers(obangData, target_mode, user_settings, progress_callback, unattended=True)
         # [처리결과 가시화] 예전엔 오방+당근을 합산한 숫자 하나만 남겨서, 카드에 "성공:30"이
         # 찍혀도 오방 30/당근 0인지 15/15인지 구분할 방법이 없었다 — 플랫폼별 요약(오방_요약/
-        # 당근_요약, run_platform_workers가 만들어둔 것)을 선택된 플랫폼만 줄바꿈으로 이어붙인다.
-        플랫폼별_요약_목록 = [s for s in (counts.get('오방_요약'), counts.get('당근_요약')) if s]
-        summary = " | ".join(플랫폼별_요약_목록) if 플랫폼별_요약_목록 else "처리 대상 없음"
+        # 당근_요약, run_platform_workers가 만들어둔 것)을 항상 같이 남긴다(선택 안 한 플랫폼도
+        # "선택 안 함(스킵됨)"으로 명시돼 있어 결과가 비어있는 이유를 따로 물을 필요가 없다).
+        # 작업모드(전체/업데이트만/거래완료만)도 같이 남겨 어떤 범위로 실행됐는지 바로 알 수 있게 한다.
+        summary = f"[모드: {counts.get('작업모드', '?')}] 🟠오방 — {counts.get('오방_요약')} | 🥕당근 — {counts.get('당근_요약')}"
         log(f"✅ 무인 업데이트 사이클 완료 — {summary}")
         write_run_log('success', summary)
     except Exception:
