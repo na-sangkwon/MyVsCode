@@ -294,12 +294,41 @@ def show_update_preview(data, before_day, user_settings):
         tree.heading(col, text=text)
         tree.column(col, width=130 if col == "platform" else 110, anchor="center")
 
+    # [처리결과 가시화] 신규등록/금일등록/미등록의뢰/관심수정/일반수정은 "업데이트" 트랙,
+    # 거래완료는 "거래완료" 트랙 결과다 — 작업 모드가 한쪽만 실행하도록 돼 있으면 실행 안 될
+    # 트랙의 칸은 실제 값이 아니라 "—"(제외)로 표시한다. 값을 그대로 보여주면 "실제로 0건"인지
+    # "이 모드에서는 애초에 안 도는 트랙"인지 구분이 안 돼, 완료 후 결과와 비교할 때 마치
+    # 어긋난 것처럼 보인다(147558/691813 테스트에서 실제로 겪은 혼란).
+    실행모드 = user_settings.get('mode', 'all')
+    업데이트_실행됨 = 실행모드 in ('all', 'update_only')
+    거래완료_실행됨 = 실행모드 in ('all', 'close_only')
+    제외표시 = "— (모드 제외)"
+
     # 🔥 [클리닝 패치] 사용자가 체크박스에서 활성화한 플랫폼의 로우(Row)만 프리뷰 표에 인서트합니다!
     if user_settings['obang']:
-        tree.insert("", "end", values=("오방부동산", len(data.get('신규등록매물', [])), len(data.get('금일등록매물', [])), data.get('미등록의뢰수', 0), len(data.get('업데이트매물_관심', [])), len(data.get('업데이트매물_일반', [])), len(data.get('거래완료매물', []))))
-        
+        tree.insert("", "end", values=(
+            "오방부동산",
+            len(data.get('신규등록매물', [])) if 업데이트_실행됨 else 제외표시,
+            len(data.get('금일등록매물', [])) if 업데이트_실행됨 else 제외표시,
+            data.get('미등록의뢰수', 0) if 업데이트_실행됨 else 제외표시,
+            len(data.get('업데이트매물_관심', [])) if 업데이트_실행됨 else 제외표시,
+            len(data.get('업데이트매물_일반', [])) if 업데이트_실행됨 else 제외표시,
+            len(data.get('거래완료매물', [])) if 거래완료_실행됨 else 제외표시,
+        ))
+
     if user_settings['carrot']:
-        tree.insert("", "end", values=("당근부동산", data.get('당근_신규등록', 0), data.get('당근_금일등록', 0), 0, 0, data.get('당근_일반수정', 0), data.get('당근_거래완료', 0)))
+        # 미등록의뢰/관심수정은 당근에는 없는 개념이라 모드와 무관하게 항상 "해당없음"이다
+        # (모드 제외와 의미가 겹치지 않도록 별도 표기를 쓴다).
+        해당없음 = "— (해당없음)"
+        tree.insert("", "end", values=(
+            "당근부동산",
+            data.get('당근_신규등록', 0) if 업데이트_실행됨 else 제외표시,
+            data.get('당근_금일등록', 0) if 업데이트_실행됨 else 제외표시,
+            해당없음,
+            해당없음,
+            data.get('당근_일반수정', 0) if 업데이트_실행됨 else 제외표시,
+            data.get('당근_거래완료', 0) if 거래완료_실행됨 else 제외표시,
+        ))
 
     tree.pack(padx=20, pady=10, fill=tk.BOTH, expand=True)
 
