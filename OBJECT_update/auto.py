@@ -53,6 +53,11 @@ end_ok = 0
 skip_count = 0  # 임대료 누락 건너뛰기 전역 카운트
 error_count = 0  # 성공/재등록/비공개/건너뜀 어디로도 분류되지 않는 예외 발생 건수
 
+def 작업모드_한글(target_mode):
+    # [처리결과 가시화] "작업 모드"를 화면에 보여줘야 할 지점이 두 곳(테스트 대상 확정 로그,
+    # run_platform_workers()의 완료 요약)이라 라벨 매핑을 한 곳에 모아 재사용한다.
+    return {"all": "전체 실행", "update_only": "신규/수정 업데이트만 실행", "close_only": "거래완료(비공개) 처리만 실행"}.get(target_mode, target_mode)
+
 def process_wait(hour):
     now = datetime.datetime.now()
     end_time = now + datetime.timedelta(hours=hour)
@@ -702,7 +707,7 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
     # 채워두고, 선택된 경우에만 실제 결과로 덮어쓴다 — 플랫폼을 아예 선택 안 한 것과 결과 조립을
     # 깜빡한 것을 구분 못 하는 일이 없게(직접 겪음: "결과가 1개만 보이는데 왜?"라는 질문이 나왔던
     # 이유 중 하나가 당근을 선택 안 했는데도 완료화면에 당근 관련 언급이 아예 없어서였다).
-    작업모드_표시 = {"all": "전체 실행", "update_only": "신규/수정 업데이트만 실행", "close_only": "거래완료(비공개) 처리만 실행"}.get(target_mode, target_mode)
+    작업모드_표시 = 작업모드_한글(target_mode)
     counts = {
         'complete': 0, 'restart': 0, 'update': 0, 'end': 0, 'skip': 0, 'error': 0,
         '작업모드': 작업모드_표시,
@@ -843,8 +848,17 @@ def update_start():
                 )
                 user_settings['test_code'] = ""
                 continue
-            print(f"   [🎯 테스트 대상 확정] 오방 {len(obangData.get('업데이트매물', [])) + len(obangData.get('거래완료매물', []))}건 "
-                  f"/ 당근 {len(obangData.get('당근_업데이트목록', [])) + len(obangData.get('당근_거래완료목록', []))}건")
+            # [처리결과 가시화] 여기 나오는 "확보된 대상"은 업데이트/거래완료 두 트랙을 합친
+            # 수치라서, 작업 모드가 한쪽만 실행하도록 돼 있으면 실제 완료 결과의 "총 N건"과
+            # 다를 수 있다(예: 업데이트만 실행 모드에서는 거래완료 트랙 건수가 실행되지 않음).
+            # 둘이 달라도 되는 정상 상황임을 여기서 미리 밝혀 완료 결과와 비교할 때 헷갈리지 않게 한다.
+            오방_업데이트_건수 = len(obangData.get('업데이트매물', []))
+            오방_거래완료_건수 = len(obangData.get('거래완료매물', []))
+            당근_업데이트_건수 = len(obangData.get('당근_업데이트목록', []))
+            당근_거래완료_건수 = len(obangData.get('당근_거래완료목록', []))
+            print(f"   [🎯 테스트 대상 확정] 오방 {오방_업데이트_건수 + 오방_거래완료_건수}건(업데이트:{오방_업데이트_건수}/거래완료:{오방_거래완료_건수}) "
+                  f"/ 당근 {당근_업데이트_건수 + 당근_거래완료_건수}건(업데이트:{당근_업데이트_건수}/거래완료:{당근_거래완료_건수}) "
+                  f"— ※ 작업 모드가 [{작업모드_한글(target_mode)}]이므로, 이 중 해당 트랙만 실제 실행됩니다.")
 
         # 🎯 프리뷰 창에서 [이대로 작업 개시]를 누르면 True가 반환되어 루프를 깨고 탈출합니다.
         if show_update_preview(obangData, before_day, user_settings):
