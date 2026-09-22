@@ -176,13 +176,13 @@ def get_main_settings(prev_settings=None):
     tk.Radiobutton(frame_mode, text="거래완료(비공개) 처리만 실행", variable=var_mode, value="close_only", font=("Malgun Gothic", 10)).pack(anchor="w", pady=2)
 
     # 🎯 [신설] 특정 매물번호 테스트 입력을 위한 독립 레이아웃 슬롯 벨트
-    frame_test = tk.LabelFrame(root, text=" 🧪 특정 매물번호 단독 테스트 (선택사항) ", font=("Malgun Gothic", 10, "bold"), padx=10, pady=8, fg="#ba264a")
+    frame_test = tk.LabelFrame(root, text=" 🧪 특정 매물번호 단독/다중 테스트 (선택사항) ", font=("Malgun Gothic", 10, "bold"), padx=10, pady=8, fg="#ba264a")
     frame_test.pack(padx=20, pady=5, fill="x")
-    
-    # 🎯 [명찰 교정] 당근 고유 번호 대신 평소 관리하시던 새홈 매물번호를 입력받도록 텍스트 명찰을 전격 교체합니다.
-    tk.Label(frame_test, text="새홈 매물번호 입력:", font=("Malgun Gothic", 10)).pack(side="left", padx=5)
-    
-    entry_test = tk.Entry(frame_test, width=15, font=("Malgun Gothic", 10, "bold"), justify="center", fg="blue")
+
+    # 🎯 [다중화] 쉼표로 여러 새홈 매물번호를 함께 입력할 수 있다는 걸 라벨/입력창 너비로 알 수 있게 한다.
+    tk.Label(frame_test, text="새홈 매물번호 입력 (쉼표로 여러 개):", font=("Malgun Gothic", 10)).pack(side="left", padx=5)
+
+    entry_test = tk.Entry(frame_test, width=35, font=("Malgun Gothic", 10, "bold"), justify="center", fg="blue")
     entry_test.pack(side="left", padx=5)
     entry_test.insert(0, init_test_code)
 
@@ -310,8 +310,16 @@ def show_update_preview(data, before_day, user_settings):
     root.mainloop()
     return proceed
 
-def obang_data(before_day, 오방_선택=True, 당근_선택=True):
-    """ 기존 DB 로직에 당근 데이터 매핑 연동을 결합한 데이터 수집 함수 """
+def obang_data(before_day, 오방_선택=True, 당근_선택=True, 강제_새홈번호_목록=None):
+    """
+    기존 DB 로직에 당근 데이터 매핑 연동을 결합한 데이터 수집 함수.
+
+    강제_새홈번호_목록: [단독/다중 테스트 모드 전용] 값이 있으면, 아래 3개 후보군 쿼리(당근 광고
+    대상 / 오방 업데이트 대상 / 오방 거래완료 대상)가 평소의 "최근 N일 의뢰수정 또는 관심 매물"·
+    "광고시작 14일 경과" 조건 대신 이 새홈번호들만을 대상으로 삼는다. 그 뒤(매물 정보 조립,
+    오방·당근 매칭, 관심/일반 분류, 반환 구조)는 정상 배치와 완전히 동일한 코드를 그대로 탄다 —
+    테스트 전용 조회/조립 로직을 별도로 두지 않기 위함(재사용 원칙, 테스트매물_정보조회() 참고).
+    """
     today = datetime.datetime.now().date()
     금일등록매물, 신규등록매물, 미등록의뢰수, img_update = [], [], 0, []
     obang_update, obang_update_fav, obang_update_normal, obang_map = [], [], [], {}          
@@ -326,10 +334,15 @@ def obang_data(before_day, 오방_선택=True, 당근_선택=True):
     cursor.execute('USE obangkr;')
 
     carrot_map, dang_new_set, dang_today_set, dang_update_set = {}, set(), set(), set()
-    c_query = f'SELECT object_code_new, ad_code FROM pr_externalad WHERE ad_site = "당근" AND ad_del = "N" AND CURRENT_DATE >= DATE_ADD(ad_start, INTERVAL 14 DAY)'
-    # c_query = f'SELECT object_code_new, ad_code FROM pr_externalad WHERE ad_site = "당근" AND ad_del = "N" AND object_code_new = "252477"'
-    cursor.execute(c_query)
-    
+    if 강제_새홈번호_목록:
+        # 테스트 모드: "광고시작 14일 경과" 조건 없이, 지정된 새홈번호의 당근 광고만 후보로 삼는다.
+        자리표시자 = ",".join(["%s"] * len(강제_새홈번호_목록))
+        c_query = f'SELECT object_code_new, ad_code FROM pr_externalad WHERE ad_site = "당근" AND ad_del = "N" AND object_code_new IN ({자리표시자})'
+        cursor.execute(c_query, tuple(강제_새홈번호_목록))
+    else:
+        c_query = f'SELECT object_code_new, ad_code FROM pr_externalad WHERE ad_site = "당근" AND ad_del = "N" AND CURRENT_DATE >= DATE_ADD(ad_start, INTERVAL 14 DAY)'
+        cursor.execute(c_query)
+
     # 🔥 [DB 실시간 가로채기] 당근 만료 광고 테이블 원본 데이터 출력
     당근_광고_원본목록 = cursor.fetchall()
 
@@ -350,19 +363,35 @@ def obang_data(before_day, 오방_선택=True, 당근_선택=True):
         cursor.execute(o_query, (row['land_group_code'], row['building_group_code'], row['room_group_code']))
         o_res = cursor.fetchall()
         try:
-            if o_res and o_res[0]['object_code_obang'] != '': obang_update.append(str(o_res[0]['object_code_obang'])) 
+            # [테스트 모드 격리] 이 줄은 원래 관심(즐겨찾기) 매물의 오방코드를 조건 없이
+            # 업데이트매물에 바로 얹어둔다 — 테스트 모드에서까지 그대로 두면, 지정한 새홈번호와
+            # 무관한 회사 전체의 관심 매물이 몽땅 테스트 대상에 섞여 들어간다(실측으로 확인:
+            # 147558/112561 두 건만 지정했는데 관심 매물 14건이 함께 섞여 나왔다). 테스트 모드는
+            # 지정된 새홈번호만 대상이어야 하므로 이 줄만 건너뛴다.
+            if not 강제_새홈번호_목록 and o_res and o_res[0]['object_code_obang'] != '': obang_update.append(str(o_res[0]['object_code_obang']))
             f_codes_arr.append(row['request_code'])
         except: pass
 
     f_codes = "','".join(f_codes_arr) if len(f_codes_arr) > 0 else ''
     f_codes = f"'{f_codes}'"
 
+    # 테스트 모드: 날짜/관심 조건 대신, 지정된 새홈번호에 대응하는 request_code만 후보로 삼는다
+    # (테스트매물_정보조회()가 새홈번호 -> request_code로 변환 — 관심(f_codes)과 완전히 같은
+    # 자리에 꽂아 넣는다). 나머지 필터(내놓기/접수·진행 등)는 정상 배치와 동일하게 유지한다 —
+    # 그래야 이미 완료(성공/실패)된 의뢰는 아래 거래완료 후보군 쪽에서만 잡혀 중복되지 않는다.
+    테스트_request_codes = 테스트매물_정보조회(강제_새홈번호_목록) if 강제_새홈번호_목록 else []
+    if 강제_새홈번호_목록:
+        테스트_f_codes = "','".join(테스트_request_codes) if 테스트_request_codes else ''
+        후보_조건 = f'p.request_code IN (\'{테스트_f_codes}\')'
+    else:
+        후보_조건 = f'(p.request_date BETWEEN "{start_date_str}" AND "{today_str}" OR p.request_code IN ({f_codes}))'
+
     query = f'''SELECT p.request_code, p.tr_target, p.object_type1, p.object_type2, p.admin_name, p.request_date, p.request_udate, p.request_wdate,
         c.land_group_code, c.building_group_code, c.room_group_code, c.request_trading, c.request_deposit1, c.request_deposit2, c.request_deposit3,
         c.request_rent1, c.request_rent2, c.request_rent3, c.request_manager, c.request_mmoney, c.request_mlist, c.tr_memo,
-        c.request_area1, c.request_area2, c.request_areatype1, c.request_areatype2, c.first_trade 
+        c.request_area1, c.request_area2, c.request_areatype1, c.request_areatype2, c.first_trade
         FROM pr_request AS p LEFT JOIN pr_request_give AS c ON p.request_code = c.request_code
-        WHERE p.request_del="N" AND (p.request_date BETWEEN "{start_date_str}" AND "{today_str}" OR p.request_code IN ({f_codes}))
+        WHERE p.request_del="N" AND {후보_조건}
         AND p.request_main != "전체" AND p.tr_type = "내놓기" AND (p.request_status = "접수" OR p.request_status = "진행")
         AND (c.request_deposit1 != "" OR c.request_rent1 != "")'''
     cursor.execute(query)
@@ -507,12 +536,15 @@ def obang_data(before_day, 오방_선택=True, 당근_선택=True):
 
     random.shuffle(obang_update)
 
-    # 거래완료매물 수집
+    # 거래완료매물 수집 — 테스트 모드일 때는 위에서 이미 구한 테스트_f_codes를 그대로 재사용한다.
+    # (지정된 새홈번호의 의뢰가 이미 완료(성공/실패) 상태라면 여기서, 아직 진행 중이면 위
+    # recently_res 쪽에서 잡힌다 — 상호 배타적이라 중복 집계될 일이 없다.)
+    거래완료_조건 = f'p.request_code IN (\'{테스트_f_codes}\')' if 강제_새홈번호_목록 else f'p.request_date BETWEEN "{start_date_str}" AND "{today_str}"'
     query = f"""SELECT o.object_code_obang, o.object_code_new FROM pr_request AS p
                JOIN pr_request_give AS c ON p.request_code = c.request_code
                JOIN pr_object AS o ON o.object_del = 'N' AND o.land_group_code = c.land_group_code AND o.building_group_code = c.building_group_code AND o.room_group_code = c.room_group_code
                WHERE p.request_del = 'N' AND p.request_main <> '전체' AND p.tr_type = '내놓기' AND p.request_status IN ('성공','실패')
-                 AND p.request_date BETWEEN "{start_date_str}" AND "{today_str}" """
+                 AND {거래완료_조건}"""
     cursor.execute(query)
     rows = cursor.fetchall()
 
@@ -532,64 +564,31 @@ def obang_data(before_day, 오방_선택=True, 당근_선택=True):
     }
 
 
-def 오방_단일매물_정보조회(새홈_타겟_번호):
+def 테스트매물_정보조회(새홈번호_목록):
     """
-    [단독 테스트 모드 전용] obang_data()는 최근 N일 이내 의뢰수정 매물 + 관심(즐겨찾기) 매물만
-    스캔하므로, 그 범위 밖의 매물은 obang_data()가 만드는 obang_map(오방매물정보)에 아예 잡히지
-    않는다. 그런데 단독 테스트 모드는 스캔 범위와 무관하게 "새홈번호 하나만" 항상 조회할 수
-    있어야 하므로(관심 매물이 아니어도, 최근 의뢰수정이 아니어도), 이 함수는 obang_data()의
-    스캔을 거치지 않고 지정된 새홈번호 하나에 대해서만 독립적으로 같은 형태의 데이터를 조회한다.
-    아래 두 쿼리는 obang_data()의 o_query(389번째 줄)/recently_res 쿼리(359번째 줄)와 각각
-    동일한 조인 구조를 쓴다 — 둘 중 하나의 조인/필터를 고치면 반드시 다른 하나도 맞출 것.
-    반환: (오방코드, obang_map과 동일한 형태의 딕셔너리) — 조회 실패 시 딕셔너리 자리는 None.
+    [단독/다중 테스트 모드 전용] obang_data()의 정상 후보군 쿼리는 "최근 N일 의뢰수정" 또는
+    "관심(즐겨찾기)" 매물만 대상으로 삼는데, 테스트 모드는 이 범위와 무관하게 지정된 새홈번호들이
+    항상 잡혀야 한다. 이 함수는 새홈번호들을 그에 대응하는 request_code로 바꿔주기만 한다 —
+    관심(즐겨찾기)이 f_codes를 만들어 recently_res 쿼리의 "OR request_code IN (f_codes)" 자리에
+    꽂는 것과 완전히 같은 방식으로, obang_data()가 이 반환값을 그 자리에 대신 꽂아 넣는다.
+    주소/가격 등 매물 상세 조회는 여기서 하지 않는다 — obang_data()의 기존 enrichment 루프가
+    그대로 재사용되므로 중복 로직을 새로 만들 필요가 없다.
     """
-    conn = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', charset='utf8')
-    cursor = conn.cursor(pymysql.cursors.DictCursor)
-    cursor.execute('USE obangkr;')
-    try:
-        cursor.execute('SELECT land_group_code, building_group_code, room_group_code, object_code_obang FROM pr_object WHERE object_code_new = %s AND object_del = "N"', (새홈_타겟_번호,))
-        obj_row = cursor.fetchone()
-        if not obj_row or not obj_row.get('object_code_obang'):
-            return '', None
-        오방_고유_번호 = str(obj_row['object_code_obang']).strip()
-
-        o_query = '''SELECT o.object_code_new, o.land_group_code, o.building_group_code, o.room_group_code, o.object_code_obang, o.object_type, o.object_ttype, o.object_rtype, o.object_del, o.object_ori_img,
-            l.land_do, l.land_si, l.land_dong, l.land_li, l.land_main, l.land_jibun AS land_jibung, l.land_address, l.land_totarea, l.land_important, l.land_option, l.land_memo,
-            b.building_name, b.building_del, b.building_gate1, b.building_gate2, b.building_parking, b.building_pn, b.building_direction, b.building_bolt, b.building_height, b.building_element, b.building_memo, b.building_important, b.building_option, b.building_purpose, b.building_grndflr, b.building_ugrndflr, b.building_archarea, b.building_totarea, b.building_usedate, b.building_stract, b.building_elvcount,
-            r.room_num, r.room_floor, r.room_status, r.room_nmemo, r.room_gate1, r.room_gate2, r.room_memo, r.room_rcount, r.room_bcount, r.r_direction, r.room_direction, r.room_area1, r.room_areatype1, r.room_area2, r.room_areatype2, r.room_important, r.room_option, r.room_purpose
-            FROM pr_object AS o
-            LEFT JOIN pr_land AS l ON l.land_code = COALESCE(
-                    (SELECT li.land_code FROM pr_land_group_item li
-                     INNER JOIN pr_land il ON il.land_code = li.land_code AND il.land_del = 'N'
-                     WHERE li.land_group_code = o.land_group_code
-                       AND il.land_jibun = (SELECT lgr.representing_jibun FROM pr_land_group lgr WHERE lgr.land_group_code = o.land_group_code)
-                     LIMIT 1),
-                    (SELECT li2.land_code FROM pr_land_group_item li2 WHERE li2.land_group_code = o.land_group_code ORDER BY li2.item_idx ASC LIMIT 1)
-                ) AND l.land_del = 'N'
-            LEFT JOIN pr_building AS b ON b.building_code = (SELECT bi.building_code FROM pr_building_group_item bi WHERE bi.building_group_code = o.building_group_code LIMIT 1) AND b.building_del = 'N'
-            LEFT JOIN pr_room     AS r ON r.room_code     = (SELECT ri.room_code FROM pr_room_group_item ri WHERE ri.room_group_code = o.room_group_code LIMIT 1) AND r.room_del = 'N'
-            WHERE o.object_del = 'N' AND o.land_group_code = %s AND o.building_group_code = %s AND o.room_group_code = %s LIMIT 1;'''
-        cursor.execute(o_query, (obj_row['land_group_code'], obj_row.get('building_group_code', ''), obj_row.get('room_group_code', '')))
-        o_row = cursor.fetchone()
-        if not o_row:
-            return 오방_고유_번호, None
-
-        r_query = '''SELECT p.request_code, p.tr_target, p.object_type1, p.object_type2, p.admin_name, p.request_date, p.request_udate, p.request_wdate,
-            c.land_group_code, c.building_group_code, c.room_group_code, c.request_trading, c.request_deposit1, c.request_deposit2, c.request_deposit3,
-            c.request_rent1, c.request_rent2, c.request_rent3, c.request_manager, c.request_mmoney, c.request_mlist, c.tr_memo,
-            c.request_area1, c.request_area2, c.request_areatype1, c.request_areatype2, c.first_trade
-            FROM pr_request AS p LEFT JOIN pr_request_give AS c ON p.request_code = c.request_code
-            WHERE p.request_del="N" AND c.land_group_code = %s AND c.building_group_code = %s AND c.room_group_code = %s
-            AND p.request_main != "전체" AND p.tr_type = "내놓기" AND (p.request_status = "접수" OR p.request_status = "진행")
-            ORDER BY p.request_date DESC LIMIT 1'''
-        cursor.execute(r_query, (obj_row['land_group_code'], obj_row.get('building_group_code', ''), obj_row.get('room_group_code', '')))
-        row = cursor.fetchone()
-        if not row:
-            return 오방_고유_번호, None
-
-        return 오방_고유_번호, {**row, **o_row}
-    finally:
-        cursor.close(); conn.close()
+    if not 새홈번호_목록: return []
+    conn = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', database='obangkr', charset='utf8')
+    cursor = conn.cursor()
+    자리표시자 = ",".join(["%s"] * len(새홈번호_목록))
+    cursor.execute(f'''
+        SELECT DISTINCT c.request_code
+        FROM pr_object AS o
+        JOIN pr_request_give AS c ON o.land_group_code = c.land_group_code
+                                   AND o.building_group_code = c.building_group_code
+                                   AND o.room_group_code = c.room_group_code
+        WHERE o.object_code_new IN ({자리표시자}) AND o.object_del = 'N'
+    ''', tuple(새홈번호_목록))
+    request_codes = [str(r[0]) for r in cursor.fetchall()]
+    cursor.close(); conn.close()
+    return request_codes
 
 
 # 🎯 [2026-09-06 통합] 당근 루프 검증 단계 전용 디버그 로그 — auto.py는 GUI 경로에 별도
@@ -801,117 +800,33 @@ def update_start():
         before_day = user_settings['before_day']
         target_mode = user_settings['mode']
 
-        obangData = obang_data(before_day, user_settings['obang'], user_settings['carrot'])
+        # 🎯 [단독/다중 매물 테스트 모드] 입력창에 쉼표로 구분해 적은 새홈번호가 있으면, obang_data()가
+        # 정상 배치와 완전히 같은 코드로 "이 번호들만" 후보군으로 삼아 조회하게 한다(obang_data()의
+        # 강제_새홈번호_목록 파라미터 참고) — 테스트 전용 별도 조회/조립 로직을 두지 않는다.
+        테스트_새홈번호_목록 = [x.strip() for x in user_settings.get('test_code', '').split(',') if x.strip()]
+        if 테스트_새홈번호_목록:
+            print(f"   [🧪 새홈번호 테스트 모드 가동] {len(테스트_새홈번호_목록)}건 지정: {', '.join(테스트_새홈번호_목록)}")
 
-        # =================================================================
-        # 🎯 [지능형 진화] 새홈 번호 기반 단독 테스트 모드 가로채기 및 선로 자동 배정 엔진
-        # =================================================================
-        if user_settings.get('test_code'):
-            새홈_타겟_번호 = user_settings['test_code']
-            print(f"   [🧪 새홈 번호 기반 테스트 모드 가동 - {새홈_타겟_번호}] 당근 고유 광고번호(ad_code) 및 DB 매물 상태 실시간 판독을 시작합니다...")
-            
-            # 🔍 DB 교차 수사대 출동: 입력된 새홈 번호로 당근 광고번호(ad_code)와 새홈 원본 상태(object_status)를 동시에 포획합니다.
-            당근_고유_번호 = ""
-            DB_상태 = ""
-            try:
-                import pymysql
-                연결고리 = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', database='obangkr', charset='utf8')
-                명령조수 = 연결고리.cursor()
-                역추적쿼리 = """
-                    SELECT e.ad_code, o.object_status 
-                    FROM pr_externalad AS e
-                    JOIN pr_object AS o ON e.object_code_new = o.object_code_new
-                    WHERE e.object_code_new = %s AND e.ad_site = '당근' AND e.ad_del = 'N' LIMIT 1
-                """
-                명령조수.execute(역추적쿼리, (새홈_타겟_번호,))
-                결과행 = 명령조수.fetchone()
-                if 결과행:
-                    당근_고유_번호 = str(결과행[0])
-                    DB_상태 = str(결과행[1])
-                명령조수.close(); 연결고리.close()
-            except Exception as e:
-                print(f"   [❌ DB 역추적 실패] 통신 또는 쿼리 오류 발생: {e}")
-                
-            # 만약 DB에 매핑된 광고 데이터가 전혀 없다면 경고창을 발생시키고 다시 입력하도록 회항 조치합니다.
-            if not 당근_고유_번호:
-                messagebox.showwarning("역추적 실패", f"입력하신 새홈 매물번호 [{새홈_타겟_번호}]에 매핑된 활성화된 당근 광고 데이터가 DB에 존재하지 않습니다.")
+        obangData = obang_data(
+            before_day, user_settings['obang'], user_settings['carrot'],
+            강제_새홈번호_목록=테스트_새홈번호_목록 or None
+        )
+
+        if 테스트_새홈번호_목록:
+            처리대상_전체건수 = (
+                len(obangData.get('업데이트매물', [])) + len(obangData.get('거래완료매물', []))
+                + len(obangData.get('당근_업데이트목록', [])) + len(obangData.get('당근_거래완료목록', []))
+            )
+            if 처리대상_전체건수 == 0:
+                messagebox.showwarning(
+                    "역추적 실패",
+                    f"입력하신 새홈 매물번호 [{', '.join(테스트_새홈번호_목록)}]에서 유효한 처리 대상을 "
+                    f"찾지 못했습니다.\n(선택된 플랫폼에 등록된 광고/의뢰가 없거나, 번호가 잘못됐을 수 있습니다)"
+                )
                 user_settings['test_code'] = ""
                 continue
-                
-            print(f"   [🎯 역추적 및 상태판독 성공] 새홈번호 [{새홈_타겟_번호}] ➡️ 당근번호 [{당근_고유_번호}] | DB상태: [{DB_상태}]")
-            
-            # 타 플랫폼 및 노이즈 항목들은 100% 클리닝하여 연산을 통제합니다.
-            obangData['당근_신규등록'] = 0
-            obangData['당근_금일등록'] = 0
-            obangData['금일등록매물'] = []
-            obangData['신규등록매물'] = []
-            obangData['업데이트매물'] = []
-            obangData['업데이트매물_관심'] = []
-            obangData['업데이트매물_일반'] = []
-            obangData['거래완료매물'] = []
-
-            # 🔄 [핵심 필터] 실시간 DB 원본 상태에 따른 지능형 선로 분기 가동
-            if DB_상태 == "중개요청":
-                print(f"   [🔄 선로 배정 완료] DB 상태가 '중개요청'이므로 [최신화 업데이트(끌올/수정)] 트랙에 주입합니다.")
-                obangData['당근_업데이트목록'] = [당근_고유_번호]
-                obangData['당근_일반수정'] = 1
-                obangData['당근_거래완료목록'] = []
-                obangData['당근_거래완료'] = 0
-            else:
-                # '거래완료', '보류' 등 이미 종결된 매물인 경우
-                print(f"   [🔒 선로 배정 완료] DB 상태가 '{DB_상태}'(종결)이므로 [거래완료 비공개(숨기기)] 트랙에 전격 주입합니다.")
-                obangData['당근_업데이트목록'] = []
-                obangData['당근_일반수정'] = 0
-                obangData['당근_거래완료목록'] = [당근_고유_번호]
-                obangData['당근_거래완료'] = 1
-
-            # 🎯 [오방 지원] 위 역추적/선로배정 로직은 원래 당근 전용으로만 만들어져 있어서,
-            # 오방이 선택된 상태로 이 테스트 모드를 쓰면 obangData['업데이트매물']이 위에서 빈 리스트로
-            # 초기화된 채 다시 채워지지 않아 오방 쪽(비공개→공개 전환 포함 모든 업데이트 로직)이
-            # 전혀 실행되지 않는 문제가 있었다. 또한 obang_data()의 오방매물정보는 최근 N일
-            # 의뢰수정/관심 매물만 스캔하므로, 그 범위 밖의 매물은 obang_data() 결과에 애초에
-            # 존재하지 않는다 — 단독 테스트는 스캔 범위와 무관하게 항상 동작해야 하므로
-            # 오방_단일매물_정보조회()로 스캔을 거치지 않고 이 매물 하나만 독립적으로 조회한다.
-            if user_settings['obang']:
-                오방_고유_번호, 오방_엔트리 = 오방_단일매물_정보조회(새홈_타겟_번호)
-
-                if not 오방_고유_번호:
-                    print(f"   [⚠️ 오방 테스트 제외] 새홈번호 [{새홈_타겟_번호}]에 매핑된 오방 매물번호가 없어 오방 트랙은 건너뜁니다.")
-                elif 오방_엔트리 is None:
-                    print(f"   [⚠️ 오방 테스트 제외] 오방번호 [{오방_고유_번호}]에 매칭되는 활성 의뢰(내놓기/접수·진행)를 찾지 못해 오방 트랙은 건너뜁니다.")
-                else:
-                    obangData['오방매물정보'][오방_고유_번호] = 오방_엔트리
-                    if DB_상태 == "중개요청":
-                        print(f"   [🔄 오방 선로 배정 완료] 오방번호 [{오방_고유_번호}]를 [최신화 업데이트] 트랙에 단독 주입합니다.")
-                        obangData['업데이트매물'] = [오방_고유_번호]
-                        obangData['거래완료매물'] = []
-
-                        # [프리뷰 정확성] process_updates()가 실제로 도는 목록은 '업데이트매물'뿐이라
-                        # 위 한 줄로 실행 자체는 이미 정상 동작하지만, 프리뷰 대시보드(관심수정/일반수정
-                        # 칸)는 이 목록이 아니라 '업데이트매물_관심'/'업데이트매물_일반' 개수를 따로 센다
-                        # (293번째 줄) — 여기도 같이 채워야 사용자가 프리뷰에서 "0건"으로 오해하지 않는다.
-                        관심여부 = False
-                        try:
-                            conn4 = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', database='obangkr', charset='utf8')
-                            cur4 = conn4.cursor()
-                            cur4.execute("SELECT 1 FROM pr_request_fix WHERE request_code = %s AND fix_del = 'N'", (오방_엔트리.get('request_code', ''),))
-                            관심여부 = cur4.fetchone() is not None
-                            cur4.close(); conn4.close()
-                        except Exception as e:
-                            print(f"   [❌ 관심(즐겨찾기) 여부 조회 실패] {e}")
-                        if 관심여부:
-                            obangData['업데이트매물_관심'] = [오방_고유_번호]
-                            obangData['업데이트매물_일반'] = []
-                        else:
-                            obangData['업데이트매물_관심'] = []
-                            obangData['업데이트매물_일반'] = [오방_고유_번호]
-                    else:
-                        print(f"   [🔒 오방 선로 배정 완료] 오방번호 [{오방_고유_번호}]를 [거래완료 비공개] 트랙에 단독 주입합니다.")
-                        obangData['업데이트매물'] = []
-                        obangData['업데이트매물_관심'] = []
-                        obangData['업데이트매물_일반'] = []
-                        obangData['거래완료매물'] = [오방_고유_번호]
-        # =================================================================
+            print(f"   [🎯 테스트 대상 확정] 오방 {len(obangData.get('업데이트매물', [])) + len(obangData.get('거래완료매물', []))}건 "
+                  f"/ 당근 {len(obangData.get('당근_업데이트목록', [])) + len(obangData.get('당근_거래완료목록', []))}건")
 
         # 🎯 프리뷰 창에서 [이대로 작업 개시]를 누르면 True가 반환되어 루프를 깨고 탈출합니다.
         if show_update_preview(obangData, before_day, user_settings):
