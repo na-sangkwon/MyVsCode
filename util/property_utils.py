@@ -1,4 +1,5 @@
 # fileName: util/property_utils.py
+import os
 import re
 import traceback
 from selenium.webdriver.common.by import By
@@ -1136,6 +1137,22 @@ def 당근_끌어올리기_마스터_통합엔진(driver, row_element, ad_code, 
         # 로직을 건드리지 않는다).
         print(f"   [❌ 치명적 오류 - {ad_code}] 끌어올리기 마스터 엔진 전체 실패: {global_error}")
         print(traceback.format_exc())
+        # [처리결과 가시화] 이 실패가 정말 예상 밖의 상황인지(예: 확인 팝업이 끝내 안 뜸), 아니면
+        # 화면엔 뭔가 다른 게 떠 있었는데 코드가 못 알아본 건지 — 지금까지는 예외/traceback만
+        # 남고 그 순간 화면이 어땠는지는 기록이 없어 매번 추정만 해야 했다(2026-09-22 실사용
+        # 중 실제로 겪음). 실패 순간 화면을 저장해 다음엔 바로 확인할 수 있게 한다. 스크린샷
+        # 저장 자체가 실패해도(드라이버 세션이 이미 죽은 경우 등) 원래 오류 보고를 막지 않는다.
+        try:
+            screenshot_dir = os.path.join('logs', 'screenshots')
+            os.makedirs(screenshot_dir, exist_ok=True)
+            screenshot_path = os.path.join(
+                screenshot_dir,
+                f"carrot_bump_dialog_timeout_{ad_code}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+            )
+            driver.save_screenshot(screenshot_path)
+            print(f"   [🔍 실패 화면 저장 완료] {screenshot_path}")
+        except Exception as 스크린샷_오류:
+            print(f"   [❌ 실패 화면 저장도 실패] {스크린샷_오류}")
         return "FAIL"
     
 def 데이터베이스_다중_가격스펙_전수조회(item_code, ad_site=None):
