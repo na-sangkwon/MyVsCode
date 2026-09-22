@@ -703,7 +703,13 @@ def _click_search_button(driver, _fail):
 
 
 def _search_via_simple_search(driver, wait, payload, property_category, loc, _fail):
-    """[2026-09-13 추가 — 사용자 발견, 실사용 재현으로 확인] "간편검색"으로 주소 한 줄을 통째로
+    """[2026-09-22 현재 — 호출부 없음, 의도적으로 남겨둠] 집합건물 검색은 _search_via_road_address()
+    (도로명주소검색)로 바뀌어서 지금은 어디서도 이 함수를 안 부른다 — 등기부상 건물명이 대장상
+    건물명과 달라(예: "포트센트럴시티") 이 간편검색이 0건을 내는 문제가 발견됐기 때문. 도로명주소
+    검색으로 못 푸는 경우가 나중에 생기면(예: 도로명주소 자체가 등기부에 병기 안 된 물건) 대안으로
+    다시 쓸 수 있어 지우지 않고 남겨둔다(사용자 확인, 2026-09-22).
+
+    [2026-09-13 추가 — 사용자 발견, 실사용 재현으로 확인] "간편검색"으로 주소 한 줄을 통째로
     검색한다. 집합건물 중 건물동(동) 정보가 없는 매물(건축물대장 데이터 부재)은 소재지번검색(동/리+
     지번+동/호를 각 칸에 나눠 입력)으로는 지번만으로 검색결과가 여러 건으로 갈려 자동으로 못 골랐다
     (매물 490302로 재현). 간편검색은 주소 한 줄을 등기소 자체 DB(도로명주소·건물명 연계)로 해석해
@@ -837,6 +843,84 @@ def _search_via_location_search(driver, wait, payload, property_category, loc, _
     return _click_search_button(driver, _fail)
 
 
+def _search_via_road_address(driver, wait, payload, property_category, road_loc, _fail):
+    """[2026-09-22 신규 — 사용자 발견, 실사용 재현으로 확인] "도로명주소검색" 탭에서 시/군/구+도로명+
+    건물번호(+집합건물이면 동/호)를 각 칸에 대조해 검색한다. 집합건물은 원래 간편검색(담당자가 등록한
+    건물명, db_building_name)을 썼는데, 등기부상 건물명이 대장상 건물명과 달라(예: "포트센트럴시티")
+    간편검색이 0건을 내는 사례가 발견됐다 — 대장명은 담당자 직접입력/국가 API 응답 중 하나일 뿐이라
+    등기부와 어긋날 수 있는 반면, 도로명주소는 국가가 부여하는 고정값이라 이런 불일치가 없다. 그래서
+    집합건물은 이 함수로 바꾸고, 토지/일반건물은 그대로 소재지번검색(_search_via_location_search)을
+    쓴다(지번이 이미 유일 식별자라 바꿀 이유가 없음).
+
+    road_loc: core/lib/lib_document_issue.php::getIrosIssuePayload()의 payload.road_search —
+    {sido, sigungu, road_name, road_building_no, building_dong_no, room_no}."""
+    def _find_rd_srch_tab(d):
+        _dismiss_alert_if_present(d)
+        return d.find_element(By.ID, f'{BASE}_tac_rlrg_appl_tab_tab_rd_srch_tabHTML')
+    tab = wait.until(_find_rd_srch_tab)
+    print('[진행] 도로명주소검색 탭 찾음, 클릭', flush=True)
+    _click_with_fallback(driver, tab)
+    time.sleep(0.5)
+    _guard_not_stuck_on_security_page(driver)
+    print('[진행] 도로명주소검색 탭 진입 확인', flush=True)
+
+    fail = _pick_kind_cls_radio(driver, 'rad_rd_kind_cls', property_category, _fail)
+    if fail is not None:
+        return fail
+
+    fail = _select_sido_via_websquare(driver, f'{BASE}_sel_rd_admin_regn1', road_loc.get('sido', ''), _fail)
+    if fail is not None:
+        return fail
+    # 시/군/구는 시/도에 딸린 두 번째 드롭다운 — 같은 WebSquare setValue() 방식을 값만 바꿔 재사용한다
+    # (실측 DOM 확인: sel_rd_admin_regn2, 2026-09-22).
+    fail = _select_sido_via_websquare(driver, f'{BASE}_sel_rd_admin_regn2', road_loc.get('sigungu', ''), _fail)
+    if fail is not None:
+        return fail
+
+    road_name_el = _find_first_visible(driver, [f'#{BASE}_sbx_rd_name___input'])
+    road_no_el = _find_first_visible(driver, [f'#{BASE}_sbx_rd_buld_no___input'])
+    if not road_name_el or not road_no_el:
+        return _fail('도로명·건물번호 입력칸을 찾지 못했습니다.')
+    _type_into_field(driver, road_name_el, road_loc.get('road_name', ''))
+    time.sleep(0.3)
+    _type_into_field(driver, road_no_el, road_loc.get('road_building_no', ''))
+    time.sleep(0.3)
+    print(f'[진행] 도로명·건물번호 입력 완료 — {road_loc.get("road_name")} {road_loc.get("road_building_no")}', flush=True)
+
+    # 입력선택(동+호/동/호) 라디오 — 소재지번검색의 rad_loc_dong_room_sel과 같은 순서 관례
+    # (0=동+호, 1=동, 2=호)를 그대로 따른다(실측 DOM 확인).
+    if property_category == '집합건물' and (road_loc.get('building_dong_no') or road_loc.get('room_no')):
+        mode_index = 0 if (road_loc.get('building_dong_no') and road_loc.get('room_no')) else (1 if road_loc.get('building_dong_no') else 2)
+        _dismiss_alert_if_present(driver)
+        radio_id = f'{BASE}_rad_rd_input_sel_input_{mode_index}'
+        try:
+            mode_label = driver.find_element(By.CSS_SELECTOR, f'label[for="{radio_id}"]')
+            mode_radio = driver.find_element(By.ID, radio_id)
+        except NoSuchElementException:
+            mode_label = None
+            mode_radio = None
+        if mode_label is not None and mode_radio is not None:
+            for _ in range(2):
+                _click_with_fallback(driver, mode_label)
+                time.sleep(0.5)
+                if mode_radio.is_selected():
+                    break
+            if not mode_radio.is_selected():
+                print('[진행] 입력선택(동/호) 라디오를 클릭했지만 선택 상태를 확인하지 못함 — 그대로 진행', flush=True)
+        if road_loc.get('building_dong_no'):
+            dong_el = _find_first_visible(driver, [f'#{BASE}_sbx_rd_buld_no_buld___input'])
+            if dong_el:
+                _type_into_field(driver, dong_el, road_loc['building_dong_no'])
+        if road_loc.get('room_no'):
+            room_el = _find_first_visible(driver, [f'#{BASE}_sbx_rd_buld_no_room___input'])
+            if room_el:
+                _type_into_field(driver, room_el, road_loc['room_no'])
+        time.sleep(0.6)
+        print(f'[진행] 동/호수 입력 완료 — 동={road_loc.get("building_dong_no")}, 호={road_loc.get("room_no")}', flush=True)
+
+    return _click_search_button(driver, _fail)
+
+
 def _wait_for_human_to_pick_property(driver, candidate_count, timeout_seconds=300):
     """검색결과가 여러 건이라 좁히기(시군구·지번·동 표시)로도 하나로 못 골랐을 때, 사람이 브라우저
     창에서 직접 체크박스를 선택하고 [다음]을 눌러 다음 화면(등기기록유형 선택)으로 넘어가길 기다린다.
@@ -891,8 +975,12 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
         # 문제는 풀어주지만, 토지·일반건물에서는 부번 없는 지번일 때 오히려 여러 건물을 한꺼번에 찾아버려
         # 새 문제가 됐다 — "간편검색이 항상 더 낫다"가 아니라 "집합건물만 간편검색이 필요"했던 것.
         # 부동산구분에 따라 검색 방식 자체를 가른다.
+        # [2026-09-22 변경 — 사용자 발견, 실사용 재현으로 확인] 집합건물은 간편검색(_search_via_simple_search)
+        # 대신 도로명주소검색(_search_via_road_address)을 쓴다 — 간편검색은 담당자가 등록한 건물명에
+        # 의존하는데, 등기부상 건물명이 그와 달라 0건이 나온 사례가 발견됐다(위 함수 docstring 참고).
+        # 도로명주소는 국가 부여값이라 이 불일치가 없다.
         if property_category == '집합건물':
-            return _search_via_simple_search(driver, wait, payload, property_category, loc, _fail)
+            return _search_via_road_address(driver, wait, payload, property_category, payload.get('road_search') or {}, _fail)
         return _search_via_location_search(driver, wait, payload, property_category, loc, _fail)
 
     def run_search_once():
