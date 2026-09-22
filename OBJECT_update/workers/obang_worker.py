@@ -172,8 +172,8 @@ class ObangAutomationWorker:
         # 이미 비공개 처리돼 있거나 어떤 이유로든 목록에 전혀 안 잡히면 성공/스킵/실패 어디에도
         # 안 남고 조용히 사라졌다 — 페이지를 다 훑고도 못 찾은 나머지를 명시적으로 집계한다.
         전체_처리된_집합 = set(총성공) | set(총스킵) | set(총실패)
-        총미발견 = sorted(DB완료_set - 전체_처리된_집합)
-        return {"성공": 총성공, "이미비공개": 총스킵, "실패": 총실패, "미발견": 총미발견}
+        총미등록 = sorted(DB완료_set - 전체_처리된_집합)
+        return {"성공": 총성공, "이미비공개": 총스킵, "실패": 총실패, "미등록": 총미등록}
 
     def 메모에마크추가(self, 메모, 마크='-- '):
         if not 메모: return ""            
@@ -569,10 +569,10 @@ class ObangAutomationWorker:
         # 중 몇 건이 실패했는지 알 방법이 없었다.
         self.skip_count += len(결과.get("이미비공개", []))
         self.error_count += len(결과.get("실패", []))
-        미발견_목록 = 결과.get("미발견", [])
-        self.not_found_count += len(미발견_목록)
-        if 미발견_목록:
-            print(f"   [⚠️ 거래완료 대상 미발견] 오방코드 {미발견_목록} — 검색화면(공개 매물만 표시)에서 못 찾음. 이미 비공개 처리돼 있거나 매물번호가 존재하지 않을 수 있습니다.")
+        미등록_목록 = 결과.get("미등록", [])
+        self.not_found_count += len(미등록_목록)
+        if 미등록_목록:
+            print(f"   [⚠️ 거래완료 대상 미등록] 오방코드 {미등록_목록} — 검색화면(공개 매물만 표시)에서 못 찾음. 이미 비공개 처리돼 있거나 매물번호가 존재하지 않을 수 있습니다.")
 
     def login_and_navigate(self):
         self.driver.implicitly_wait(10)
@@ -634,7 +634,7 @@ class ObangAutomationWorker:
         if self.mode in ['all', 'update_only']: self.process_updates()
         if self.mode in ['all', 'close_only']: self.process_closures()
 
-        # [처리결과 무결성 검증] 이번에 실제로 순회한 매물 수와, 성공/비공개/건너뜀/실패/미발견으로
+        # [처리결과 무결성 검증] 이번에 실제로 순회한 매물 수와, 성공/비공개/건너뜀/실패/미등록으로
         # 집계된 합계는 항상 정확히 같아야 한다(사용자 지침: "각 사이트마다 카운트된 것들의 합은
         # 항상 조회한 매물들의 숫자와 일치해야 한다") — 하나라도 어긋나면 어딘가에서 다시 "조용히
         # 사라지는 매물"이 생겼다는 뜻이므로, 조용히 넘어가지 않고 크게 경고한다.

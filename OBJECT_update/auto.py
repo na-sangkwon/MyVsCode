@@ -813,9 +813,14 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
             # 이 값과 정확히 같아야 한다는 걸 화면만 보고도 검산할 수 있게 한다(사용자 지침:
             # "각 사이트마다 카운트된 것들의 합은 항상 조회한 매물들의 숫자와 일치해야 한다").
             # restart_ok(재등록)는 update_ok로 이미 집계된 같은 매물의 부가 지표라 총건수에서 제외.
-            오방_총건수 = u_ok + e_ok + s_ok + err_ok + nf_ok
-            counts['오방_요약'] = f"총 {오방_총건수}건 — 성공:{u_ok} 재등록:{r_ok} 비공개:{e_ok} 건너뜀:{s_ok} 실패:{err_ok} 미발견:{nf_ok}"
-            progress_callback('obang', 100, 100, f"✅ 오방 업데이트 완료 V \n(총 {오방_총건수}건 - 성공:{u_ok} , 재등록:{r_ok} , 비공개:{e_ok} , 건너뜀:{s_ok} , 실패:{err_ok} , 미발견:{nf_ok}개)", 'determinate')
+            # "미등록"은 두 가지를 합친 것이다: nf_ok(거래완료 대상인데 검색화면에서 못 찾음)와
+            # obangData의 오방_미등록_건수(테스트 모드에서 입력한 새홈번호에 오방코드 자체가 없음)
+            # — 사용자 지적대로 "오방에 등록된 상태로 확인 안 됨"이라는 점에서 같은 의미라 하나로
+            # 합친다. 일반 배치 실행에서는 오방_미등록_건수가 없어(0) nf_ok만 그대로 쓰인다.
+            오방_미등록_합계 = nf_ok + obangData.get('오방_미등록_건수', 0)
+            오방_총건수 = u_ok + e_ok + s_ok + err_ok + 오방_미등록_합계
+            counts['오방_요약'] = f"총 {오방_총건수}건 — 성공:{u_ok} 재등록:{r_ok} 비공개:{e_ok} 건너뜀:{s_ok} 실패:{err_ok} 미등록:{오방_미등록_합계}"
+            progress_callback('obang', 100, 100, f"✅ 오방 업데이트 완료 V \n(총 {오방_총건수}건 - 성공:{u_ok} , 재등록:{r_ok} , 비공개:{e_ok} , 건너뜀:{s_ok} , 실패:{err_ok} , 미등록:{오방_미등록_합계}개)", 'determinate')
         else:
             progress_callback('obang', 0, 100, "⏭️ 오방부동산 스킵됨", 'determinate')
 
@@ -829,12 +834,15 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
             counts['complete'] += cc; counts['restart'] += ro; counts['update'] += uo; counts['end'] += eo; counts['skip'] += so; counts['error'] += err_c
             # [처리결과 가시화] cc(최종완료_개수)와 eo(비공개완료_성공_개수)가 매물 단위의 실제
             # 항목 수이고, ro(끌어올리기)/uo(수정업데이트)/ho(숨김해제)는 cc 안에 이미 포함된
-            # 같은 매물의 부가 지표라서 총건수 계산에선 제외한다(오방쪽과 동일한 원칙).
-            당근_총건수 = cc + eo + so + err_c
-            counts['당근_요약'] = f"총 {당근_총건수}건 — 끌올:{ro + ho}(일반{ro}/숨김해제{ho}) 수정:{uo} 비공개:{eo} 건너뜀:{so} 실패:{err_c}"
+            # 같은 매물의 부가 지표라서 총건수 계산에선 제외한다(오방쪽과 동일한 원칙). 당근_미등록_건수
+            # (테스트 모드에서 입력한 새홈번호에 당근 광고 자체가 없는 경우, 예: 691813)도 오방과
+            # 동일하게 "미등록"으로 합산한다 — 그래야 총건수가 조회한 새홈번호 수와 정확히 맞는다.
+            당근_미등록_건수 = obangData.get('당근_미등록_건수', 0)
+            당근_총건수 = cc + eo + so + err_c + 당근_미등록_건수
+            counts['당근_요약'] = f"총 {당근_총건수}건 — 끌올:{ro + ho}(일반{ro}/숨김해제{ho}) 수정:{uo} 비공개:{eo} 건너뜀:{so} 실패:{err_c} 미등록:{당근_미등록_건수}"
             progress_callback(
                 'carrot', 100, 100,
-                f"✅ 당근 업데이트 완료 V \n(총 {당근_총건수}건 - 끌올 {ro + ho}건 [일반 {ro} / 숨김해제 {ho}] , 수정:{uo} , 비공개:{eo} , 건너뜀:{so} , 실패:{err_c}개)",
+                f"✅ 당근 업데이트 완료 V \n(총 {당근_총건수}건 - 끌올 {ro + ho}건 [일반 {ro} / 숨김해제 {ho}] , 수정:{uo} , 비공개:{eo} , 건너뜀:{so} , 실패:{err_c} , 미등록:{당근_미등록_건수}개)",
                 'determinate'
             )
 
@@ -928,6 +936,15 @@ def update_start():
                 elif 당근코드 in obangData.get('당근_거래완료목록', []): 당근상태 = f"거래완료 대상(코드:{당근코드})"
                 else: 당근상태 = f"코드는 있으나({당근코드}) 두 목록 어디에도 없음 — 확인 필요"
                 print(f"      · {번호} — 오방: {오방상태} | 당근: {당근상태}")
+
+            # [처리결과 가시화] "조회한 매물수"는 입력한 새홈번호 개수(여기서는 2개) 그 자체다 —
+            # 그중 하나가 그 플랫폼에 아예 등록돼 있지 않다고 해서 "조회 대상에서 빠진 셈 치고"
+            # 조용히 목록에서 빼버리면, 완료 결과의 총건수가 조회 수보다 작아져서 마치 뭔가
+            # 누락된 것처럼 보인다(사용자 지적: "조회한 매물수는 2개, 미등록 매물이 1개 있었을
+            # 뿐인데 표시가 안 됐다"). obangData에 미등록 건수를 실어 보내 run_platform_workers()의
+            # 완료 집계가 "총 N건"을 계산할 때 조회 수와 정확히 맞아떨어지게 한다.
+            obangData['오방_미등록_건수'] = sum(1 for 번호 in 테스트_새홈번호_목록 if not 새홈_오방코드.get(번호))
+            obangData['당근_미등록_건수'] = sum(1 for 번호 in 테스트_새홈번호_목록 if not 새홈_당근코드.get(번호))
 
         # 🎯 프리뷰 창에서 [이대로 작업 개시]를 누르면 True가 반환되어 루프를 깨고 탈출합니다.
         if show_update_preview(obangData, before_day, user_settings):
