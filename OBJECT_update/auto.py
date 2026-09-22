@@ -958,11 +958,16 @@ def update_start():
     # 루프를 무사히 깨고 나온 승인된 매물 데이터셋만 가지고 아래 메인 화면을 그립니다.
     dash_win = tk.Tk()
     dash_win.title("⏳ 통합 매물 자동화 진행 대시보드")
-    dash_win.geometry("520x420")
+    # [처리결과 가시화] 완료 라벨 문구가 "총 N건 - 성공:.. 재등록:.. 비공개:.. 건너뜀:.. 실패:..
+    # 미등록:..개"까지 늘어나면서 기존 520 너비로는 오른쪽 끝(미등록 부분)이 창 밖으로 잘려
+    # 보이는 문제가 있었다(사용자 스크린샷으로 실제 확인) — 지금 길어진 문구를 한 줄에 다
+    # 담을 수 있게 너비를 넉넉히 늘린다.
+    창_너비, 창_높이 = 720, 460
+    dash_win.geometry(f"{창_너비}x{창_높이}")
     dash_win.attributes("-topmost", True)
-    
+
     sw, sh = dash_win.winfo_screenwidth(), dash_win.winfo_screenheight()
-    dash_win.geometry(f"520x420+{int((sw-520)/2)}+{int((sh-420)/2)}")
+    dash_win.geometry(f"{창_너비}x{창_높이}+{int((sw-창_너비)/2)}+{int((sh-창_높이)/2)}")
     dash_win.protocol("WM_DELETE_WINDOW", lambda: sys.exit())
 
     # 🎯 [안전핀 선언] 플랫폼 체크 해제 시 변수 미생성으로 인한 NameError를 원천 차단하기 위해 초기 껍데기를 바인딩합니다.
@@ -974,7 +979,7 @@ def update_start():
         frame_obang.pack(padx=20, pady=10, fill="x")
         lbl_obang = tk.Label(frame_obang, text="💤 작업 대기 중...", font=("Malgun Gothic", 10), fg="#666666")
         lbl_obang.pack(anchor="w")
-        bar_obang = ttk.Progressbar(frame_obang, orient="horizontal", length=440, mode="determinate")
+        bar_obang = ttk.Progressbar(frame_obang, orient="horizontal", length=640, mode="determinate")
         bar_obang.pack(pady=5)
 
     if user_settings['carrot']:
@@ -982,7 +987,7 @@ def update_start():
         frame_carrot.pack(padx=20, pady=10, fill="x")
         lbl_carrot = tk.Label(frame_carrot, text="💤 작업 대기 중...", font=("Malgun Gothic", 10), fg="#666666")
         lbl_carrot.pack(anchor="w")
-        bar_carrot = ttk.Progressbar(frame_carrot, orient="horizontal", length=440, mode="determinate")
+        bar_carrot = ttk.Progressbar(frame_carrot, orient="horizontal", length=640, mode="determinate")
         bar_carrot.pack(pady=5)
 
     # fileName: auto.py (update_start 함수 내부 하반부 구역)
