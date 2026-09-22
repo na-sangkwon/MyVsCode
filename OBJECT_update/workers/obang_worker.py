@@ -41,6 +41,11 @@ class ObangAutomationWorker:
         self.update_ok = 0
         self.end_ok = 0
         self.skip_count = 0
+        # [처리결과 가시화] process_updates()의 per-item try/except가 예전엔 `except: pass`라
+        # 처리 중 예외가 나면 그 매물은 성공/재등록/비공개/건너뜀 어디에도 집계되지 않고 조용히
+        # 사라졌다 — 전체 대상건수와 집계 합계가 안 맞아도 원인을 알 길이 없었다. 이 카운트는
+        # 그런 "설명되지 않는 예외"만 별도로 세어 완료 메시지에 드러낸다.
+        self.error_count = 0
 
     def _경고_또는_로그(self, message):
         """ 수동 모드는 기존처럼 알림창으로 사람에게 묻고, 무인 모드는 로그로만 남기고 계속 진행한다. """
@@ -513,8 +518,12 @@ class ObangAutomationWorker:
                     print("----- 6.완료라벨 없음")
                     pass
 
-                self.update_ok += 1; self.complete_count += 1                
-            except: pass
+                self.update_ok += 1; self.complete_count += 1
+            except Exception as 오류:
+                self.error_count += 1
+                print(f"   [❌ 처리 실패 - 오방코드:{update_code}] 예상치 못한 예외로 이 매물을 건너뜁니다: {오류}")
+                if self.progress_callback:
+                    self.progress_callback(idx, total_items, f"⚠️ 오방코드 {update_code} 처리 실패 — 건너뜀 (실패:{self.error_count}개)")
 
     def process_closures(self):
         # process_updates()에서 매물을 순회하며 여러 페이지를 오간 뒤라 사이드바 서브메뉴가
@@ -535,6 +544,11 @@ class ObangAutomationWorker:
         Select(WebDriverWait(self.driver, 5).until(EC.element_to_be_clickable((By.NAME, "per_page")))).select_by_value("100")
         결과 = self.모든페이지_비공개처리()
         self.end_ok += len(결과.get("성공", []))
+        # [처리결과 가시화] 선택목록_비공개처리()가 이미 "이미비공개"/"실패" 목록을 만들어 돌려주고
+        # 있었는데, 여기서는 "성공"만 집계하고 나머지 둘은 그냥 버리고 있었다 — 비공개 처리 대상
+        # 중 몇 건이 실패했는지 알 방법이 없었다.
+        self.skip_count += len(결과.get("이미비공개", []))
+        self.error_count += len(결과.get("실패", []))
 
     def login_and_navigate(self):
         self.driver.implicitly_wait(10)
@@ -595,4 +609,4 @@ class ObangAutomationWorker:
         self.login_and_navigate() 
         if self.mode in ['all', 'update_only']: self.process_updates()
         if self.mode in ['all', 'close_only']: self.process_closures()
-        return self.complete_count, self.restart_ok, self.update_ok, self.end_ok, self.skip_count
+        return self.complete_count, self.restart_ok, self.update_ok, self.end_ok, self.skip_count, self.error_count

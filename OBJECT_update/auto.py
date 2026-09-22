@@ -51,6 +51,7 @@ restart_ok = 0
 update_ok = 0
 end_ok = 0
 skip_count = 0  # 임대료 누락 건너뛰기 전역 카운트
+error_count = 0  # 성공/재등록/비공개/건너뜀 어디로도 분류되지 않는 예외 발생 건수
 
 def process_wait(hour):
     now = datetime.datetime.now()
@@ -694,7 +695,12 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
     한쪽만 고치고 다른 쪽을 깜빡하는 사고로 이어지기 쉬워서, 진행상황 통지만 progress_callback으로
     분리하고 나머지 로직은 호출부(GUI/무인) 구분 없이 이 함수 하나로 통일했다.
     """
-    counts = {'complete': 0, 'restart': 0, 'update': 0, 'end': 0, 'skip': 0}
+    # [처리결과 가시화] 'error'는 성공/재등록/비공개/건너뜀 어디로도 분류되지 않는 "설명되지
+    # 않는 예외" 건수 — 예전엔 이게 집계 자체가 없어 조용히 사라졌다. '오방_요약'/'당근_요약'은
+    # 무인모드가 지금까지 오방+당근을 합산해 하나의 숫자로만 보여주던 것을(어느 플랫폼이
+    # 문제였는지 구분 불가) 플랫폼별로 나눠 보여줄 수 있도록, 완료 직후 이 함수 안에서
+    # 바로 조립해 둔다(GUI 최종화면/무인모드 로그 양쪽이 재사용).
+    counts = {'complete': 0, 'restart': 0, 'update': 0, 'end': 0, 'skip': 0, 'error': 0, '오방_요약': None, '당근_요약': None}
 
     options = Options()
     profile_path = os.path.join(os.getcwd(), "daangn_profile")
@@ -737,10 +743,10 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
                 progress_callback=lambda c, t, txt, mode='determinate': progress_callback('obang', c, t, txt, mode),
                 unattended=unattended
             )
-            res = obang_worker.run()
-            c_count, r_ok, u_ok, e_ok, s_ok = res if len(res) == 5 else (res[0], res[1], res[2], res[3], 0)
-            counts['complete'] += c_count; counts['restart'] += r_ok; counts['update'] += u_ok; counts['end'] += e_ok; counts['skip'] += s_ok
-            progress_callback('obang', 100, 100, f"✅ 오방 업데이트 완료 V \n(성공:{u_ok} , 재등록:{r_ok} , 비공개:{e_ok} , 건너뜀:{s_ok}개)", 'determinate')
+            c_count, r_ok, u_ok, e_ok, s_ok, err_ok = obang_worker.run()
+            counts['complete'] += c_count; counts['restart'] += r_ok; counts['update'] += u_ok; counts['end'] += e_ok; counts['skip'] += s_ok; counts['error'] += err_ok
+            counts['오방_요약'] = f"성공:{u_ok} 재등록:{r_ok} 비공개:{e_ok} 건너뜀:{s_ok} 실패:{err_ok}"
+            progress_callback('obang', 100, 100, f"✅ 오방 업데이트 완료 V \n(성공:{u_ok} , 재등록:{r_ok} , 비공개:{e_ok} , 건너뜀:{s_ok} , 실패:{err_ok}개)", 'determinate')
         else:
             progress_callback('obang', 0, 100, "⏭️ 오방부동산 스킵됨", 'determinate')
 
@@ -750,11 +756,12 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
                 progress_callback=lambda c, t, txt, mode='determinate': progress_callback('carrot', c, t, txt, mode),
                 unattended=unattended
             )
-            cc, ro, uo, eo, so, ho = carrot_worker.run()
-            counts['complete'] += cc; counts['restart'] += ro; counts['update'] += uo; counts['end'] += eo; counts['skip'] += so
+            cc, ro, uo, eo, so, ho, err_c = carrot_worker.run()
+            counts['complete'] += cc; counts['restart'] += ro; counts['update'] += uo; counts['end'] += eo; counts['skip'] += so; counts['error'] += err_c
+            counts['당근_요약'] = f"끌올:{ro + ho}(일반{ro}/숨김해제{ho}) 수정:{uo} 비공개:{eo} 건너뜀:{so} 실패:{err_c}"
             progress_callback(
                 'carrot', 100, 100,
-                f"✅ 당근 업데이트 완료 V \n(끌올 {ro + ho}건 [일반 {ro} / 숨김해제 {ho}] , 수정:{uo} , 비공개:{eo} , 건너뜀:{so}개)",
+                f"✅ 당근 업데이트 완료 V \n(끌올 {ro + ho}건 [일반 {ro} / 숨김해제 {ho}] , 수정:{uo} , 비공개:{eo} , 건너뜀:{so} , 실패:{err_c}개)",
                 'determinate'
             )
 
@@ -781,7 +788,7 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
     return counts
 
 def update_start():
-    global complete_count, restart_ok, update_ok, end_ok, skip_count
+    global complete_count, restart_ok, update_ok, end_ok, skip_count, error_count
     print(f"업데이트 사이클 시작: {datetime.datetime.now()}")
 
     # 🎯 루프 밖에서 세팅 보관용 빈 메모리 박스를 먼저 비치해 둡니다.
@@ -978,7 +985,7 @@ def update_start():
     # 🚀 [신설] 백그라운드 독립 고속 선로 전용 실행 팩토리 함수
     # =================================================================
     def run_workers_background():
-        global complete_count, restart_ok, update_ok, end_ok, skip_count
+        global complete_count, restart_ok, update_ok, end_ok, skip_count, error_count
 
         # 실제 드라이버 기동/워커 실행/카운트 집계는 무인 모드(run_unattended)와 완전히
         # 같은 run_platform_workers를 태운다. 여기서는 그 결과를 GUI 진행바/전역 카운트에
@@ -994,12 +1001,22 @@ def update_start():
 
         counts = run_platform_workers(obangData, target_mode, user_settings, gui_progress)
         complete_count += counts['complete']; restart_ok += counts['restart']; update_ok += counts['update']
-        end_ok += counts['end']; skip_count += counts['skip']
+        end_ok += counts['end']; skip_count += counts['skip']; error_count += counts['error']
 
         # 🏁 [마감 렌더링]: 일꾼들이 모두 퇴근한 자리에 최종 성공 안내문과 버튼들을 매끄럽게 그립니다.
         def finish_ui():
             lbl_finish = tk.Label(dash_win, text="🎉 모든 지정 플랫폼의 동기화 작업이 완료되었습니다!", font=("Malgun Gothic", 11, "bold"), fg="#28a745")
             lbl_finish.pack(pady=10)
+
+            # [처리결과 가시화] 완료 안내문 한 줄로는 실제로 몇 건이 어떻게 처리됐는지 알 수 없어,
+            # 진행 중 스쳐 지나간 플랫폼별 라벨(오방_요약/당근_요약)을 최종 화면에도 그대로
+            # 다시 보여준다 — 플랫폼을 선택하지 않았으면 해당 줄은 아예 만들지 않는다.
+            요약_줄들 = []
+            if counts.get('오방_요약'): 요약_줄들.append(f"🟠 오방부동산 — {counts['오방_요약']}")
+            if counts.get('당근_요약'): 요약_줄들.append(f"🥕 당근부동산 — {counts['당근_요약']}")
+            if 요약_줄들:
+                lbl_summary = tk.Label(dash_win, text="\n".join(요약_줄들), font=("Malgun Gothic", 10), fg="#333333", justify="left")
+                lbl_summary.pack(pady=(0, 10))
 
             btn_frame = tk.Frame(dash_win)
             btn_frame.pack(pady=5)
@@ -1112,10 +1129,11 @@ def run_unattended(log_path):
 
     try:
         counts = run_platform_workers(obangData, target_mode, user_settings, progress_callback, unattended=True)
-        summary = (
-            f"성공:{counts['update']} 재등록:{counts['restart']} "
-            f"비공개:{counts['end']} 건너뜀:{counts['skip']}"
-        )
+        # [처리결과 가시화] 예전엔 오방+당근을 합산한 숫자 하나만 남겨서, 카드에 "성공:30"이
+        # 찍혀도 오방 30/당근 0인지 15/15인지 구분할 방법이 없었다 — 플랫폼별 요약(오방_요약/
+        # 당근_요약, run_platform_workers가 만들어둔 것)을 선택된 플랫폼만 줄바꿈으로 이어붙인다.
+        플랫폼별_요약_목록 = [s for s in (counts.get('오방_요약'), counts.get('당근_요약')) if s]
+        summary = " | ".join(플랫폼별_요약_목록) if 플랫폼별_요약_목록 else "처리 대상 없음"
         log(f"✅ 무인 업데이트 사이클 완료 — {summary}")
         write_run_log('success', summary)
     except Exception:
