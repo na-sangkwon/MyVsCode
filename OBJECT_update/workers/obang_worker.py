@@ -430,7 +430,10 @@ class ObangAutomationWorker:
                 print("----- 3.엔터(매물조회)")
 
                 WebDriverWait(self.driver, 5).until(lambda d: d.find_elements(By.CSS_SELECTOR, "#search-items tr strong")[0].text.strip() == update_code)
-                if len(self.driver.find_element(By.ID, "search-items").find_element(By.TAG_NAME, "tr").find_elements(By.TAG_NAME, "td")) == 1: continue
+                if len(self.driver.find_element(By.ID, "search-items").find_element(By.TAG_NAME, "tr").find_elements(By.TAG_NAME, "td")) == 1:
+                    print(f"자료없는 오방코드: {update_code}")
+                    self.skip_count += 1
+                    continue
 
                 #자료 존재유무 확인 = 첫번째목록의열개수가 1이면 자료없음을 의미
                 첫번째목록의열개수 = len(self.driver.find_element(By.ID, "search-items").find_element(By.TAG_NAME, "tr").find_elements(By.TAG_NAME, "td"))
@@ -438,6 +441,7 @@ class ObangAutomationWorker:
                 # pyautogui.alert(f"첫번째목록의열개수 확인:{update_code}")
                 if 첫번째목록의열개수 == 1:
                     print(f"자료없는 오방코드: {update_code}")
+                    self.skip_count += 1
                     continue
 
                 before_target = self.driver.find_element(By.CSS_SELECTOR, f"#tr_{update_code} > td:nth-child(15) > div").get_attribute('title').split(' ')[0]
@@ -450,9 +454,11 @@ class ObangAutomationWorker:
                 # 오늘 날짜와 비교하여 출력
                 if before_target == str(datetime.date.today()):
                     print("----- 5.Today! pass")
+                    self.skip_count += 1
                     continue
                 elif before_date > today:
                     print("----- 5.Future Date! pass")
+                    self.skip_count += 1
                     continue
 
                 행 = WebDriverWait(self.driver, 6).until(EC.presence_of_element_located((By.CSS_SELECTOR, f"#tr_{update_code}")))
@@ -495,7 +501,9 @@ class ObangAutomationWorker:
                     선택된매물정보 = 오방매물정보.get(update_code)
                     print("선택된매물정보:",선택된매물정보)
                     res_update = self.단일오방매물업데이트(선택된매물정보)
-                    if res_update == "skip": continue
+                    if res_update == "skip":
+                        self.skip_count += 1
+                        continue
 
                 else:
                     print("----- 이미 공개된 매물")
@@ -622,7 +630,21 @@ class ObangAutomationWorker:
         self.driver.find_element(By.CSS_SELECTOR, '#menu-product-1 > a').click() #매물->매물관리 클릭
 
     def run(self):
-        self.login_and_navigate() 
+        self.login_and_navigate()
         if self.mode in ['all', 'update_only']: self.process_updates()
         if self.mode in ['all', 'close_only']: self.process_closures()
+
+        # [처리결과 무결성 검증] 이번에 실제로 순회한 매물 수와, 성공/비공개/건너뜀/실패/미발견으로
+        # 집계된 합계는 항상 정확히 같아야 한다(사용자 지침: "각 사이트마다 카운트된 것들의 합은
+        # 항상 조회한 매물들의 숫자와 일치해야 한다") — 하나라도 어긋나면 어딘가에서 다시 "조용히
+        # 사라지는 매물"이 생겼다는 뜻이므로, 조용히 넘어가지 않고 크게 경고한다.
+        # restart_ok는 update_ok로 이미 집계된 항목의 부가 지표(공개전환 성공 여부)일 뿐,
+        # 그 자체로 별도 매물을 가리키지 않으므로 합계 검증에서는 제외한다.
+        총대상 = 0
+        if self.mode in ['all', 'update_only']: 총대상 += len(self.data.get('업데이트매물', []))
+        if self.mode in ['all', 'close_only']: 총대상 += len(self.data.get('거래완료매물', []))
+        집계합계 = self.update_ok + self.end_ok + self.skip_count + self.error_count + self.not_found_count
+        if 집계합계 != 총대상:
+            print(f"   [🚨 집계 불일치 경고] 오방 총 대상 {총대상}건 vs 집계 합계 {집계합계}건 — 어딘가에서 매물이 결과 집계 없이 누락되고 있을 수 있습니다. 코드 점검이 필요합니다.")
+
         return self.complete_count, self.restart_ok, self.update_ok, self.end_ok, self.skip_count, self.error_count, self.not_found_count

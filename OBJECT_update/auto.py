@@ -753,8 +753,13 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
             )
             c_count, r_ok, u_ok, e_ok, s_ok, err_ok, nf_ok = obang_worker.run()
             counts['complete'] += c_count; counts['restart'] += r_ok; counts['update'] += u_ok; counts['end'] += e_ok; counts['skip'] += s_ok; counts['error'] += err_ok
-            counts['오방_요약'] = f"성공:{u_ok} 재등록:{r_ok} 비공개:{e_ok} 건너뜀:{s_ok} 실패:{err_ok} 미발견:{nf_ok}"
-            progress_callback('obang', 100, 100, f"✅ 오방 업데이트 완료 V \n(성공:{u_ok} , 재등록:{r_ok} , 비공개:{e_ok} , 건너뜀:{s_ok} , 실패:{err_ok} , 미발견:{nf_ok}개)", 'determinate')
+            # [처리결과 가시화] "총 N건" 자체를 요약 맨 앞에 적어, 뒤에 나열된 숫자를 더했을 때
+            # 이 값과 정확히 같아야 한다는 걸 화면만 보고도 검산할 수 있게 한다(사용자 지침:
+            # "각 사이트마다 카운트된 것들의 합은 항상 조회한 매물들의 숫자와 일치해야 한다").
+            # restart_ok(재등록)는 update_ok로 이미 집계된 같은 매물의 부가 지표라 총건수에서 제외.
+            오방_총건수 = u_ok + e_ok + s_ok + err_ok + nf_ok
+            counts['오방_요약'] = f"총 {오방_총건수}건 — 성공:{u_ok} 재등록:{r_ok} 비공개:{e_ok} 건너뜀:{s_ok} 실패:{err_ok} 미발견:{nf_ok}"
+            progress_callback('obang', 100, 100, f"✅ 오방 업데이트 완료 V \n(총 {오방_총건수}건 - 성공:{u_ok} , 재등록:{r_ok} , 비공개:{e_ok} , 건너뜀:{s_ok} , 실패:{err_ok} , 미발견:{nf_ok}개)", 'determinate')
         else:
             progress_callback('obang', 0, 100, "⏭️ 오방부동산 스킵됨", 'determinate')
 
@@ -766,10 +771,14 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
             )
             cc, ro, uo, eo, so, ho, err_c = carrot_worker.run()
             counts['complete'] += cc; counts['restart'] += ro; counts['update'] += uo; counts['end'] += eo; counts['skip'] += so; counts['error'] += err_c
-            counts['당근_요약'] = f"끌올:{ro + ho}(일반{ro}/숨김해제{ho}) 수정:{uo} 비공개:{eo} 건너뜀:{so} 실패:{err_c}"
+            # [처리결과 가시화] cc(최종완료_개수)와 eo(비공개완료_성공_개수)가 매물 단위의 실제
+            # 항목 수이고, ro(끌어올리기)/uo(수정업데이트)/ho(숨김해제)는 cc 안에 이미 포함된
+            # 같은 매물의 부가 지표라서 총건수 계산에선 제외한다(오방쪽과 동일한 원칙).
+            당근_총건수 = cc + eo + so + err_c
+            counts['당근_요약'] = f"총 {당근_총건수}건 — 끌올:{ro + ho}(일반{ro}/숨김해제{ho}) 수정:{uo} 비공개:{eo} 건너뜀:{so} 실패:{err_c}"
             progress_callback(
                 'carrot', 100, 100,
-                f"✅ 당근 업데이트 완료 V \n(끌올 {ro + ho}건 [일반 {ro} / 숨김해제 {ho}] , 수정:{uo} , 비공개:{eo} , 건너뜀:{so} , 실패:{err_c}개)",
+                f"✅ 당근 업데이트 완료 V \n(총 {당근_총건수}건 - 끌올 {ro + ho}건 [일반 {ro} / 숨김해제 {ho}] , 수정:{uo} , 비공개:{eo} , 건너뜀:{so} , 실패:{err_c}개)",
                 'determinate'
             )
 
