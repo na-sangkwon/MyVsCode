@@ -32,6 +32,7 @@ from util.property_utils import (
     텍스트기준_버튼_클릭,
     최상단_예아니오_창,
     당근_끌어올리기_마스터_통합엔진,
+    당근_사진필수팝업_감지시_게시글수정_탈출,
     데이터베이스_다중_가격스펙_전수조회,
 )
 
@@ -735,6 +736,13 @@ class CarrotAutomationWorker:
                     숨기기해제_버튼 = 새_매물_행.find_element(By.XPATH, ".//button[normalize-space(text())='숨기기 해제']")
                     self.브라우저.execute_script("arguments[0].click();", 숨기기해제_버튼)
                     time.sleep(1.0)
+                    # [2026-09-23 추가 — 실사용 라이브 테스트로 확인] 사진 미등록 매물은 '숨기기 해제'
+                    # 클릭 직후 당근이 자체적으로 '사진을 추가해 주세요' 팝업을 띄운다. 이걸 감지하지
+                    # 못하고 그냥 넘어가면 팝업 배경(backdrop)이 남아 다음 매물부터 전부 [수정] 버튼
+                    # 클릭이 막히는 연쇄 실패로 이어진다(실제 재현: 3번째 매물부터 이후 전부 실패).
+                    # property_utils.py의 당근_끌어올리기_마스터_통합엔진()이 이미 쓰던 탈출 로직을
+                    # 공용 함수로 뽑아 재사용 — 고칠 땐 그쪽 정의부도 함께 확인할 것.
+                    당근_사진필수팝업_감지시_게시글수정_탈출(self.브라우저, 당근매물번호)
                     print(f"   [✅ 상태부활 마감 - {당근매물번호}] '숨기기 해제' 완수 V")
 
                 # 🎯 [2026-09-14 근본수정 — 사용자 지시] 시나리오 A(거래완료→구출)/C(숨김→구출) 중
@@ -753,6 +761,17 @@ class CarrotAutomationWorker:
             return True
         except Exception as 오류:
             print(f"   [❌ 오류 - {당근매물번호}] 수정방식 업데이트 고도화 시퀀스 도중 최종 실패: {오류}")
+            # [2026-09-23 추가] 위 어느 단계(수정폼 진입/저장, 사진팝업 탈출 등)에서 실패했든 화면이
+            # 수정폼이나 잔여 팝업에 멈춰있을 수 있다 — 정리하지 않고 다음 매물로 넘어가면 그 배경이
+            # 다음 매물의 [수정] 버튼 클릭까지 막는 연쇄 실패로 이어진다(property_utils.py의
+            # _검색화면으로_복귀류 복구와 동일한 원리).
+            try:
+                self.브라우저.get('https://realty.daangn.com/ceo/home')
+                WebDriverWait(self.브라우저, 10).until(
+                    EC.presence_of_element_located((By.XPATH, "//form//input[contains(@placeholder, '지번')]"))
+                )
+            except Exception as 복구_오류:
+                print(f"   [❌ 목록화면 복귀 실패 - {당근매물번호}] 다음 매물도 연쇄 실패할 수 있습니다: {복구_오류}")
             return False
 
     def 가격_동기화_실행(self, 당근매물번호, DB_유효_가격목록):

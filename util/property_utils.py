@@ -888,6 +888,57 @@ def 당근_쿨타임_문구에서_남은시간_파싱(title_text):
     )
 
 
+def 당근_사진필수팝업_감지시_게시글수정_탈출(driver, ad_code):
+    """
+    [2026-09-23 추출 — 공용화] 당근에서 '숨김' 상태 매물을 되살리는 조작(더보기>숨기기 해제, 또는
+    행의 [숨기기 해제] 버튼) 직후, 매물에 사진이 없으면 당근이 자체적으로 '사진을 추가해 주세요'
+    팝업을 띄워 노출을 막는다. 이 팝업을 감지하지 못하고 그냥 다음 매물로 넘어가면 팝업의 배경
+    (backdrop)이 화면에 남아, 이후 모든 매물의 버튼 클릭이 이 배경에 가로막혀 연쇄 실패한다.
+
+    [왜 공용 함수로 뽑았나] 원래 이 아래 당근_끌어올리기_마스터_통합엔진()에만 있던 로직이었는데,
+    OBJECT_update/workers/carrot_worker.py의 수정방식_업데이트_실행() 시나리오 C(숨김→구출)에도
+    같은 '숨기기 해제' 조작이 있고 이 팝업이 뜨는 게 실사용 라이브 테스트로 확인됐다(2026-09-23).
+    같은 로직을 두 파일에 복붙하면 나중에 한쪽만 고치고 잊어버리기 쉬워서, 여기 하나로 합치고
+    두 호출부가 이 함수를 같이 쓰도록 했다 — 이 함수를 고칠 땐 두 호출부 모두 영향받는다는 것을
+    염두에 둘 것.
+
+    :return: 사진팝업을 감지해 '게시글 수정' 탈출을 시도했으면 True, 애초에 팝업이 없었으면 False.
+        (탈출 시퀀스 자체가 중간에 실패하면 예외를 그대로 호출자에게 전파한다 — 화면이 수정폼
+        등 비정상 상태에 멈췄을 수 있으므로, 복구는 각 호출자가 자기 문맥에 맞게 책임진다.)
+    """
+    photo_popup_xpath = "//span[text()='사진을 추가해 주세요' or contains(text(), '사진을 추가')]"
+    photo_popups = driver.find_elements(By.XPATH, photo_popup_xpath)
+    if not photo_popups:
+        return False
+
+    print(f"   [🛑 사진 누락 관문 진입 - {ad_code}] 사진 누락 절대 차단 락 감지 ➡️ '게시글 수정' 탈출 팩토리 기동")
+
+    # 1) 팝업 내부의 '게시글 수정' 버튼을 찾아 자바스크립트로 강제 격파
+    fix_article_btn = driver.find_element(By.XPATH, "//button[text()='게시글 수정']")
+    driver.execute_script("arguments[0].click();", fix_article_btn)
+
+    # 2) 당근마켓의 공식 수정 양식 폼 페이지가 완전히 로딩될 때까지 홀딩 대기
+    WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.NAME, "salesType")))
+    time.sleep(1.0)
+
+    # 3) 양식 최하단 마감 저장 단추인 '매물 수정'을 원격 리클릭하여 승인 제출
+    print(f"   [✍️ 양식 강제마감 - {ad_code}] 수정 화면 진입 성공 ➡️ 하단 [매물 수정] 버튼 강제 터치 마감...")
+    final_submit_btn = WebDriverWait(driver, 5).until(
+        EC.element_to_be_clickable((By.XPATH, "//button[text()='매물 수정' or contains(text(), '수정 완료') or text()='수정']"))
+    )
+    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", final_submit_btn)
+    time.sleep(0.3)
+    driver.execute_script("arguments[0].click();", final_submit_btn)
+
+    # 4) 대시보드 목록 메인 화면으로 바운드되어 안전 복귀할 때까지 최종 대기
+    WebDriverWait(driver, 10).until(
+        EC.presence_of_element_located((By.CSS_SELECTOR, "form input[placeholder*='지번']"))
+    )
+    time.sleep(1.5)
+    print(f"   [✅ 구출 성공 - {ad_code}] 사진 누락 제한 락 완벽 격파 ➡️ 대시보드 리스트 원대복귀 완수 V")
+    return True
+
+
 def 당근_끌어올리기_마스터_통합엔진(driver, row_element, ad_code, current_status, price_specs, unattended=False, 끌올관측_수집함=None):
     """
     [소장님 지시 반영 - 숨김해제 독립 분리 버전]
@@ -1013,42 +1064,11 @@ def 당근_끌어올리기_마스터_통합엔진(driver, row_element, ad_code, 
                     )
                     driver.execute_script("arguments[0].click();", unhide_option)
                     time.sleep(0.5) # 기습 팝업 전개 대기 버퍼 마진
-                    
-                    # =================================================================
-                    # 🚀 [소장님 기획 반영 - 최소 추가] 사진 필수 제한 기습 팝업 우회 탈출 엔진
-                    # =================================================================
-                    # 팝업창 내부에 '사진을 추가해 주세요' 문구가 감지되는지 레이더 스캔을 켭니다.
-                    photo_popup_xpath = "//span[text()='사진을 추가해 주세요' or contains(text(), '사진을 추가')]"
-                    photo_popups = driver.find_elements(By.XPATH, photo_popup_xpath)
-                    
-                    if photo_popups:
-                        print(f"   [🛑 사진 누락 관문 진입 - {ad_code}] 사진 누락 절대 차단 락 감지 ➡️ '게시글 수정' 탈출 팩토리 기동")
-                        
-                        # 1) 팝업 내부의 '게시글 수정' 버튼을 찾아 자바스크립트로 강제 격파
-                        fix_article_btn = driver.find_element(By.XPATH, "//button[text()='게시글 수정']")
-                        driver.execute_script("arguments[0].click();", fix_article_btn)
-                        
-                        # 2) 당근마켓의 공식 수정 양식 폼 페이지가 완전히 로딩될 때까지 홀딩 대기
-                        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.NAME, "salesType")))
-                        time.sleep(1.0)
-                        
-                        # 3) 소장님 노하우 적용: 양식 최하단 마감 저장 단추인 '매물 수정'을 원격 리클릭하여 승인 제출
-                        print(f"   [✍️ 양식 강제마감 - {ad_code}] 수정 화면 진입 성공 ➡️ 하단 [매물 수정] 버튼 강제 터치 마감...")
-                        final_submit_btn = WebDriverWait(driver, 5).until(
-                            EC.element_to_be_clickable((By.XPATH, "//button[text()='매물 수정' or contains(text(), '수정 완료') or text()='수정']"))
-                        )
-                        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", final_submit_btn)
-                        time.sleep(0.3)
-                        driver.execute_script("arguments[0].click();", final_submit_btn)
-                        
-                        # 4) 대시보드 목록 메인 화면으로 바운드되어 안전 복귀할 때까지 최종 대기
-                        WebDriverWait(driver, 10).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, "form input[placeholder*='지번']"))
-                        )
-                        time.sleep(1.5)
-                        print(f"   [✅ 구출 성공 - {ad_code}] 사진 누락 제한 락 완벽 격파 ➡️ 대시보드 리스트 원대복귀 완수 V")
-                    
-                    else:
+
+                    # 사진 필수 제한 기습 팝업이 뜨면 공용 함수가 '게시글 수정' 탈출까지 처리한다
+                    # (당근_사진필수팝업_감지시_게시글수정_탈출 정의부 주석 참고 — carrot_worker.py의
+                    # 수정방식_업데이트_실행()과 이 로직을 공유하므로 고칠 때 그쪽도 함께 확인할 것).
+                    if not 당근_사진필수팝업_감지시_게시글수정_탈출(driver, ad_code):
                         # ---------------------------------------------------------
                         # 상황 B: 사진이 정상적으로 들어있는 청정 매물일 때 (기존 정통 선로 유지)
                         # ---------------------------------------------------------
