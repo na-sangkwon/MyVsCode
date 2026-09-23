@@ -1170,10 +1170,17 @@ def 당근_끌어올리기_마스터_통합엔진(driver, row_element, ad_code, 
                     # 네이티브 확인창 1.2초 + 커스텀 팝업 버튼 1초)를 매번 허탕치며 낭비했다(지난번
                     # "292" 알림의 원인이 됐던 바로 그 호출). "없는 확인 버튼을 찾기" 대신 "팝업창
                     # 자체가 실제로 사라졌는지"만 확인해서, 닫히는 즉시 다음 단계로 넘어간다.
+                    # [2026-09-23 디버깅 강화] 이 대기도 위 끌어올리기 팝업 감지와 같은 스로틀링
+                    # 영향을 받는지 아직 실측이 없다 — 소요시간을 남겨 다음 재현 때 바로 비교할 수
+                    # 있게 한다(2초 설정인데 실제로 더 걸리면 여기도 같은 현상임을 확인하는 근거).
+                    닫힘대기_시작 = time.time()
                     try:
                         WebDriverWait(driver, 2).until(EC.invisibility_of_element(dialog_popup))
+                        print(f"   [🔎 디버그 - {ad_code}] 가격변경 팝업 닫힘 감지까지 "
+                              f"{time.time() - 닫힘대기_시작:.2f}초 소요")
                     except TimeoutException:
-                        pass
+                        print(f"   [🔎 디버그 - {ad_code}] 가격변경 팝업 닫힘 미감지 — "
+                              f"{time.time() - 닫힘대기_시작:.2f}초 경과 후 타임아웃(그냥 진행)")
                 except Exception as button_err:
                     print(f"   [⚠️ 경고 - {ad_code}] '가격만 변경하기' 저장 버튼 작동 실패: {button_err}")
                 final_action_code = "PRICE_UPDATE_SUCCESS"
