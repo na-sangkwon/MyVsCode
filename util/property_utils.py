@@ -1013,25 +1013,77 @@ def 당근_끌어올리기_마스터_통합엔진(driver, row_element, ad_code, 
         click_btn = WebDriverWait(row_element, 5).until(
             EC.visibility_of_element_located((By.XPATH, ".//button[text()='끌어올리기']"))
         )
+
+        # [2026-09-23 디버깅 강화 — 원인 특정용] 클릭 직전 시점에 이 버튼이 실제로 최상단에
+        # 노출돼 있는지(다른 요소가 겹쳐서 가리고 있는 건 아닌지)를 좌표 기준으로 먼저 찍어둔다 —
+        # 사용자가 직접 클릭했을 때는 거의 즉시 팝업이 떴는데 자동화에서만 간헐적으로 늦게 뜨는
+        # 현상의 원인 후보(네이티브 클릭 실패→JS 강제클릭 폴백 시 렌더링 우선순위가 낮아지는 것
+        # 아닌가 하는 가설)를 다음 재현 때 바로 확인하기 위함. 진단 자체의 실패가 본작업을
+        # 막으면 안 되므로 예외는 무시하고 넘어간다.
+        try:
+            rect = click_btn.rect
+            중심_x = rect['x'] + rect['width'] / 2
+            중심_y = rect['y'] + rect['height'] / 2
+            그_지점의_최상단요소 = driver.execute_script(
+                "return document.elementFromPoint(arguments[0], arguments[1]);", 중심_x, 중심_y
+            )
+            버튼이_최상단인지 = driver.execute_script(
+                "return arguments[0] === arguments[1];", click_btn, 그_지점의_최상단요소
+            )
+            print(f"   [🔎 디버그 - {ad_code}] 클릭 전 진단: displayed={click_btn.is_displayed()} "
+                  f"enabled={click_btn.is_enabled()} 중심좌표=({중심_x:.0f},{중심_y:.0f}) "
+                  f"그_지점의_최상단요소가_버튼자신인지={버튼이_최상단인지}")
+        except Exception as 진단_오류:
+            print(f"   [🔎 디버그 - {ad_code}] 클릭 전 진단 실패(무시하고 계속): {진단_오류}")
+
         # [버그 수정 - 2026-09-23] 남아있는 안내 팝업 등 다른 배경(backdrop)이 이 버튼을 가로채면
         # 일반 click()이 ElementClickInterceptedException으로 죽는다(실측: 처리 대상 15건 전부
         # 이 지점에서 실패). 이 파일 다른 곳(당근_팝업창_가격_동기화_처리_엔진 등)과 동일한
         # 패턴으로 자바스크립트 강제클릭을 폴백으로 둔다.
+        # [2026-09-23 디버깅 강화] 네이티브 클릭이 성공했는지 JS 강제클릭으로 전환됐는지, 그리고
+        # 클릭 시각을 남긴다 — "JS 강제클릭일 때만 팝업이 늦게 뜨는가"를 다음 재현 때 실제 로그로
+        # 검증하기 위함(추정만으로 고치지 않기 위해).
+        클릭_시각 = time.time()
         try:
             click_btn.click()
-        except Exception:
+            print(f"   [🔎 디버그 - {ad_code}] 끌어올리기 버튼: 네이티브 클릭 성공")
+        except Exception as 네이티브클릭_오류:
+            print(f"   [🔎 디버그 - {ad_code}] 끌어올리기 버튼: 네이티브 클릭 실패({네이티브클릭_오류}) → JS 강제클릭으로 전환")
             driver.execute_script("arguments[0].click();", click_btn)
-        
+
         # 2. 가격 조정 팝업창 출현 정밀 대기
         # 🎯 [2026-09-06 수정 — 실사용 중 재현된 버그] 실제 팝업은 뜨고 있었는데, 코드가 기다리던
         # @data-state='open' 속성이 아니라 @data-open(값 없는 boolean 속성)을 쓰는 다른 다이얼로그
         # 컴포넌트였다(새홈 541535/당근 3629260, '숨김' 매물 끌어올리기 라이브 재현으로 확인 —
         # 스크린샷/DOM 덤프로 실제 마크업 <div data-open="" role="dialog" ...> 확인함). 두 방식을
         # 모두 인정하도록 조건을 넓힌다.
-        dialog_popup = WebDriverWait(driver, 5).until(
-            EC.visibility_of_element_located((By.XPATH, "//div[@role='dialog' and (@data-state='open' or @data-open)]"))
-        )
-        print(f"   [✅ 팝업 확정 - {ad_code}] 실제 작동 팝업창 고유 ID ➡️ '{dialog_popup.get_attribute('id')}'")
+        try:
+            dialog_popup = WebDriverWait(driver, 5).until(
+                EC.visibility_of_element_located((By.XPATH, "//div[@role='dialog' and (@data-state='open' or @data-open)]"))
+            )
+            대기_소요초 = time.time() - 클릭_시각
+            print(f"   [✅ 팝업 확정 - {ad_code}] 실제 작동 팝업창 고유 ID ➡️ '{dialog_popup.get_attribute('id')}' "
+                  f"(클릭 후 {대기_소요초:.2f}초 만에 감지)")
+        except TimeoutException:
+            # [2026-09-23 디버깅 강화 — 원인 특정용] "팝업이 아예 안 뜨는 것"과 "떴는데 우리 조건
+            # (visibility + data-open/data-state)을 못 맞춰서 못 찾는 것"은 완전히 다른 원인이다.
+            # 타임아웃 직후 조건을 느슨하게(role=dialog만) 다시 조회해서 실제로 뭐가 있었는지
+            # 화면 상태를 남긴다 — 다음 재현 때 이 로그만 보고 바로 원인을 좁히기 위함.
+            경과초 = time.time() - 클릭_시각
+            print(f"   [🔎 디버그 - {ad_code}] 팝업 대기 {경과초:.2f}초 경과 후 타임아웃 — 화면 상태 정밀 진단 시작")
+            try:
+                느슨한_매치_목록 = driver.find_elements(By.XPATH, "//div[@role='dialog']")
+                print(f"   [🔎 디버그 - {ad_code}] role=dialog 요소(상태 무관) {len(느슨한_매치_목록)}개 발견")
+                for idx, el in enumerate(느슨한_매치_목록):
+                    try:
+                        print(f"      - [{idx}] id={el.get_attribute('id')!r} "
+                              f"data-state={el.get_attribute('data-state')!r} "
+                              f"data-open={el.get_attribute('data-open')!r} displayed={el.is_displayed()}")
+                    except Exception as el_오류:
+                        print(f"      - [{idx}] 속성 조회 실패: {el_오류}")
+            except Exception as 진단_오류2:
+                print(f"   [🔎 디버그 - {ad_code}] 진단용 느슨한 조회 자체도 실패: {진단_오류2}")
+            raise
         time.sleep(0.5)
 
         # 3. H2 제목 파싱 및 쿨타임 검지
