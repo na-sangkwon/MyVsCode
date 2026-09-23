@@ -245,12 +245,15 @@ def 만원단위숫자금액을한글금액으로(amount_man):
     return result
 
 
-def 확인창클릭(driver, 선택='확인', timeout=3, unattended=False):
+def 확인창클릭(driver, 선택='확인', timeout=1, unattended=False):
     """
     브라우저 자바스크립트 기본 confirm 창 및 HTML 기반 크롬 커스텀 레이어 확인창을 교차 탐색하여 제어하는 범용 함수
     :param driver: Selenium WebDriver 객체
     :param 선택: '확인' 또는 '취소' (기본값 '확인')
-    :param timeout: 동적 타겟 검속 제한 시간 (초)
+    :param timeout: 동적 타겟 검속 제한 시간 (초). [2026-09-23 수정 — 사용자 요청] 기본값을
+        3초→1초로 낮춤 — 실제 팝업/확인창은 뜬다면 클릭 직후 거의 즉시 나타나므로, 통상적인
+        출현 시간에 맞춰 대기를 짧게 잡는다(기존 호출부는 대부분 이미 timeout=1을 직접 넘기고
+        있어 실제 동작 변화는 없고, 인자를 생략하는 새 호출부의 기본 대기만 짧아진다).
     :param unattended: 나스 무인 실행 등 사람이 없는 경우 True — 실패 시 최상단알림창(사람 클릭 대기)
         대신 콘솔 로그로만 남기고 넘어간다. 기존 호출부(다른 프로젝트 포함)는 인자를 안 넘기면
         기존과 동일하게 동작한다.
@@ -262,8 +265,11 @@ def 확인창클릭(driver, 선택='확인', timeout=3, unattended=False):
     import time
 
     # 1단계 대책: 브라우저 원초적 크롬 시스템 Alert/Confirm 팝업창 체크
+    # [2026-09-23 수정 — 사용자 요청] 1.2초→0.5초로 단축 — 크롬 네이티브 Alert/Confirm은 뜬다면
+    # 클릭 직후 브라우저가 직접 그리는 것이라 지연 없이 거의 즉시 나타난다. 통상적인 출현 시간
+    # 대비 과했던 대기를 줄인다.
     try:
-        시스템_알림창 = WebDriverWait(driver, 1.2).until(EC.alert_is_present())
+        시스템_알림창 = WebDriverWait(driver, 0.5).until(EC.alert_is_present())
         알림_텍스트 = 시스템_알림창.text.replace('\n', ' ')
         if 선택 == '확인':
             시스템_알림창.accept()
@@ -1070,15 +1076,16 @@ def 당근_끌어올리기_마스터_통합엔진(driver, row_element, ad_code, 
                     print(f"   [🔎 디버그 - {ad_code}] 3단계(쿨타임형): '[가격만 변경하기]' 마감 버튼 터치...")
                     price_only_btn = dialog_popup.find_element(By.XPATH, ".//button[text()='가격만 변경하기']")
                     driver.execute_script("arguments[0].click();", price_only_btn)
-                    time.sleep(0.3)
-                    # 기존 코드의 智慧='확인'은 함수가 실제로 받는 파라미터명 선택='확인'의 오타로
-                    # 보여 여기서 함께 바로잡음(2026-08-30) — 원래는 TypeError로 이 분기가 죽었을 자리.
-                    # [2026-09-23 수정] 이 확인창은 애초에 없어도 되는(=실패해도 무해한) 보조 클린업
-                    # 단계다 — 위 try가 이미 실패를 허용하고 있다. 그런데 unattended를 그대로 넘기면
-                    # 라이브(사람 감시) 테스트 중엔 매번 사람이 데스크탑에서 직접 클릭해야 하는 강제
-                    # 알림창이 뜨면서 자동화가 멈춰버렸다(실사용 재현: "292" 알림). 이 지점만은 무인
-                    # 실행과 동일하게 취급해 로그만 남기고 넘어간다.
-                    확인창클릭(driver, 선택='확인', timeout=1, unattended=True)
+                    # [2026-09-23 수정 — 사용자 실사용 관찰] 이 버튼을 누르면 별도의 [확인] 버튼이 있는
+                    # 창이 뜨는 게 아니라, 토스트 메시지만 뜨고 팝업이 스스로 닫힌다. 그런데 예전 코드는
+                    # (존재하지도 않는) [확인] 버튼을 확인창클릭()으로 찾아 헤맸다 — 최대 2.2초(크롬
+                    # 네이티브 확인창 1.2초 + 커스텀 팝업 버튼 1초)를 매번 허탕치며 낭비했다(지난번
+                    # "292" 알림의 원인이 됐던 바로 그 호출). "없는 확인 버튼을 찾기" 대신 "팝업창
+                    # 자체가 실제로 사라졌는지"만 확인해서, 닫히는 즉시 다음 단계로 넘어간다.
+                    try:
+                        WebDriverWait(driver, 2).until(EC.invisibility_of_element(dialog_popup))
+                    except TimeoutException:
+                        pass
                 except Exception as button_err:
                     print(f"   [⚠️ 경고 - {ad_code}] '가격만 변경하기' 저장 버튼 작동 실패: {button_err}")
                 final_action_code = "PRICE_UPDATE_SUCCESS"
