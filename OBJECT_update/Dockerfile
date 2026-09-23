@@ -35,6 +35,13 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 # 최소 베이스 이미지의 로케일이 UTF-8이 아닐 경우를 대비해 방어적으로 강제한다.
 ENV PYTHONUTF8=1
 
+# [2026-09-23 추가 — 나스 재현 기회가 드물어 진단 로그 유실을 막기 위함] 파이썬은 출력이
+# 터미널이 아니라 파이프/파일로 연결되면(도커 컨테이너가 항상 이 상황) print()를 즉시 내보내지
+# 않고 내부 버퍼에 모았다가 한꺼번에 내보낸다. 프로그램이 정상 종료되면 문제없지만, 크롬 충돌이나
+# 컨테이너 강제 종료 같은 비정상 종료가 나면 버퍼에 쌓여있던 진단 로그(정확히 "실패하는 바로 그
+# 순간"의 기록)가 통째로 사라질 수 있다. 출력을 항상 즉시 내보내도록 강제해 이 위험을 없앤다.
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 COPY util ./util
 COPY OBJECT_update/requirements.txt ./OBJECT_update/requirements.txt

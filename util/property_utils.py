@@ -352,18 +352,54 @@ def 당근매물번호_검색창_입력(driver, 매물번호):
         검색창 = WebDriverWait(driver, 5).until(
             EC.presence_of_element_located((By.XPATH, 검색창_xpath))
         )
+
+        # [2026-09-23 디버깅 강화 — 원인 특정용] "element not interactable"가 실사용에서 자주
+        # 재현되는 지점이다(이 검색 실패가 그 매물의 처리 전체를 연쇄로 어긋나게 만든다). 클릭
+        # 자체가 막힌 건지, 클릭은 됐는데 그 사이 포커스가 다른 요소로 빠져 send_keys가 막힌
+        # 건지를 구분하기 위해 상태를 남긴다. 진단 실패가 본작업을 막지 않도록 예외는 무시.
+        try:
+            rect = 검색창.rect
+            중심_x = rect['x'] + rect['width'] / 2
+            중심_y = rect['y'] + rect['height'] / 2
+            그_지점의_최상단요소 = driver.execute_script(
+                "return document.elementFromPoint(arguments[0], arguments[1]);", 중심_x, 중심_y
+            )
+            검색창이_최상단인지 = driver.execute_script(
+                "return arguments[0] === arguments[1];", 검색창, 그_지점의_최상단요소
+            )
+            print(f"   [🔎 디버그] 검색창 클릭 전 진단: displayed={검색창.is_displayed()} "
+                  f"enabled={검색창.is_enabled()} 검색창이_최상단인지={검색창이_최상단인지}")
+        except Exception as 진단_오류:
+            print(f"   [🔎 디버그] 검색창 클릭 전 진단 실패(무시하고 계속): {진단_오류}")
+
         # [2026-09-16 실사용 중 재현된 버그] 당근 대시보드에 새로 뜨는 프로모션 배너 이미지가
         # 검색창을 덮어서 네이티브 click()이 "element click intercepted"로 실패했다(실사용
         # 로그로 확인 — 배너 src가 .../performance-*.png). 이 파일 다른 곳(당근_끌어올리기_
         # 마스터_통합엔진 등)과 동일하게 JS 강제클릭으로 우회한다.
-        try: 검색창.click()
-        except: driver.execute_script("arguments[0].click();", 검색창)
-        검색창.send_keys(Keys.CONTROL + "a")
-        검색창.send_keys(Keys.BACKSPACE)
-        time.sleep(0.3)
-        
-        # 실시간 돔 반영을 위해 엔터 없이 값만 주입
-        검색창.send_keys(str(매물번호))
+        try:
+            검색창.click()
+            print("   [🔎 디버그] 검색창: 네이티브 클릭 성공")
+        except Exception as 네이티브클릭_오류:
+            print(f"   [🔎 디버그] 검색창: 네이티브 클릭 실패({네이티브클릭_오류}) → JS 강제클릭으로 전환")
+            driver.execute_script("arguments[0].click();", 검색창)
+
+        try:
+            검색창.send_keys(Keys.CONTROL + "a")
+            검색창.send_keys(Keys.BACKSPACE)
+            time.sleep(0.3)
+            # 실시간 돔 반영을 위해 엔터 없이 값만 주입
+            검색창.send_keys(str(매물번호))
+        except Exception as 입력_오류:
+            # [2026-09-23 디버깅 강화] send_keys가 "element not interactable"로 막히는 순간
+            # 실제로 포커스가 어디 가있었는지(검색창 본인인지, 엉뚱한 다른 요소인지) 남긴다.
+            try:
+                활성_요소 = driver.execute_script(
+                    "var e = document.activeElement; return e ? (e.tagName + '#' + e.id) : null;"
+                )
+            except Exception:
+                활성_요소 = '(조회 실패)'
+            print(f"   [🔎 디버그] 검색창 입력 실패: {입력_오류} | 현재 포커스 요소={활성_요소}")
+            raise
         print(f"   [⚙️ 공용 유틸] 당근 검색창에 번호 [{매물번호}] 입력 및 필터링 완료")
         # [2026-09-23 수정 — 사용자 요청] 무조건 2초 고정대기 대신, 목록 행(row)에 이 매물번호가
         # 실제로 나타날 때까지만 기다린다(당근_조건부_동적대기). 갱신이 빠르면 더 빨리 다음 단계로
