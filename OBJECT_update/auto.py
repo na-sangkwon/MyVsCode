@@ -785,6 +785,16 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
         # 미리 인자로 지정해서 창 최대화 자체가 필요 없게 우회한다.
         options.add_argument("--window-size=1600,900")
     options.add_experimental_option('useAutomationExtension', False)
+    # [2026-09-23 추가 — 사용자가 단일매물 테스트로 원인 특정] 크롬은 창이 최소화되거나
+    # 백그라운드로 밀려나면 JS 타이머·렌더링을 절전 목적으로 억제(throttling)한다. 이 자동화는
+    # 창을 최소화한 채로 돌리는 경우가 실제로 있는데, 그 상태에서 같은 매물을 처리하면 팝업이
+    # 아예 안 뜬 것처럼 보여 WebDriverWait이 타임아웃되고(TimeoutException), 화면을 보고 있을
+    # 때(창이 보이는 상태) 재시도하면 정상 처리됐다 — 오늘 겪은 간헐적 실패들의 상당수가 코드
+    # 로직이 아니라 이 브라우저 자체 절전 동작 때문이었을 가능성이 크다. 아래 3개는 "안 보이는
+    # 창의 JS/렌더링을 절전 모드로 깎지 못하게" 막는 표준 옵션이다.
+    options.add_argument("--disable-backgrounding-occluded-windows")
+    options.add_argument("--disable-renderer-backgrounding")
+    options.add_argument("--disable-background-timer-throttling")
     # [2026-09-02] 이 프로필(daangn_profile)은 원래 당근 로그인 세션 유지용인데 오방
     # 로그인에도 그대로 재사용된다 — 그 결과 크롬 비밀번호 관리자가 오방 로그인 정보를
     # 저장해두고 매 실행마다 비동기로 자동완성을 시도했고, 이 자동완성이 obang_worker.py의
@@ -860,6 +870,16 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
             # 검증 실패가 방금 끝난 오방/당근 업데이트 결과에 영향을 주지 않도록 별도 함수
             # 안에서 통째로 방어한다(당근_루프_검증_안전실행 주석 참고).
             검증결과 = 당근_루프_검증_안전실행(driver, obangData.get('당근_업데이트목록', []))
+            # [2026-09-23 추가 — 사용자 지적 "로그상으로는 아직 진행중인데 멈춘것처럼 보여"] 검증 자체가
+            # 끝났다는 표시는 그동안 _당근_검증_디버그기록()으로 파일에만 남고 콘솔에는 안 찍혔다 —
+            # GUI 대시보드(progress_callback)는 아래처럼 불일치가 있을 때만 갱신되니, 콘솔 로그만 보는
+            # 사람은 마지막 매물 처리 로그 뒤로 아무 것도 안 찍혀 멈춘 것으로 오해하게 된다. 불일치
+            # 여부와 상관없이 이 단계가 끝났다는 것 자체를 콘솔에도 남긴다.
+            if 검증결과:
+                print(f"[당근 사후검증 완료] 확인 {검증결과['총건수']}건 중 불일치 {검증결과['불일치건수']}건 자동수정, "
+                      f"확인불가 {검증결과['확인불가건수']}건")
+            else:
+                print("[당근 사후검증] 건너뜀 또는 실패 — 자세한 내용은 디버그 로그 참고")
             if 검증결과 and 검증결과['불일치건수'] > 0:
                 progress_callback(
                     'carrot', 100, 100,
