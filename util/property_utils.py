@@ -911,7 +911,14 @@ def 당근_끌어올리기_마스터_통합엔진(driver, row_element, ad_code, 
         click_btn = WebDriverWait(row_element, 5).until(
             EC.visibility_of_element_located((By.XPATH, ".//button[text()='끌어올리기']"))
         )
-        click_btn.click()
+        # [버그 수정 - 2026-09-23] 남아있는 안내 팝업 등 다른 배경(backdrop)이 이 버튼을 가로채면
+        # 일반 click()이 ElementClickInterceptedException으로 죽는다(실측: 처리 대상 15건 전부
+        # 이 지점에서 실패). 이 파일 다른 곳(당근_팝업창_가격_동기화_처리_엔진 등)과 동일한
+        # 패턴으로 자바스크립트 강제클릭을 폴백으로 둔다.
+        try:
+            click_btn.click()
+        except Exception:
+            driver.execute_script("arguments[0].click();", click_btn)
         
         # 2. 가격 조정 팝업창 출현 정밀 대기
         # 🎯 [2026-09-06 수정 — 실사용 중 재현된 버그] 실제 팝업은 뜨고 있었는데, 코드가 기다리던

@@ -127,6 +127,23 @@ class CarrotAutomationWorker:
             
         print("[🔎 디버그] 3단계: 비동기 AJAX 데이터 그리드 테이블이 완전히 안착할 수 있도록 물리적 버퍼 시간을 부여합니다.")
         time.sleep(2.0)
+
+        # [버그 수정 - 2026-09-23] 로그인 직후 당근이 새로 띄우는 기능 안내 팝업(예: "이제
+        # 매물별로 광고 성과와 지출을 확인할 수 있어요")이 자동화에서는 닫히지 않고 그대로
+        # 남아있었다 — 이 팝업의 배경(seed-content-dialog__backdrop)이 화면 전체를 덮어, 이후
+        # 검색창 클릭부터 끌어올리기 버튼 클릭까지 전부 가로채여 실패하는 걸 실측으로 확인함
+        # (나스가 아닌 로컬 실행에서 재현: 오늘 처리 대상 15건 전부 같은 지점에서 실패).
+        # 열려있는 팝업이 있으면 닫고, 없으면 아무 일도 하지 않는다(방어적 — 이 팝업은 매번
+        # 뜨는 게 아니라 신규 기능 안내처럼 뜨다 안 뜨다 할 수 있어서 무조건 있다고 가정하지 않는다).
+        try:
+            닫기_버튼_목록 = self.브라우저.find_elements(By.XPATH, "//div[@role='dialog']//button[@aria-label='닫기']")
+            if 닫기_버튼_목록:
+                print("[🔎 디버그] 로그인 직후 안내 팝업 감지 ➡️ 자동으로 닫습니다.")
+                self.브라우저.execute_script("arguments[0].click();", 닫기_버튼_목록[0])
+                time.sleep(0.5)
+        except Exception as 팝업_오류:
+            print(f"[⚠️ 경고] 안내 팝업 자동 닫기 시도 중 오류(무시하고 계속 진행): {팝업_오류}")
+
         print("[🔎 디버그] 당근 비즈니스 센터 화면 초기화 및 페이지 로드 안정화 작업 완료!\n")
 
     # =================================================================
@@ -790,7 +807,13 @@ class CarrotAutomationWorker:
             # 갖는 의미론적 속성(드롭다운 메뉴를 여는 버튼)인 aria-haspopup="menu"로 대체한다 —
             # 이 속성은 UI 라이브러리가 또 바뀌어도(id 생성 방식과 무관하게) 유지될 가능성이 높다.
             더보기_버튼 = 매물_행_객체.find_element(By.XPATH, ".//button[@aria-haspopup='menu']")
-            더보기_버튼.click()
+            # [버그 수정 - 2026-09-23] 남아있는 안내 팝업 등 다른 배경(backdrop)이 이 버튼을
+            # 가로채면 일반 click()이 ElementClickInterceptedException으로 죽는다(실측 확인) —
+            # 자바스크립트 강제클릭을 폴백으로 둔다.
+            try:
+                더보기_버튼.click()
+            except Exception:
+                self.브라우저.execute_script("arguments[0].click();", 더보기_버튼)
             time.sleep(0.6)
             
             print(f"   [🔎 디버그 - {당근매물번호}] 하부 레이어 팝업 메뉴 노출 감지. 종료/숨기기 탭 저격 중...")
