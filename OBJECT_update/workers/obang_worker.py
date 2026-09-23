@@ -246,7 +246,12 @@ class ObangAutomationWorker:
             else: location_do = location_do[:-1]
         elif location_do.endswith('특별시'): location_do = location_do[:-3]
 
-        location_detail = 업데이트정보['land_dong'] + 업데이트정보['land_jibun'] if 업데이트정보['land_li'] == '' else 업데이트정보['land_li'] + ' ' + 업데이트정보['land_jibun']
+        # [버그 수정 - 2026-09-23] auto.py의 o_query가 land_jibun을 land_jibung으로 별칭 처리하도록
+        # 스키마 마이그레이션됐는데(1efb3b6), 이 파일은 그때 함께 안 고쳐져서 KeyError: 'land_jibun'로
+        # 매번 실패하고 있었다(나스 실행 로그로 실제 확인) — 더 심각한 건 이 예외가 이미 "관리"→"수정"
+        # 페이지 진입 이후 시점이라, except로 잡혀도 검색 목록 화면으로 못 돌아가 그 뒤 모든 매물까지
+        # "#search_id 못 찾음"으로 연쇄 실패시켰다.
+        location_detail = 업데이트정보['land_dong'] + 업데이트정보['land_jibung'] if 업데이트정보['land_li'] == '' else 업데이트정보['land_li'] + ' ' + 업데이트정보['land_jibung']
         main_area, land_memo = 업데이트정보['land_totarea'], 업데이트정보['land_memo']
         land_memo_formatted = self.메모에마크추가(land_memo , '· ')
         if land_memo_formatted: I_memo += ("<br>" if I_memo else "") + land_memo_formatted
@@ -410,6 +415,22 @@ class ObangAutomationWorker:
             #     WebDriverWait(self.driver, 3).until(EC.invisibility_of_element(btn))
             # except: pyautogui.alert("갱신 실패")            
 
+    def _검색화면으로_복귀(self, timeout=10):
+        """
+        [복구 전용] process_updates() 루프 도중 어떤 매물에서 예외가 나면, 그 시점에 브라우저가
+        검색목록 화면이 아니라 다른 화면(예: "관리"->"수정"으로 들어간 폼 화면 중간)에 멈춰있을
+        수 있다 — 다음 매물을 그대로 진행하면 #search_id를 못 찾아 실패가 연쇄적으로 번진다
+        (2026-09-23 나스 실행에서 실제로 재현: 매물 1건의 KeyError가 나머지 37건 전부를
+        "no such element: #search_id"로 연쇄 실패시켰다). process_closures()가 process_updates()
+        직후 복귀할 때 이미 쓰는 것과 같은 방식(사이드바 매물 메뉴 강제클릭)을 그대로 재사용한다.
+        """
+        try:
+            메뉴버튼 = self.driver.find_element(By.CSS_SELECTOR, '#menu-product-1 > a')
+            self.driver.execute_script("arguments[0].click();", 메뉴버튼)
+            WebDriverWait(self.driver, timeout).until(EC.presence_of_element_located((By.ID, "search_id")))
+        except Exception as 복구_오류:
+            print(f"   [❌ 검색화면 복귀 실패] 다음 매물도 연쇄 실패할 수 있습니다: {복구_오류}")
+
     def process_updates(self):
         obang_update = self.data['업데이트매물']
         오방매물정보 = self.data['오방매물정보']
@@ -544,6 +565,9 @@ class ObangAutomationWorker:
                 print(f"   [❌ 처리 실패 - 오방코드:{update_code}] 예상치 못한 예외로 이 매물을 건너뜁니다: {오류}")
                 if self.progress_callback:
                     self.progress_callback(idx, total_items, f"⚠️ 오방코드 {update_code} 처리 실패 — 건너뜀 (실패:{self.error_count}개)")
+                # [연쇄 실패 방지] 예외가 어느 화면에서 났는지 알 수 없으므로, 다음 매물을 시도하기
+                # 전에 항상 검색목록 화면으로 강제 복귀시킨다.
+                self._검색화면으로_복귀()
 
     def process_closures(self):
         # process_updates()에서 매물을 순회하며 여러 페이지를 오간 뒤라 사이드바 서브메뉴가
