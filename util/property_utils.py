@@ -945,6 +945,11 @@ def 당근_사진필수팝업_감지시_게시글수정_탈출(driver, ad_code):
         등 비정상 상태에 멈췄을 수 있으므로, 복구는 각 호출자가 자기 문맥에 맞게 책임진다.)
     """
     photo_popup_xpath = "//span[text()='사진을 추가해 주세요' or contains(text(), '사진을 추가')]"
+    # [2026-09-23 수정 — 실사용 라이브 테스트로 확인] find_elements()는 "그 순간" 화면에 있는지만
+    # 1회 확인해서, 팝업이 호출자의 고정 sleep보다 늦게 뜨면 매번 놓쳤다(놓친 뒤 다음 매물의
+    # [수정] 버튼이 이 팝업의 배경(backdrop)에 막혀 연쇄 실패). 당근_조건부_동적대기로 최대 2초까지
+    # 능동적으로 기다려 이 타이밍 놓침을 없앤다 — 애초에 안 뜨는 경우는 기존과 비슷하게 빠르게 지나간다.
+    당근_조건부_동적대기(driver, [photo_popup_xpath], timeout=2)
     photo_popups = driver.find_elements(By.XPATH, photo_popup_xpath)
     if not photo_popups:
         return False
