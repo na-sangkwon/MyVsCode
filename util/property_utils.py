@@ -296,7 +296,9 @@ def 확인창클릭(driver, 선택='확인', timeout=3, unattended=False):
         print(f"   [❌ 공용 유틸 에러] 최종 확인창 [{선택}] 제어 단추를 화면에서 찾지 못했습니다.")
         print(f"원인: {오류}")
         if not unattended:
-            최상단알림창("292")
+            # 최상단알림창("292")  # [2026-09-23] "292"는 실제 안내문구가 아니라 방치된 자리표시 텍스트로 확인됨 —
+            # 원인을 알 수 없는 채 사람이 데스크탑에서 무작정 [확인]을 눌러야 했던 문제. 아래로 교체.
+            최상단알림창(f"확인창 [{선택}] 버튼을 화면에서 찾지 못했습니다.\n\n원인: {오류}")
         return False
     
 
@@ -977,7 +979,12 @@ def 당근_끌어올리기_마스터_통합엔진(driver, row_element, ad_code, 
                     time.sleep(0.3)
                     # 기존 코드의 智慧='확인'은 함수가 실제로 받는 파라미터명 선택='확인'의 오타로
                     # 보여 여기서 함께 바로잡음(2026-08-30) — 원래는 TypeError로 이 분기가 죽었을 자리.
-                    확인창클릭(driver, 선택='확인', timeout=1, unattended=unattended)
+                    # [2026-09-23 수정] 이 확인창은 애초에 없어도 되는(=실패해도 무해한) 보조 클린업
+                    # 단계다 — 위 try가 이미 실패를 허용하고 있다. 그런데 unattended를 그대로 넘기면
+                    # 라이브(사람 감시) 테스트 중엔 매번 사람이 데스크탑에서 직접 클릭해야 하는 강제
+                    # 알림창이 뜨면서 자동화가 멈춰버렸다(실사용 재현: "292" 알림). 이 지점만은 무인
+                    # 실행과 동일하게 취급해 로그만 남기고 넘어간다.
+                    확인창클릭(driver, 선택='확인', timeout=1, unattended=True)
                 except Exception as button_err:
                     print(f"   [⚠️ 경고 - {ad_code}] '가격만 변경하기' 저장 버튼 작동 실패: {button_err}")
                 final_action_code = "PRICE_UPDATE_SUCCESS"
@@ -1045,7 +1052,8 @@ def 당근_끌어올리기_마스터_통합엔진(driver, row_element, ad_code, 
                         # ---------------------------------------------------------
                         # 상황 B: 사진이 정상적으로 들어있는 청정 매물일 때 (기존 정통 선로 유지)
                         # ---------------------------------------------------------
-                        확인창클릭(driver, 선택='확인', timeout=1, unattended=unattended)
+                        # [2026-09-23 수정] 위와 같은 이유로 이 보조 확인창도 무인 실행과 동일하게 취급.
+                        확인창클릭(driver, 선택='확인', timeout=1, unattended=True)
                         print(f"   [✅ 숨김해제 완료 - {ad_code}] 유령 숨김 상태 탈출 ➡️ '판매중' 활성 트랙으로 강제 원대복귀 완수 V")
                         time.sleep(1.0)
                     
@@ -1053,7 +1061,23 @@ def 당근_끌어올리기_마스터_통합엔진(driver, row_element, ad_code, 
                     return "RESCUE_BUMP_SUCCESS"
                 except Exception as ex_err:
                     print(f"   [⚠️ 숨김해제 실패 - {ad_code}] 분리 레이어 메뉴 제어 중 예외 발생: {ex_err}")
-            
+                    # [2026-09-23 추가] 위 '사진 필수 제한 기습 팝업 우회 탈출 엔진'이 중간에 실패하면
+                    # (셀렉터 드리프트, 타임아웃 등) 화면이 "게시글 수정" 폼 페이지나 잔여 팝업에
+                    # 멈춰있을 수 있다. 이 상태를 정리하지 않고 다음 매물로 넘어가면, 다음 매물의
+                    # [끌어올리기] 강제클릭(위 '1. 목록의 1차 끌어올리기 단추 타격' 단계, JS 강제클릭
+                    # 폴백)이 이 잔여 배경(backdrop)을 무시하고 클릭에 성공해버려 새 다이얼로그가
+                    # 그 위에 또 열리는 중첩(스태킹) 사고로 이어진다 — 2026-09-23 나스 라이브
+                    # 테스트에서 실제로 재현(쿨타임 팝업 2개 + 사진추가 팝업 1개가 동시에 쌓인 상태
+                    # 스크린샷으로 확인). 오방 쪽 _검색화면으로_복귀()와 동일한 원리로, 대시보드
+                    # 목록 화면으로 강제 복귀시켜 다음 매물이 깨끗한 화면에서 시작하도록 만든다.
+                    try:
+                        driver.get('https://realty.daangn.com/ceo/home')
+                        WebDriverWait(driver, 10).until(
+                            EC.presence_of_element_located((By.XPATH, "//form//input[contains(@placeholder, '지번')]"))
+                        )
+                    except Exception as 복구_오류:
+                        print(f"   [❌ 목록화면 복귀 실패 - {ad_code}] 다음 매물도 연쇄 실패할 수 있습니다: {복구_오류}")
+
             return final_action_code
 
         else:
