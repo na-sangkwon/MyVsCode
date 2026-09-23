@@ -783,7 +783,13 @@ class CarrotAutomationWorker:
         """ 점 세개(...) 메뉴를 클릭하여 해당 매물을 비공개(광고 종료/숨기기) 처리 """
         try:
             print(f"   [🔎 디버그 - {당근매물번호}] 우측 관리탭 점 세개(...) 제어 버튼 탐색 중...")
-            더보기_버튼 = 매물_행_객체.find_element(By.XPATH, ".//button[contains(@id, 'radix-') and .//*[local-name()='svg']]")
+            # [버그 수정 - 2026-09-23] 당근 UI 라이브러리가 업데이트되면서 버튼 id가
+            # "radix-:r4c:" 형태에서 React 자체 useId 형태인 "_r_4c_"로 바뀌어 id 문자열에
+            # "radix-"가 더는 없다(나스 실행 로그 + 실제 로그인 화면 DOM 실측으로 확인:
+            # id="_r_4c_", aria-haspopup="menu"). id 포맷에 의존하지 않도록 이 버튼이 실제로
+            # 갖는 의미론적 속성(드롭다운 메뉴를 여는 버튼)인 aria-haspopup="menu"로 대체한다 —
+            # 이 속성은 UI 라이브러리가 또 바뀌어도(id 생성 방식과 무관하게) 유지될 가능성이 높다.
+            더보기_버튼 = 매물_행_객체.find_element(By.XPATH, ".//button[@aria-haspopup='menu']")
             더보기_버튼.click()
             time.sleep(0.6)
             
