@@ -3,6 +3,9 @@ import time
 import datetime
 import random
 import platform
+import urllib.request
+import urllib.parse
+import json
 import pyautogui
 import pymysql
 from selenium import webdriver
@@ -11,6 +14,31 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, UnexpectedAlertPresentException
+
+# core/config.php의 $CFG['local_helper']['service_token'], OBJECT_reg/test.py·test_iros_manual.py의
+# 같은 이름 상수와 반드시 같은 값이어야 한다(하나를 바꾸면 전부 같이 바꿀 것).
+OBANG_SERVICE_TOKEN = '51b5f2f355a2e3958e6d5e9a744ab00b53cd181c3a9864ac'
+
+def _오방_공용계정_조회():
+    """
+    [2026-09-27] 오방 로그인 이메일/비밀번호를 이 파일에 평문으로 박아두지 않고, 본섭
+    core/config.php의 'obang'(전 직원 공용 계정) 값을 매 실행 시 API로 받아온다 — 저장 위치를
+    새로 만들지 않고 이미 있던 apiGetObangServiceCredentials()를 그대로 쓴다. 원래 이 API는
+    admin_id로 담당자 개인계정(pr_admin)을 조회하는 용도였는데, admin_id 없이 호출하면 공용계정을
+    돌려주도록 그 함수를 확장해뒀다(obangtest/api/lib/lib_api.php, 같은 방식으로 본섭에도 배포 필요).
+    OBJECT_reg/test.py::fetch_obang_credentials()와 같은 호출 방식(admin_id만 생략).
+    """
+    body = urllib.parse.urlencode({
+        'fn': 'getobangservicecredentials',
+        'service_token': OBANG_SERVICE_TOKEN,
+    }).encode('utf-8')
+    req = urllib.request.Request('https://obangkr.cafe24.com/api/get_api_lib.php', data=body, method='POST')
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        res = json.loads(resp.read().decode('utf-8'))
+    if not res.get('ok'):
+        raise RuntimeError(f'오방 공용계정 조회 실패: {res}')
+    data = res['data']
+    return data['obang_id'], data['obang_pw']
 
 class ObangAutomationWorker:
     """ 오방부동산 웹사이트 제어 및 매물 업데이트/비공개 처리를 전담하는 클래스 """
@@ -606,6 +634,10 @@ class ObangAutomationWorker:
         # auto.py 쪽에서 이미 --window-size로 크기를 지정해두므로 리눅스에서는 건너뛴다.
         if platform.system() == 'Windows':
             self.driver.maximize_window()
+        # [2026-09-27] 브라우저를 열기 전에 먼저 계정정보를 받아온다 — API 호출 자체가 실패하면
+        # (네트워크 문제, 서비스 토큰 불일치 등) 크롬을 띄우고 폼까지 조작한 뒤에야 실패를 알게 되는
+        # 것보다, 여기서 바로 예외로 알리는 편이 원인 파악이 빠르다.
+        오방_아이디, 오방_비밀번호 = _오방_공용계정_조회()
         self.driver.get('https://osanbang.com/adminlogin/index')
         try:
             아이디입력창 = WebDriverWait(self.driver, 5).until(
@@ -621,11 +653,25 @@ class ObangAutomationWorker:
             # 오방 로그인 정보가 저장돼 있던 것이라, auto.py의 드라이버 생성 옵션에서 비밀번호
             # 저장/자동완성 자체를 껐다(auto.py의 run_platform_workers, prefs 설정 참고). 이
             # Ctrl+A 방식은 그래도 안전장치로 남겨둔다.
-            아이디입력창.send_keys(Keys.CONTROL + "a")
-            아이디입력창.send_keys("nasangkwon@outlook.kr")
+            # [2026-09-27] 위 조치(auto.py의 credentials_enable_service/password_manager_enabled
+            # 비활성화)에도 불구하고 나스에서 이메일 필드에 값이 중복 이어붙는 현상이 재발했다
+            # (실패 시 자동 저장된 스크린샷으로 실제 확인). prefs만으로 막힌다는 보장이 없으므로,
+            # 입력 직후 실제 DOM 값을 검증해 다르면 한 번 더 지우고 재입력하는 안전장치를 추가한다.
+            def 로그인필드_자동완성검증_입력(입력창, 목표값, 필드이름):
+                입력창.send_keys(Keys.CONTROL + "a")
+                입력창.send_keys(목표값)
+                if 입력창.get_attribute('value') != 목표값:
+                    print(f"   [⚠️ 자동완성 간섭 감지 - {필드이름}] 입력값이 예상과 달라 재입력합니다: {입력창.get_attribute('value')!r}")
+                    입력창.send_keys(Keys.CONTROL + "a")
+                    입력창.send_keys(Keys.BACKSPACE)
+                    입력창.send_keys(목표값)
+
+            # [범위 한정] 실제로 재현된 건 이메일 필드뿐이라(스크린샷으로 확인된 증거 범위),
+            # 비밀번호 필드는 기존 방식 그대로 두고 이메일 필드에만 검증을 적용한다.
+            로그인필드_자동완성검증_입력(아이디입력창, 오방_아이디, "아이디")
             비밀번호입력창 = self.driver.find_element(By.XPATH, '//*[@id="login_form"]/div[2]/div/input')
             비밀번호입력창.send_keys(Keys.CONTROL + "a")
-            비밀번호입력창.send_keys('tkdrnjs2@')
+            비밀번호입력창.send_keys(오방_비밀번호)
             self.driver.find_element(By.XPATH, '//*[@id="login_form"]/div[3]/button').click()
         except TimeoutException:
             print("🔑 로그인창이 없습니다.")

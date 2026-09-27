@@ -802,9 +802,13 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
     # 필드에 아이디가 중복 이어붙어 로그인 자체가 거부되는 현상을 재현/확인함). 타이밍에
     # 의존하는 재시도 대신, 이 프로필에서 비밀번호 저장·자동완성 자체를 꺼서 경쟁 조건을
     # 원천 제거한다.
+    # [2026-09-27] 위 두 옵션(비밀번호 관리자)을 껐는데도 나스에서 이메일 필드 중복 이어붙음이
+    # 재발했다(실패 스크린샷으로 확인) — 크롬은 "비밀번호 관리자"와 "양식 자동완성(입력 기록)"이
+    # 서로 다른 기능이라, 위 옵션은 후자를 막지 못했던 것으로 추정된다. 양식 자동완성도 함께 끈다.
     options.add_experimental_option("prefs", {
         "credentials_enable_service": False,
         "profile.password_manager_enabled": False,
+        "autofill.profile_enabled": False,
     })
 
     driver = webdriver.Chrome(options=options)
