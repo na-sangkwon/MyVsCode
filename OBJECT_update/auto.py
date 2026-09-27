@@ -389,7 +389,8 @@ def obang_data(before_day, 오방_선택=True, 당근_선택=True, 강제_새홈
     # land_code/building_code/room_code 대신 land_group_code/building_group_code/
     # room_group_code를 쓰도록 스키마가 바뀌었다. 여기서는 두 테이블끼리 "같은 위치인지"만
     # 비교하면 되므로(개별 land_code 자체가 필요한 게 아님) 그룹코드로 그대로 바꿔치기하면 된다.
-    query = '''SELECT DISTINCT p.request_code, p.land_group_code, p.building_group_code, p.room_group_code FROM pr_request_give AS p
+    query = '''SELECT DISTINCT p.request_code, p.land_group_code, p.building_group_code, p.room_group_code,
+            p.request_deposit1, p.request_rent1 FROM pr_request_give AS p
             LEFT JOIN pr_request_fix AS c ON p.request_code = c.request_code WHERE c.fix_del="N"'''
     cursor.execute(query)
     f_res = cursor.fetchall()
@@ -404,7 +405,17 @@ def obang_data(before_day, 오방_선택=True, 당근_선택=True, 강제_새홈
             # 무관한 회사 전체의 관심 매물이 몽땅 테스트 대상에 섞여 들어간다(실측으로 확인:
             # 147558/112561 두 건만 지정했는데 관심 매물 14건이 함께 섞여 나왔다). 테스트 모드는
             # 지정된 새홈번호만 대상이어야 하므로 이 줄만 건너뛴다.
-            if not 강제_새홈번호_목록 and o_res and o_res[0]['object_code_obang'] != '': obang_update.append(str(o_res[0]['object_code_obang']))
+            # [2026-09-27 버그 수정 — 실사용 중 재현] 이 줄이 메인 쿼리(아래 '후보_조건' 이후의
+            # query)와 달리 "보증금/월세 정보가 있는지"를 확인하지 않아서, 매매(사고팔기) 매물까지
+            # 그대로 obang_update(처리목록)에 얹었다. 그런데 obang_map(상세정보)은 메인 쿼리에서만
+            # 채워지고, 메인 쿼리는 보증금/월세가 둘 다 빈 매매 매물을 애초에 걸러낸다(이 자동화가
+            # 전월세 갱신만 다루고 매매는 다루지 않기 때문 — 단일오방매물업데이트()도 보증금이
+            # 없으면 "임대료 누락"으로만 해석한다) — 그 결과 처리목록엔 있는데 상세정보가 없는
+            # 매물이 생겨, 그 매물 차례에서 폼 화면에 멈춘 채 다음 매물까지 실패시켰다(오방코드
+            # 25276→16419, 2026-09-27 나스 실행 로그로 실제 확인). 메인 쿼리와 같은 조건을 여기도
+            # 걸어서, 매매 매물은 애초에 처리목록에 들어가지 않게 한다.
+            if not 강제_새홈번호_목록 and o_res and o_res[0]['object_code_obang'] != '' and (row.get('request_deposit1') or row.get('request_rent1')):
+                obang_update.append(str(o_res[0]['object_code_obang']))
             f_codes_arr.append(row['request_code'])
         except: pass
 
