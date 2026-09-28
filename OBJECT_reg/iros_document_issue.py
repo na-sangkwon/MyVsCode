@@ -1501,7 +1501,10 @@ def _prefill_login_page_credentials(driver, credentials):
     누르지 않는다(_fill_login_popup_if_present()와 다른 점) — 캡차를 아직 안 입력한 상태라 눌러도
     실패하므로, 로그인 자체는 사람이 캡차 입력 후 직접 완료한다. 선택자는 실제 로그인화면 HTML로
     확인한 값(2026-09-18, 사용자 제공) — 결제 팝업의 popup_user_id_g/popup_mbr_pw_g와는 다른
-    네임스페이스(sbx_user_id_g/sct_mbr_pw_g)를 쓰는 별개의 화면이다."""
+    네임스페이스(sbx_user_id_g/sct_mbr_pw_g)를 쓰는 별개의 화면이다.
+
+    [2026-09-28 추가 — 사용자 요청] 아이디/비번을 채운 뒤 캡차 입력칸에 포커스까지 옮겨둔다 —
+    담당자가 화면을 클릭할 필요 없이 캡차 문자만 보고 바로 타이핑을 시작할 수 있게 하기 위함이다."""
     iros_id = (credentials or {}).get('iros_id') or ''
     iros_pw = (credentials or {}).get('iros_pw') or ''
     if not iros_id or not iros_pw:
@@ -1516,6 +1519,12 @@ def _prefill_login_page_credentials(driver, credentials):
         pw_input = driver.find_element(By.CSS_SELECTOR, 'input[id$="sct_mbr_pw_g"]')
         if pw_input.is_displayed() and not pw_input.get_attribute('value'):
             _type_into_field(driver, pw_input, iros_pw)
+    except NoSuchElementException:
+        pass
+    try:
+        captcha_input = driver.find_element(By.CSS_SELECTOR, 'input[id$="_answer___input"]')
+        if captcha_input.is_displayed():
+            _click_with_fallback(driver, captcha_input)
     except NoSuchElementException:
         pass
 
@@ -2201,7 +2210,12 @@ def issue_real_estate_registers_bulk(items, credentials, options=None):
         time.sleep(0.5)
         _dismiss_cart_payment_reminder_popup_if_present(driver)
         if _is_captcha_required(driver):
-            print('[진행] 캡차 필요 — 브라우저 창에서 아이디/비번·캡차를 직접 입력해주세요', flush=True)
+            print('[진행] 캡차 필요 — 아이디/비번 자동입력, 담당자는 캡차만 입력하면 됩니다', flush=True)
+            # [2026-09-28 추가 — 사용자 요청] 이 시점엔 결제용 실제 계정정보(credentials)가 이미
+            # 함수 인자로 들어와 있으므로(단건 issue_real_estate_register()와 달리 매물 검색 단계
+            # (verify_register_target)에는 일부러 빈 값을 넘기지만, 이 최초 로그인화면은 그 제약과
+            # 무관하다), _verify_register_target_body()의 같은 처리와 동일하게 미리 채워준다.
+            _prefill_login_page_credentials(driver, credentials)
             if not _wait_for_human_to_clear_captcha(driver):
                 return _fail_all('캡차 입력 대기시간을 초과했습니다.')
             for _ in range(5):
