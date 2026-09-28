@@ -2203,7 +2203,7 @@ def _pipeline_find_duplicates(driver, payload, keywords):
     return found
 
 
-def _pipeline_register(driver, payload, result):
+def _pipeline_register(driver, payload, result, test_mode=False):
     fields = payload.get('fields') or []
     by_label = {f.get('label'): f for f in fields}
     duplicates = _pipeline_find_duplicates(driver, payload, _pipeline_match_keywords(fields))
@@ -2227,6 +2227,13 @@ def _pipeline_register(driver, payload, result):
     submit = next(iter(_pipeline_find_by_exact_text(driver, _PIPELINE_REGISTER_BUTTON_TEXT, ('button',))), None)
     if submit is None:
         raise RuntimeError(f'[{_PIPELINE_REGISTER_BUTTON_TEXT}] 버튼을 찾지 못했습니다.')
+    # [2026-09-27 추가 — 테스트모드] 여기가 유일하게 되돌릴 수 없는 지점(실제 등록 버튼 클릭)이라,
+    # 값 채우기·사진첨부는 그대로 다 끝난 뒤 이 지점 하나만 막는다. 클릭을 안 했으니 등록번호도
+    # 실제로는 생기지 않는다 — ad_code는 빈 채로 "테스트모드 완료"만 알린다.
+    if test_mode:
+        _pipeline_log(f'✓ 테스트모드 — [{_PIPELINE_REGISTER_BUTTON_TEXT}] 클릭 생략(여기까지 값 확인 완료)')
+        result.update({'ok': True, 'ad_code': '', 'message': '테스트모드 — 실제 등록 버튼 클릭 생략, 값 채우기까지 확인 완료'})
+        return
     _pipeline_click(driver, submit)
     _pipeline_log(f'✓ [{_PIPELINE_REGISTER_BUTTON_TEXT}] 클릭 — 등록 결과 화면을 기다립니다…')
     _pipeline_dismiss_alert(driver)
@@ -2270,7 +2277,7 @@ def _pipeline_search_row(driver, code):
     return _pipeline_find_one(driver, By.ID, f'tr_{code}')
 
 
-def _pipeline_modify(driver, payload, result):
+def _pipeline_modify(driver, payload, result, test_mode=False):
     """수정 — 목록에서 매물을 찾아 상태(공개·거래완료)를 정리하고 수정화면에서 다른 값만 고친 뒤
     [수정 후 최신으로 갱신]을 누른다(content_obang.js runModifySearch/Row/Fill과 동일한 순서)."""
     code = _pipeline_clean(payload.get('site_code'))
@@ -2329,6 +2336,12 @@ def _pipeline_modify(driver, payload, result):
     submit = next(iter(_pipeline_find_by_exact_text(driver, _PIPELINE_MODIFY_BUTTON_TEXT, ('button',))), None)
     if submit is None:
         raise RuntimeError(f'[{_PIPELINE_MODIFY_BUTTON_TEXT}] 버튼을 찾지 못했습니다.')
+    # [2026-09-27 추가 — 테스트모드] _pipeline_register()와 같은 이유 — 되돌릴 수 없는 지점은
+    # 이 저장 버튼 클릭 하나뿐이라 여기만 막는다.
+    if test_mode:
+        _pipeline_log(f'✓ 테스트모드 — [{_PIPELINE_MODIFY_BUTTON_TEXT}] 클릭 생략(여기까지 값 확인 완료)')
+        result.update({'ok': True, 'ad_code': code, 'message': '테스트모드 — 실제 저장 버튼 클릭 생략, 값 채우기까지 확인 완료'})
+        return
     _pipeline_click(driver, submit)
     _pipeline_log(f'✓ [{_PIPELINE_MODIFY_BUTTON_TEXT}] 클릭 — 목록으로 돌아가길 기다립니다…')
     _pipeline_dismiss_alert(driver)
@@ -2371,6 +2384,10 @@ def automate_from_payload(payload, credentials, options=None):
     options = options or {}
     headless = bool(options.get('headless', False))
     close_when_done = bool(options.get('close_when_done', True))
+    # [2026-09-27 추가 — 사용자 요청 "테스트모드에서만 작동하는 기능을 추가할 수 있게"] True면
+    # _pipeline_register()/_pipeline_modify()가 값 채우기·사진첨부까지는 그대로 하되, 실제 등록/수정
+    # 버튼 클릭(되돌릴 수 없는 지점)만 건너뛴다 — 테스트페이지에서만 켜진다(main.py 참고).
+    test_mode = bool(options.get('test_mode', False))
     result = {'ok': False, 'ad_code': '', 'message': '', 'filled': 0, 'unchanged': 0, 'failed': [], 'skipped': 0, 'changes': []}
     if str(payload.get('site_key') or '') != 'obang':
         result['message'] = f"오방 payload가 아닙니다(site_key={payload.get('site_key')!r})"
@@ -2397,9 +2414,9 @@ def automate_from_payload(payload, credentials, options=None):
             driver.maximize_window()
         _pipeline_login(driver, credentials)
         if mode == 'modify':
-            _pipeline_modify(driver, payload, result)
+            _pipeline_modify(driver, payload, result, test_mode=test_mode)
         else:
-            _pipeline_register(driver, payload, result)
+            _pipeline_register(driver, payload, result, test_mode=test_mode)
     except Exception as e:
         result['ok'] = False
         result['message'] = f'{type(e).__name__}: {e}' if not isinstance(e, RuntimeError) else str(e)
