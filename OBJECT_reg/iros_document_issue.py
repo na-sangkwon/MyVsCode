@@ -65,9 +65,9 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 import re
+import sys
 import time
 import os
-import shutil
 import tempfile
 import uuid
 import json
@@ -2103,8 +2103,20 @@ if __name__ == '__main__':
     # Chrome prefs가 필요하다 — issue_real_estate_register()가 쓰는 것과 같은 설정을 그대로 가져온다.
     bulk_download_dir = os.path.join(tempfile.gettempdir(), f'obang_bulk_test_{uuid.uuid4().hex}')
     os.makedirs(bulk_download_dir, exist_ok=True)
-    bulk_output_dir = os.path.join(tempfile.gettempdir(), 'obang_bulk_test_output')
-    os.makedirs(bulk_output_dir, exist_ok=True)
+
+    # [2026-09-28 추가 — NAS 경로 연결] 5단계 최종 저장은 로컬 테스트 폴더 대신 실제 NAS로 옮긴다.
+    # 이 파일 상단 주석("NAS 저장은 이 파일의 책임이 아니다")대로, 새 이동 로직을 만들지 않고 이미
+    # 운영에서 쓰는 local_helper/main.py::handle_move_file()을 그대로 가져다 쓴다 — 이 __main__
+    # 블록은 실제 운영에서 local_helper가 하는 역할(issue_real_estate_register() 호출 후 NAS로 이동)을
+    # 사람이 직접 실행해보는 자리라서, local_helper를 여기서 import하는 게 "호출부가 옮긴다"는
+    # 원칙과 어긋나지 않는다. local_helper/main.py가 반대 방향으로 이 저장소(OBJECT_reg)를 import하는
+    # 것과 같은 방식(같은 PC 안 고정된 상대경로)을 반대로 적용한 것뿐이다. 더미파일로 NAS 이동 자체는
+    # 먼저 별도 검증했다(핸들러가 두 매물의 실제 폴더에 정확히 만들고 옮기는 것까지 확인 완료).
+    _local_helper_dir = os.path.normpath(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), '..', '..', 'Atomprojected', 'obangtest', 'local_helper'))
+    if _local_helper_dir not in sys.path:
+        sys.path.append(_local_helper_dir)
+    import main as local_helper_main
 
     chrome_options = Options()
     chrome_options.add_argument('--disable-blink-features=AutomationControlled')
@@ -2256,13 +2268,12 @@ if __name__ == '__main__':
         driver.quit()
         raise SystemExit(1)
 
-    # [5단계] 열람·다운로드·파일명변환 — 매물마다 순차로 한다(_wait_for_download()가 "다운로드
+    # [5단계] 열람·다운로드·NAS 이동 — 매물마다 순차로 한다(_wait_for_download()가 "다운로드
     # 폴더 안의 파일 아무거나 하나"를 완료로 보는 구조라, 두 건을 동시에 받으면 엉뚱한 파일을 집을
-    # 수 있다 — 사용자 질문으로 미리 확인한 위험). 한 건 받고 바로 이름 바꿔 옮긴 뒤 폴더를 비우고
-    # 다음 건으로 넘어간다. 실제 NAS 대신 로컬 테스트 폴더로 옮긴다 — 첫 실비용 테스트라 실제
-    # 운영 폴더(NAS)에 바로 쓰지 않고 별도로 확인부터 하기 위함(로컬도우미의 handle_move_file()과
-    # 같은 copy→검증→원본삭제 순서만 흉내낸다).
-    print('[진행] === 5단계: 매물별 순차 열람·다운로드·파일명변환 ===', flush=True)
+    # 수 있다 — 사용자 질문으로 미리 확인한 위험). 한 건 받고 바로 handle_move_file()로 실제 NAS
+    # 폴더까지 옮긴 뒤 다음 건으로 넘어간다(2026-09-28부터 로컬 테스트 폴더 대신 실제 NAS로 이동 —
+    # handle_move_file() 자체는 더미파일로 먼저 별도 검증 완료).
+    print('[진행] === 5단계: 매물별 순차 열람·다운로드·NAS 이동 ===', flush=True)
     for i, test_payload in enumerate(test_properties, start=1):
         print(f'[진행] --- {i}/{len(test_properties)}건째 열람·다운로드 시도 ---', flush=True)
         save_result = _view_and_save(driver, test_payload, bulk_download_dir)
@@ -2270,16 +2281,14 @@ if __name__ == '__main__':
         if not save_result.get('ok'):
             print('[오류] 이 건은 다운로드에 실패했습니다 — 나머지는 계속 진행합니다.', flush=True)
             continue
-        src = save_result['file_path']
-        dst_name = (test_payload.get('save') or {}).get('filename') or os.path.basename(src)
-        dst = os.path.join(bulk_output_dir, dst_name)
-        shutil.copy2(src, dst)
-        if os.path.getsize(dst) == os.path.getsize(src):
-            os.remove(src)
-            print(f'[진행] 파일명 변환·이동 완료 — {dst}', flush=True)
-        else:
-            print(f'[오류] 복사 후 크기가 달라 원본을 남겨둡니다 — src={src}, dst={dst}', flush=True)
+        save = test_payload.get('save') or {}
+        moved = local_helper_main.handle_move_file({
+            'source_path': save_result['file_path'],
+            'folder_parts': save.get('folder_parts') or [],
+            'filename': save.get('filename') or os.path.basename(save_result['file_path']),
+        })
+        print(f'[{i}번째 NAS 이동 결과]', moved, flush=True)
 
-    print(f'[진행] 전체 완료 — 결과 파일은 {bulk_output_dir} 폴더에서 확인해주세요.', flush=True)
+    print('[진행] 전체 완료 — 위 "NAS 이동 결과"의 full_path에서 각 파일을 확인해주세요.', flush=True)
     input('확인했으면 Enter를 눌러 브라우저를 닫으세요...')
     driver.quit()
