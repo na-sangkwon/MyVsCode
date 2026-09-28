@@ -322,6 +322,98 @@ def _dismiss_cart_payment_reminder_popup_if_present(driver):
     return True
 
 
+def _reset_bulk_payment_cart(driver, _fail):
+    """[2026-09-28 신규 — 사용자 요청 "등기부일괄발급"] 일괄발급을 시작하기 전, 결제대상(장바구니)에
+    남아있을 수 있는 이전 항목을 모두 비운다.
+
+    [왜 필요한가] 인터넷등기소는 결제대상에 등록된 부동산을 당일 24시까지 보관한다(사이트 자체 안내
+    문구, 실측 확인). 즉 오늘 이미 실행한 적이 있으면 미결제 항목이 남아있을 수 있다.
+    _dismiss_cart_payment_reminder_popup_if_present()는 단건 자동화 관점에서 그 항목을 "취소"
+    (건드리지 않고 그대로 둔 채 새로 진행)로 처리하도록 설계됐는데 — 일괄발급은 "지금 몇 건을
+    결제하는지"가 중요하므로, 남의(이전 실행의) 항목이 섞여 들어가면 안 된다. 그래서 일괄발급 시작
+    지점에서는 아예 빈 상태에서 출발하도록 먼저 비운다.
+
+    [진입 경로 — 실측 확인] "부동산 열람·발급" 화면(도로명주소검색 등 탭이 있는 그 화면)에 있는
+    '결제대상목록' 버튼({BASE}_btn_bpay_obj_list)을 누르면 검색을 거치지 않고 바로 이 화면으로 간다.
+
+    [전체선택 체크박스 id는 페이지를 새로 열 때마다 바뀐다 — 실측 확인] "wq_uuid_43720_header__..."
+    처럼 숫자 부분이 로드마다 다르게 생성된다 — id 전체가 아니라 suffix(끝부분)로 찾는다.
+
+    [삭제 시 뜨는 확인창은 브라우저 네이티브 confirm()이 아니라 사이트 커스텀 HTML 팝업(w2window)이다
+    — 실측 확인, 처음엔 네이티브로 잘못 짐작했었다] "확인" 버튼(id 끝 "_wframe_btn_confirm2")을
+    DOM에서 직접 클릭해야 한다 — 아래 코드 참고.
+
+    [2026-09-28 수정 — 실사용 재현으로 확인] 처음엔 "호출 시점에 이미 '부동산 열람·발급' 검색
+    화면에 있다"고 가정했는데, 실제로는 로그인 직후 안내 화면 등 다른 화면에서 호출될 수 있어
+    "결제대상목록" 버튼을 못 찾고 바로 실패했다(이 프로젝트의 "외부사이트 화면 다양성 — 특정 화면
+    하나만 가정하지 않는다" 원칙과 정확히 같은 종류의 문제). 그래서 버튼이 안 보이면 이 함수가
+    스스로 홈 접속→"부동산 열람·발급" 진입까지 마친 뒤 한 번 더 찾는다 — 호출 시점 화면 상태에
+    의존하지 않게 됐다.
+
+    @return None(성공 — 비웠거나 애초에 비어있었음) 또는 _fail(...)의 반환값(실패)
+    """
+    print('[진행] 결제대상(장바구니) 초기화 시작', flush=True)
+    list_btn = _find_first_visible(driver, [f'#{BASE}_btn_bpay_obj_list'])
+    if not list_btn:
+        print('[진행] "결제대상목록" 버튼이 현재 화면에 없음 — 홈을 거쳐 다시 진입 시도', flush=True)
+        if not _navigate_home(driver):
+            return _fail('"보안프로그램 설치" 안내 페이지에서 벗어나지 못했습니다(3회 재시도).')
+        entry_btn = WebDriverWait(driver, 20).until(lambda d: _home_entry_button(d))
+        _click_with_fallback(driver, entry_btn)
+        time.sleep(0.5)
+        _dismiss_cart_payment_reminder_popup_if_present(driver)
+        list_btn = _find_first_visible(driver, [f'#{BASE}_btn_bpay_obj_list'])
+        if not list_btn:
+            return _fail('홈을 다시 거쳐도 "결제대상목록" 버튼을 찾지 못했습니다.')
+    _click_with_fallback(driver, list_btn)
+    time.sleep(0.8)
+
+    try:
+        pay_tbody = driver.find_element(By.ID, f'{BASE}_grd_bpay_obj_list_body_tbody')
+    except NoSuchElementException:
+        return _fail('결제대상 목록 표를 찾지 못했습니다.')
+    pay_rows = [tr for tr in pay_tbody.find_elements(By.TAG_NAME, 'tr')
+                if 'display: none' not in (tr.get_attribute('style') or '')]
+    if not pay_rows:
+        print('[진행] 결제대상이 이미 비어있음', flush=True)
+        return None
+
+    # [2026-09-28 수정 — 실사용 재현으로 확인] 처음엔 헤더의 "전체선택" 체크박스 하나를 눌렀는데,
+    # 실측에서 그 헤더 체크박스를 못 찾아 실패했다(원인 불명 — 결제대상이 이미 있는 상태로 재진입할
+    # 때 헤더 UI가 다르게 그려지는 것으로 추정, 직접 확인은 못 함). 헤더 하나에 기대는 대신, 아래
+    # verify_register_target()의 결제대상 행 선택 로직(1324행 부근)과 같은 방식 — 행마다
+    # td[data-col_id="chk_sel"] 안의 체크박스 상태를 보고, 안 켜져 있으면 그 옆 label을 클릭한다 —
+    # 을 그대로 재사용한다. 헤더가 어떻게 그려지든 상관없이 항상 동작하는 더 직접적인 방법이다.
+    for tr in pay_rows:
+        try:
+            checkbox = tr.find_element(By.CSS_SELECTOR, 'td[data-col_id="chk_sel"] input[type="checkbox"]')
+            if not checkbox.is_selected():
+                _click_with_fallback(driver, tr.find_element(By.CSS_SELECTOR, 'td[data-col_id="chk_sel"] label'))
+                time.sleep(0.3)
+        except NoSuchElementException:
+            continue
+
+    del_btn = _find_first_visible(driver, [f'#{BASE}_btn_sel_del'])
+    if not del_btn:
+        return _fail('결제대상 "선택삭제" 버튼을 찾지 못했습니다.')
+    # [2026-09-28 두 차례 수정 — 실사용 재현으로 확인] 처음엔 "브라우저 네이티브 confirm()"으로
+    # 잘못 진단했었다(switch_to.alert.accept() 시도) — 실제로는 사이트 자체의 커스텀 HTML 팝업
+    # (w2window, id 중간에 로드마다 바뀌는 숫자가 낌)이었다는 게 사용자가 캡처해준 실제 DOM으로
+    # 확인됐다. "선택한 결제대상목록을 삭제하시겠습니까?" 문구에 "취소"/"확인" 두 버튼 중
+    # "확인"(id 끝이 "_wframe_btn_confirm2")을 DOM에서 직접 찾아 클릭해야 한다 — 네이티브 alert가
+    # 아니므로 _click_with_fallback()을 그대로 써도 무방하다(그 헬퍼의 _dismiss_alert_if_present()는
+    # 네이티브 alert만 대상이라 이 HTML 팝업엔 영향이 없다).
+    _click_with_fallback(driver, del_btn)
+    time.sleep(0.5)
+    confirm_btn = _find_first_visible(driver, ['a[id$="_wframe_btn_confirm2"]'])
+    if not confirm_btn:
+        return _fail('결제대상 삭제 확인 팝업의 "확인" 버튼을 찾지 못했습니다.')
+    _click_with_fallback(driver, confirm_btn)
+    time.sleep(0.5)
+    print(f'[진행] 결제대상 {len(pay_rows)}건 삭제 완료', flush=True)
+    return None
+
+
 def _is_selection_required_popup_visible(driver):
     """"열람발급할 부동산을 선택하시기 바랍니다" 안내창이 떠 있는지 확인한다. [2026-09-19 추가 —
     실사용 재현으로 원인 확인] "부동산 소재지번 선택" 화면의 체크박스가 실제로 선택됐는지는 DOM
@@ -859,9 +951,23 @@ def _search_via_road_address(driver, wait, payload, property_category, road_loc,
         return d.find_element(By.ID, f'{BASE}_tac_rlrg_appl_tab_tab_rd_srch_tabHTML')
     tab = wait.until(_find_rd_srch_tab)
     print('[진행] 도로명주소검색 탭 찾음, 클릭', flush=True)
-    _click_with_fallback(driver, tab)
-    time.sleep(0.5)
-    _guard_not_stuck_on_security_page(driver)
+
+    # [2026-09-28 추가 — 실사용 재현으로 확인, 매물 400603] 여러 매물을 연달아 조회할 때, 탭 클릭
+    # "전"에는 없던 "결제할 등기사항증명서 존재" 안내창이 클릭 "직후"에 뒤늦게 나타나 클릭 자체를
+    # 가로막는 경우가 실제로 있었다 — 로그에는 "탭 클릭"이 찍혔지만 실제로는 간편검색 탭 그대로
+    # 남아 부동산구분 라디오가 하나도 안 잡혔다(화면 캡처로 확인). 탭 전환이 실제로 됐는지(부동산
+    # 구분 라디오가 나타났는지)로 검증하고, 안 됐으면 안내창을 한 번 더 닫고 재클릭한다.
+    for attempt in range(3):
+        _click_with_fallback(driver, tab)
+        time.sleep(0.5)
+        _guard_not_stuck_on_security_page(driver)
+        if driver.find_elements(By.CSS_SELECTOR, f'#{BASE} input[type="radio"][id*="rad_rd_kind_cls"]'):
+            break
+        print(f'[진행] 도로명주소검색 탭 전환이 안 된 것으로 보임({attempt + 1}/3) — 안내창 확인 후 재시도', flush=True)
+        _dismiss_cart_payment_reminder_popup_if_present(driver)
+        tab = wait.until(_find_rd_srch_tab)
+    else:
+        return _fail('도로명주소검색 탭으로 전환하지 못했습니다(안내창 재시도 3회 소진).')
     print('[진행] 도로명주소검색 탭 진입 확인', flush=True)
 
     fail = _pick_kind_cls_radio(driver, 'rad_rd_kind_cls', property_category, _fail)
@@ -1913,3 +2019,82 @@ def issue_real_estate_register(payload, credentials, options=None):
             except Exception:
                 pass
         # close_when_done=False면 창을 열어둔다 — 담당자가 화면을 보고 남은 절차를 직접 마칠 수 있게.
+
+
+if __name__ == '__main__':
+    # [2026-09-28 임시 테스트 진입점 — 사용자 요청 "등기부일괄발급, 단계별로 구현해서 테스트해보자"]
+    # 일괄발급 1단계(_reset_bulk_payment_cart)만 떼어내 실제 로그인된 브라우저로 확인하기 위한
+    # 최소 스크립트다. local_helper를 거치지 않고 이 파일을 직접 실행하면 된다(예: VSCode 실행) —
+    # 아이디/비번·캡차는 기존 관례대로(credentials=None) 화면에서 직접 입력한다. 이후 단계
+    # (매물 추가/일괄결제 진입)가 추가되면 이 블록도 함께 늘어날 예정 — 아직은 1단계 검증용이다.
+    chrome_options = Options()
+    chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+    driver = _launch_chrome(chrome_options)
+    wait = WebDriverWait(driver, 20)
+
+    def _fail(msg):
+        print(f'[오류] {msg}', flush=True)
+        return {'ok': False, 'message': msg}
+
+    print('[진행] 등기소 홈 접속 시도', flush=True)
+    _navigate_home(driver)
+    entry_btn = wait.until(lambda d: _home_entry_button(d))
+    print('[진행] "부동산 열람·발급" 버튼 찾음, 클릭', flush=True)
+    _click_with_fallback(driver, entry_btn)
+    time.sleep(0.5)
+    _dismiss_cart_payment_reminder_popup_if_present(driver)
+    if _is_captcha_required(driver):
+        print('[진행] 캡차 필요 — 브라우저 창에서 아이디/비번·캡차를 직접 입력해주세요', flush=True)
+        if not _wait_for_human_to_clear_captcha(driver):
+            print('[오류] 캡차 입력 대기시간을 초과했습니다.', flush=True)
+        else:
+            # run_search_once()와 같은 "안내 화면 통과" 로직 — 캡차 해소 직후 검색 탭이 아니라
+            # 이용안내 화면일 수 있어([다음]으로 넘겨야 한다), 그 부분만 그대로 재사용한다.
+            for _ in range(5):
+                titles = _visible_section_titles(driver)
+                if not titles or not any(t in PASS_THROUGH_TITLES for t in titles):
+                    break
+                nb = _next_button(driver)
+                if not nb:
+                    break
+                print(f'[진행] 캡차 이후 안내 화면 통과 시도 — {titles}', flush=True)
+                _click_with_fallback(driver, nb)
+                time.sleep(1.2)
+
+    reset_result = _reset_bulk_payment_cart(driver, _fail)
+    print('[1단계 결과]', reset_result if reset_result is not None else {'ok': True})
+
+    # [2026-09-28 추가 — 2·3단계 테스트] "매물 1건을 결제만 안 하고 결제대상까지 추가"는 새 함수가
+    # 필요 없다 — verify_register_target()이 이미 정확히 이 동작이다(도로명주소검색→등기기록유형→
+    # 등록번호미공개→결제대상 확인 화면에서 자기 행 체크박스까지 선택하고 결제 버튼은 절대 안 누름,
+    # 그 함수 1335~1336행 주석 "여기서 반드시 멈춘다" 참고). 그래서 여러 건 반복(3단계)도 이 함수를
+    # 루프에서 그대로 여러 번 부르면 된다 — 두 번째 호출부터는 run_search_once()가 홈 재진입 시
+    # 기존 _dismiss_cart_payment_reminder_popup_if_present()로 "취소(=기존 항목 유지)"를 자동으로
+    # 골라주므로, 앞서 담아둔 항목이 지워지지 않은 채로 새 매물이 이어서 쌓인다(이번 테스트로 실측
+    # 확인 예정 — 아직 라이브로 검증 전).
+    test_properties = [
+        {  # 오부사 646543 — 이번 세션에서 이미 확인해둔 실제 값
+            'property_category': '집합건물',
+            'location_search': {'sido': '경기도', 'sigungu': '오산시', 'dong_or_li': '수청동', 'jibun': '608-8', 'building_dong_no': '', 'room_no': '106'},
+            'register_record_type': '말소사항포함',
+            'road_search': {'sido': '경기도', 'sigungu': '오산시', 'road_name': '청학로', 'road_building_no': '250', 'building_dong_no': '', 'room_no': '106'},
+        },
+        {  # 오부사 400603
+            'property_category': '집합건물',
+            'location_search': {'sido': '경기도', 'sigungu': '오산시', 'dong_or_li': '수청동', 'jibun': '620-1', 'building_dong_no': '', 'room_no': '102'},
+            'register_record_type': '말소사항포함',
+            'road_search': {'sido': '경기도', 'sigungu': '오산시', 'road_name': '내삼미로', 'road_building_no': '93', 'building_dong_no': '', 'room_no': '102'},
+        },
+    ]
+    for i, test_payload in enumerate(test_properties, start=1):
+        print(f'[진행] === 테스트 매물 {i}/{len(test_properties)} 결제대상 추가 시도 ===', flush=True)
+        add_result = verify_register_target(driver, test_payload, credentials=None)
+        print(f'[{i}번째 결과]', add_result)
+
+    print('[진행] 결제대상 목록에 총 몇 건 쌓였는지, 화면에서 직접 확인해주세요.')
+    input('확인했으면 Enter를 누르면 결제대상을 다시 초기화합니다(2단계 삭제 분기 검증)...')
+
+    final_reset_result = _reset_bulk_payment_cart(driver, _fail)
+    print('[최종 초기화 결과]', final_reset_result if final_reset_result is not None else {'ok': True})
+    input('확인했으면 Enter를 눌러 브라우저를 닫으세요...')
+    driver.quit()
