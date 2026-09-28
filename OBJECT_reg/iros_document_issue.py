@@ -2093,60 +2093,104 @@ def issue_real_estate_register(payload, credentials, options=None):
         # close_when_done=False면 창을 열어둔다 — 담당자가 화면을 보고 남은 절차를 직접 마칠 수 있게.
 
 
-if __name__ == '__main__':
-    # [2026-09-28 임시 테스트 진입점 — 사용자 요청 "등기부일괄발급, 단계별로 구현해서 테스트해보자"]
-    # 일괄발급 1단계(_reset_bulk_payment_cart)만 떼어내 실제 로그인된 브라우저로 확인하기 위한
-    # 최소 스크립트다. local_helper를 거치지 않고 이 파일을 직접 실행하면 된다(예: VSCode 실행) —
-    # 아이디/비번·캡차는 기존 관례대로(credentials=None) 화면에서 직접 입력한다. 이후 단계
-    # (매물 추가/일괄결제 진입)가 추가되면 이 블록도 함께 늘어날 예정 — 아직은 1단계 검증용이다.
-    # [2026-09-28 추가 — 4단계(결제~다운로드) 테스트] 다운로드 파일을 찾으려면 전용 폴더와
-    # Chrome prefs가 필요하다 — issue_real_estate_register()가 쓰는 것과 같은 설정을 그대로 가져온다.
-    bulk_download_dir = os.path.join(tempfile.gettempdir(), f'obang_bulk_test_{uuid.uuid4().hex}')
-    os.makedirs(bulk_download_dir, exist_ok=True)
+def issue_real_estate_registers_bulk(items, credentials, options=None):
+    """
+    [2026-09-28 신규 — 사용자 요청 "등기부일괄발급"] 여러 매물의 등기부등본을 결제 1회(장바구니
+    방식)로 묶어 로그인부터 결제·열람·다운로드까지 순차 발급한다. issue_real_estate_register()의
+    "여러 건" 버전 — 두 함수가 공유하는 조각(verify_register_target/_route_after_payment_click/
+    _prepare_payment_screen/_finish_after_payment_confirm/_view_and_save)은 전부 그대로 재사용하고,
+    이 함수는 장바구니 초기화(_reset_bulk_payment_cart)와 "여러 건 순차 처리" 순서만 새로 엮는다.
+    실제로 실비용 결제까지 포함해 __main__ 테스트 블록에서 검증을 마친 흐름을 그대로 함수로
+    옮긴 것이다(로직 변경 없음).
 
-    # [2026-09-28 추가 — NAS 경로 연결] 5단계 최종 저장은 로컬 테스트 폴더 대신 실제 NAS로 옮긴다.
-    # 이 파일 상단 주석("NAS 저장은 이 파일의 책임이 아니다")대로, 새 이동 로직을 만들지 않고 이미
-    # 운영에서 쓰는 local_helper/main.py::handle_move_file()을 그대로 가져다 쓴다 — 이 __main__
-    # 블록은 실제 운영에서 local_helper가 하는 역할(issue_real_estate_register() 호출 후 NAS로 이동)을
-    # 사람이 직접 실행해보는 자리라서, local_helper를 여기서 import하는 게 "호출부가 옮긴다"는
-    # 원칙과 어긋나지 않는다. local_helper/main.py가 반대 방향으로 이 저장소(OBJECT_reg)를 import하는
-    # 것과 같은 방식(같은 PC 안 고정된 상대경로)을 반대로 적용한 것뿐이다. 더미파일로 NAS 이동 자체는
-    # 먼저 별도 검증했다(핸들러가 두 매물의 실제 폴더에 정확히 만들고 옮기는 것까지 확인 완료).
-    _local_helper_dir = os.path.normpath(os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), '..', '..', 'Atomprojected', 'obangtest', 'local_helper'))
-    if _local_helper_dir not in sys.path:
-        sys.path.append(_local_helper_dir)
-    import main as local_helper_main
+    [단건과 다른 점] 일괄발급은 "완료까지 자동 진행" 하나만 지원한다(사용자 확정, 2026-09-28) —
+    단건의 auto_confirm=False(사람이 결제 버튼을 직접 누름)/lookup_only(조회만)/stop_before_view
+    (결제까지만) 같은 중간 단계 선택지는 없다. 여러 건 중 일부만 결제하다 멈추는 시나리오는 아직
+    검증되지 않은 별도 복잡도라 지금 범위에 넣지 않았다.
+
+    @param items  [{property_category, location_search, road_search(선택), register_record_type,
+        save: {folder_parts, filename}}, ...] — 단건 payload와 완전히 같은 모양의 딕셔너리 리스트.
+        object_code_new 같은 상태보고용 부가정보는 이 함수가 전혀 모른다(issue_real_estate_register()와
+        같은 경계 — 등기소 자동화만 책임지고, "이 결과를 어느 매물 DB에 반영할지"는 호출부 책임).
+    @param credentials {'iros_id','iros_pw','iros_emoney_no','iros_emoney_pw'}.
+    @param options {
+        'headless': bool = True,        # "몰래(창 안 띄우고) 작동" — issue_real_estate_register()와 동일
+        'close_when_done': bool = True, # headless=True면 항상 True로 강제(단건과 동일한 이유)
+    }
+    @return {'ok': bool, 'message': str, 'user_cancelled': bool,
+             'results': [{'ok': bool, 'file_path': str(로컬 임시경로, NAS 저장은 호출부 책임),
+                          'address': str, 'unique_no': str, 'owner_masked': str, 'message': str}, ...]}
+        최상위 ok=False는 "결제 전 단계(장바구니 초기화·매물 추가·결제 자체)에서 중단됨" 또는
+        "자동화 도중 예외 발생"을 뜻한다 — 이 경우 results는 그 시점까지 확인된 매물만 담고 있다.
+        결제가 일단 성사되면 최상위는 항상 ok=True이고, 개별 건 다운로드 성공/실패는 results 각
+        항목의 ok로만 구분한다 — 단건(issue_real_estate_register())은 결제와 다운로드가 사실상
+        한 묶음이라 다운로드 실패도 최상위 실패로 보지만, 일괄은 결제 1번에 다운로드가 N번이라
+        한 건의 다운로드 실패가 이미 성공한 결제 전체를 가리면 안 된다(실패한 건은 담당자가
+        "신청결과 확인" 화면에서 나중에 개별 재열람 가능 — 이미 결제됐으므로 데이터가 사라지지 않음).
+    """
+    options = dict(options or {})
+    headless = bool(options.get('headless', True))
+    close_when_done = bool(options.get('close_when_done', True))
+    if headless:
+        close_when_done = True
+
+    if not items:
+        return {'ok': False, 'message': '발급할 매물이 없습니다.', 'user_cancelled': False, 'results': []}
+
+    download_dir = os.path.join(tempfile.gettempdir(), f'obang_bulk_issue_{uuid.uuid4().hex}')
+    os.makedirs(download_dir, exist_ok=True)
 
     chrome_options = Options()
     chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+    # [issue_real_estate_register()와 동일한 이유 — 그 함수 주석 참고] 결제 진입 시점에 등기소가
+    # "진짜 렌더링 창이 있는지"를 확인하는 것으로 보여, 진짜 헤드리스 대신 화면 밖 좌표로 옮긴다.
+    if headless and IROS_TRUE_HEADLESS_FOR_TEST:
+        chrome_options.add_argument('--headless=new')
+        chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36')
     chrome_options.add_experimental_option('prefs', {
-        'download.default_directory': bulk_download_dir,
+        'download.default_directory': download_dir,
         'download.prompt_for_download': False,
         'download.directory_upgrade': True,
         'plugins.always_open_pdf_externally': True,
     })
     driver = _launch_chrome(chrome_options)
-    wait = WebDriverWait(driver, 20)
 
-    def _fail(msg):
-        print(f'[오류] {msg}', flush=True)
-        return {'ok': False, 'message': msg}
+    results = [{'ok': False, 'file_path': '', 'address': '', 'unique_no': '', 'owner_masked': '', 'message': ''}
+               for _ in items]
+    failure_message = ''
 
-    print('[진행] 등기소 홈 접속 시도', flush=True)
-    _navigate_home(driver)
-    entry_btn = wait.until(lambda d: _home_entry_button(d))
-    print('[진행] "부동산 열람·발급" 버튼 찾음, 클릭', flush=True)
-    _click_with_fallback(driver, entry_btn)
-    time.sleep(0.5)
-    _dismiss_cart_payment_reminder_popup_if_present(driver)
-    if _is_captcha_required(driver):
-        print('[진행] 캡차 필요 — 브라우저 창에서 아이디/비번·캡차를 직접 입력해주세요', flush=True)
-        if not _wait_for_human_to_clear_captcha(driver):
-            print('[오류] 캡차 입력 대기시간을 초과했습니다.', flush=True)
-        else:
-            # run_search_once()와 같은 "안내 화면 통과" 로직 — 캡차 해소 직후 검색 탭이 아니라
-            # 이용안내 화면일 수 있어([다음]으로 넘겨야 한다), 그 부분만 그대로 재사용한다.
+    def _fail_all(message):
+        nonlocal failure_message
+        failure_message = message
+        print(f'[오류] {message}', flush=True)
+        return {'ok': False, 'message': message, 'user_cancelled': False, 'results': results}
+
+    try:
+        print(f'[진행] issue_real_estate_registers_bulk 시작 — {len(items)}건, headless={headless}', flush=True)
+        driver.set_window_size(1280, 1000)
+        if headless and not IROS_TRUE_HEADLESS_FOR_TEST:
+            driver.set_window_position(80, 40)  # 사용자 확인이 가능하도록 보이는 위치에서 실행
+        if headless and IROS_TRUE_HEADLESS_FOR_TEST:
+            driver.execute_cdp_cmd('Emulation.setDeviceMetricsOverride', {
+                'width': 1280, 'height': 1000, 'deviceScaleFactor': 1, 'mobile': False,
+                'screenWidth': 1920, 'screenHeight': 1080,
+            })
+
+        # [등기소 홈 진입 + 캡차 대기] _reset_bulk_payment_cart()는 verify_register_target()과 달리
+        # 캡차를 자체적으로 처리하지 않으므로(그 함수는 홈 화면 요소만 찾는다), 첫 진입 시점의 캡차는
+        # 여기서 미리 해소해둔다 — __main__ 테스트 블록에서 실측 검증된 순서를 그대로 옮겼다.
+        wait = WebDriverWait(driver, 20)
+        print('[진행] 등기소 홈 접속 시도', flush=True)
+        _navigate_home(driver)
+        entry_btn = wait.until(lambda d: _home_entry_button(d))
+        print('[진행] "부동산 열람·발급" 버튼 찾음, 클릭', flush=True)
+        _click_with_fallback(driver, entry_btn)
+        time.sleep(0.5)
+        _dismiss_cart_payment_reminder_popup_if_present(driver)
+        if _is_captcha_required(driver):
+            print('[진행] 캡차 필요 — 브라우저 창에서 아이디/비번·캡차를 직접 입력해주세요', flush=True)
+            if not _wait_for_human_to_clear_captcha(driver):
+                return _fail_all('캡차 입력 대기시간을 초과했습니다.')
             for _ in range(5):
                 titles = _visible_section_titles(driver)
                 if not titles or not any(t in PASS_THROUGH_TITLES for t in titles):
@@ -2158,14 +2202,129 @@ if __name__ == '__main__':
                 _click_with_fallback(driver, nb)
                 time.sleep(1.2)
 
-    reset_result = _reset_bulk_payment_cart(driver, _fail)
-    print('[1단계 결과]', reset_result if reset_result is not None else {'ok': True})
+        def _fail(msg):
+            print(f'[오류] {msg}', flush=True)
+            return {'ok': False, 'message': msg}
 
-    # [2026-09-28 — 4단계(결제~다운로드) 실비용 재테스트] 10521/10514는 이미 오늘 결제 완료돼
-    # 이중결제 위험이 있어, 아직 오늘 결제 안 한 새 매물 644957(토지)/237142(집합건물)로 바꿔서
-    # 다시 검증한다 — 부동산구분이 서로 달라(토지=소재지번검색, 집합건물=도로명주소검색) 검색방식
-    # 분기까지 함께 확인된다. 값은 core/lib/lib_document_issue.php::getIrosIssuePayload()로 직접
-    # 조회해 확인한 실제 payload 그대로(2026-09-28, 본섭 스크래치 조회).
+        reset_result = _reset_bulk_payment_cart(driver, _fail)
+        if reset_result is not None and not reset_result.get('ok', True):
+            return _fail_all(f'결제대상(장바구니) 초기화 실패 — {reset_result.get("message", "")}')
+
+        # [매물별 결제대상 추가] 하나라도 실패하면 결제 전이라 안전하게 전체 중단한다(비용 발생 전
+        # 검증 — __main__ 테스트 블록에서 확정한 방식 그대로).
+        for i, item in enumerate(items):
+            print(f'[진행] === 매물 {i + 1}/{len(items)} 결제대상 추가 시도 ===', flush=True)
+            add_result = verify_register_target(driver, item, credentials={})
+            results[i] = {'ok': False, 'file_path': '', 'address': add_result.get('address', ''),
+                          'unique_no': add_result.get('unique_no', ''), 'owner_masked': add_result.get('owner_masked', ''),
+                          'message': add_result.get('message', '')}
+            if not add_result.get('ok'):
+                return _fail_all(f'{i + 1}번째 매물 결제대상 추가 실패 — {add_result.get("message", "")} (돈이 걸리기 전이라 안전합니다)')
+
+        # [전체선택 → 결제] 결제(700원x건수)는 아직 청구되지 않는다(로그인 팝업/결제 준비 화면으로
+        # 이어질 뿐인 버튼 — issue_real_estate_register()와 동일).
+        print('[진행] === 결제대상 전체선택 → 결제 진입 ===', flush=True)
+        try:
+            pay_tbody = driver.find_element(By.ID, f'{BASE}_grd_bpay_obj_list_body_tbody')
+        except NoSuchElementException:
+            return _fail_all('결제대상 표를 찾지 못했습니다.')
+        pay_rows = [tr for tr in pay_tbody.find_elements(By.TAG_NAME, 'tr')
+                    if 'display: none' not in (tr.get_attribute('style') or '')]
+        for tr in pay_rows:
+            try:
+                checkbox = tr.find_element(By.CSS_SELECTOR, 'td[data-col_id="chk_sel"] input[type="checkbox"]')
+                if not checkbox.is_selected():
+                    _click_with_fallback(driver, tr.find_element(By.CSS_SELECTOR, 'td[data-col_id="chk_sel"] label'))
+                    time.sleep(0.3)
+            except NoSuchElementException:
+                continue
+        print(f'[진행] {len(pay_rows)}건 전체선택 완료', flush=True)
+
+        pay_btn = driver.find_element(By.ID, f'{BASE}_btn_bpay')
+        print('[진행] [결제] 버튼 클릭 — 아직 청구되지 않음', flush=True)
+        _click_with_fallback(driver, pay_btn)
+        time.sleep(1)
+
+        routed = _route_after_payment_click(driver, credentials=credentials)
+        print(f'[진행] 결제 클릭 후 라우팅 결과 = {routed}', flush=True)
+        if routed != 'payment-prep':
+            return _fail_all(f'결제 화면 진입 중 예상하지 못한 화면이 나타났습니다 — {routed} | {_diag_snapshot(driver)}')
+
+        prep = _prepare_payment_screen(driver, credentials)
+        if not prep.get('ready'):
+            return _fail_all(f'{prep.get("message", "결제 준비를 마치지 못했습니다.")} | {_diag_snapshot(driver)}')
+        print('[진행] 결제수단(선불전자지급수단) 정보 입력 완료', flush=True)
+
+        # [실제 결제 클릭 — issue_real_estate_register()와 동일한 이유로 표준 click() 우선 시도]
+        print('[진행] [결제] 버튼(실제 결제) 클릭 — 진짜 마우스 클릭 시도', flush=True)
+        pay_btn2 = driver.find_element(By.ID, f'{BASE}_btn_bpay')
+        try:
+            pay_btn2.click()
+        except Exception as e:
+            print(f'[진행] 표준 click() 실패({type(e).__name__}) — execute_script 방식으로 재시도', flush=True)
+            _click_with_fallback(driver, pay_btn2)
+
+        finish = _finish_after_payment_confirm(driver)
+        print('[진행] 결제 확정 처리 결과 —', finish, flush=True)
+        if not finish.get('ok'):
+            return _fail_all(f'결제확정 처리 실패 — {finish.get("message", "")} | {_diag_snapshot(driver)}')
+        print('[진행] 결제 확정 완료', flush=True)
+
+        # [열람·다운로드] 결제는 이미 끝났으므로 여기부터는 개별 건 실패가 있어도 최상위 실패로 보지
+        # 않는다(위 docstring 참고) — 한 건씩 받고 바로 넘어간다(_wait_for_download()가 "다운로드
+        # 폴더 안의 파일 아무거나 하나"를 완료로 보는 구조라 동시 다운로드는 위험 — 실사용 재현으로
+        # 확인된 제약, _view_and_save() 자체가 이미 이전 열람 팝업을 닫고 시작하도록 되어 있다).
+        print('[진행] === 매물별 순차 열람·다운로드 ===', flush=True)
+        for i, item in enumerate(items):
+            print(f'[진행] --- {i + 1}/{len(items)}건째 열람·다운로드 시도 ---', flush=True)
+            save_result = _view_and_save(driver, item, download_dir)
+            print(f'[{i + 1}번째 다운로드 결과]', save_result, flush=True)
+            results[i] = dict(results[i], ok=bool(save_result.get('ok')),
+                               file_path=save_result.get('file_path', ''),
+                               message=save_result.get('message', ''))
+
+        print('[진행] 일괄발급 완료', flush=True)
+        return {'ok': True, 'message': '', 'user_cancelled': False, 'results': results}
+
+    except (NoSuchWindowException, InvalidSessionIdException):
+        # [issue_real_estate_register()와 동일한 이유] 담당자가 자동화 창을 완료 전에 직접 닫은
+        # 경우 — 오류로그에 남기지 않고 정상 취소로 구분한다.
+        print('[진행] 사용자가 자동화 창을 직접 닫음 — 정상 취소로 처리', flush=True)
+        return {'ok': False, 'message': USER_CLOSED_WINDOW_MESSAGE, 'user_cancelled': True, 'results': results}
+    except Exception as e:
+        print(f'[오류] issue_real_estate_registers_bulk 중 예외 발생: {type(e).__name__}: {e}', flush=True)
+        failure_message = f'자동화 중 오류({type(e).__name__}): {e} | {_diag_snapshot(driver)}'
+        return {'ok': False, 'message': failure_message, 'user_cancelled': False, 'results': results}
+    finally:
+        # [issue_real_estate_register()와 동일] 실패했는데 사람이 스스로 창을 닫은 경우가 아니고
+        # 몰래 작동도 아니면, 사유를 알림창으로 띄우고 창을 열어둔다 — 담당자가 왜 멈췄는지 그
+        # 자리에서 바로 읽을 수 있게 하기 위함.
+        if failure_message and not headless:
+            _alert_failure_and_keep_window_open(driver, failure_message)
+            close_when_done = False
+        if close_when_done:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+
+if __name__ == '__main__':
+    # [2026-09-28 재작성 — issue_real_estate_registers_bulk() 신설로 정리] 예전엔 1~5단계 로직이
+    # 전부 이 블록 안에 직접 풀려 있었다(단계별로 구현하며 실측 검증하던 시절의 흔적) — 검증이
+    # 끝난 지금은 그 로직을 재사용 함수로 옮겼으므로(로직 변경 없음), 이 블록은 그 함수를 호출하는
+    # 얇은 테스트 하네스로 줄었다. local_helper를 거치지 않고 이 파일을 직접 실행하면 된다(예:
+    # VSCode 실행) — 계정정보 조회·NAS 이동은 local_helper/main.py가 실제로 하는 역할을 그대로
+    # 흉내 낸다(아래 import 이유는 issue_real_estate_registers_bulk() 신설 시점 주석과 동일).
+    _local_helper_dir = os.path.normpath(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), '..', '..', 'Atomprojected', 'obangtest', 'local_helper'))
+    if _local_helper_dir not in sys.path:
+        sys.path.append(_local_helper_dir)
+    import main as local_helper_main
+
+    # 값은 core/lib/lib_document_issue.php::getIrosIssuePayload()로 직접 조회해 확인한 실제 payload
+    # 그대로다(2026-09-28, 본섭 스크래치 조회) — 재테스트할 땐 오늘 이미 결제한 매물(중복결제 위험)이
+    # 아닌 새 매물번호로 바꿔서 확인할 것.
     test_properties = [
         {  # 오부사 644957 — 전라북도 완주군 봉동읍 제내리 산37-11, 토지
             'property_category': '토지',
@@ -2185,45 +2344,11 @@ if __name__ == '__main__':
                      'filename': '20260928_등기부등본_집합건물_궐동611-6 에스아이프라자 104호.pdf'},
         },
     ]
-    for i, test_payload in enumerate(test_properties, start=1):
-        print(f'[진행] === 테스트 매물 {i}/{len(test_properties)} 결제대상 추가 시도 ===', flush=True)
-        add_result = verify_register_target(driver, test_payload, credentials={})
-        print(f'[{i}번째 결과]', add_result)
-        if not add_result.get('ok'):
-            print('[오류] 결제대상 추가에 실패해 중단합니다 — 돈이 걸리기 전이라 안전합니다.', flush=True)
-            input('브라우저를 확인한 뒤 Enter를 누르면 종료합니다...')
-            driver.quit()
-            raise SystemExit(1)
-
-    # [4단계] 결제대상 전체선택 → [결제] 클릭(여기까지는 청구되지 않음, 기존 코드가 이미 확인한 사실)
-    # → 결제수단 자동입력 → 자동결제. 단건 발급이 이미 운영 중인 방식(2026-09-07 확정)과 동일.
-    print('[진행] === 4단계: 결제대상 전체선택 → 결제 진입 ===', flush=True)
-    try:
-        pay_tbody = driver.find_element(By.ID, f'{BASE}_grd_bpay_obj_list_body_tbody')
-    except NoSuchElementException:
-        print('[오류] 결제대상 표를 찾지 못했습니다.', flush=True)
-        input('브라우저를 확인한 뒤 Enter를 누르면 종료합니다...')
-        driver.quit()
-        raise SystemExit(1)
-    pay_rows = [tr for tr in pay_tbody.find_elements(By.TAG_NAME, 'tr')
-                if 'display: none' not in (tr.get_attribute('style') or '')]
-    for tr in pay_rows:
-        try:
-            checkbox = tr.find_element(By.CSS_SELECTOR, 'td[data-col_id="chk_sel"] input[type="checkbox"]')
-            if not checkbox.is_selected():
-                _click_with_fallback(driver, tr.find_element(By.CSS_SELECTOR, 'td[data-col_id="chk_sel"] label'))
-                time.sleep(0.3)
-        except NoSuchElementException:
-            continue
-    print(f'[진행] {len(pay_rows)}건 전체선택 완료 — 화면에 표시된 통수·금액이 {len(test_properties)}통과 맞는지 확인해주세요.', flush=True)
-    # input(f'금액을 확인하셨으면 Enter를 눌러 [결제] 버튼을 클릭합니다(아직 청구 안 됨)...')
-
-    pay_btn = driver.find_element(By.ID, f'{BASE}_btn_bpay')
-    print('[진행] [결제] 버튼 클릭 — 아직 청구되지 않음', flush=True)
-    _click_with_fallback(driver, pay_btn)
-    time.sleep(1)
 
     # 계정정보(선불전자지급수단 포함) 조회 — local_helper/main.py::_fetch_iros_credentials()와 동일.
+    # issue_real_estate_registers_bulk()는 credentials를 파라미터로만 받고(경계 원칙 — 위 함수
+    # docstring 참고) 직접 조회하지 않으므로, 실제 운영에서 local_helper가 먼저 조회해 넘기는 것과
+    # 같은 순서를 이 테스트 블록도 그대로 따른다.
     IROS_SERVICE_TOKEN = '51b5f2f355a2e3958e6d5e9a744ab00b53cd181c3a9864ac'
     IROS_STARTED_FROM = 'https://obangkr.cafe24.com'
     body = urllib.parse.urlencode({'fn': 'getirosservicecredentials', 'service_token': IROS_SERVICE_TOKEN}).encode('utf-8')
@@ -2232,63 +2357,27 @@ if __name__ == '__main__':
         parsed = json.loads(resp.read().decode('utf-8'))
     if not parsed.get('ok'):
         print(f'[오류] 등기소 계정정보 조회 실패: {parsed.get("message", "")}', flush=True)
-        driver.quit()
         raise SystemExit(1)
     iros_credentials = parsed.get('data') or {}
     print('[진행] 계정정보 조회 완료(값은 로그에 남기지 않음)', flush=True)
 
-    routed = _route_after_payment_click(driver, credentials=iros_credentials)
-    print(f'[진행] 결제 클릭 후 라우팅 결과 = {routed}', flush=True)
-    if routed != 'payment-prep':
-        print(f'[오류] 예상하지 못한 라우팅 결과입니다 — {routed}. 화면을 직접 확인해주세요.', flush=True)
-        input('확인 후 Enter를 누르면 종료합니다...')
-        driver.quit()
-        raise SystemExit(1)
+    bulk_result = issue_real_estate_registers_bulk(
+        test_properties, iros_credentials,
+        options={'headless': False, 'close_when_done': False},
+    )
+    print('[전체 결과]', {'ok': bulk_result.get('ok'), 'message': bulk_result.get('message')})
 
-    prep = _prepare_payment_screen(driver, iros_credentials)
-    if not prep.get('ready'):
-        print(f'[오류] 결제 준비 실패 — {prep.get("message", "")}', flush=True)
-        input('화면을 직접 확인한 뒤 Enter를 누르면 종료합니다...')
-        driver.quit()
-        raise SystemExit(1)
-    print('[진행] 결제수단 탭·이용동의·선불전자지급수단 자동입력 완료', flush=True)
-
-    print('[진행] [결제] 버튼(실제 결제) 클릭 — 진짜 마우스 클릭 시도', flush=True)
-    pay_btn2 = driver.find_element(By.ID, f'{BASE}_btn_bpay')
-    try:
-        pay_btn2.click()
-    except Exception as e:
-        print(f'[진행] 표준 click() 실패({type(e).__name__}) — execute_script 방식으로 재시도', flush=True)
-        _click_with_fallback(driver, pay_btn2)
-
-    finish = _finish_after_payment_confirm(driver)
-    print('[진행] 결제 확정 처리 결과 —', finish, flush=True)
-    if not finish.get('ok'):
-        input('결제확정 처리가 실패했습니다 — 화면을 직접 확인한 뒤 Enter를 누르면 종료합니다...')
-        driver.quit()
-        raise SystemExit(1)
-
-    # [5단계] 열람·다운로드·NAS 이동 — 매물마다 순차로 한다(_wait_for_download()가 "다운로드
-    # 폴더 안의 파일 아무거나 하나"를 완료로 보는 구조라, 두 건을 동시에 받으면 엉뚱한 파일을 집을
-    # 수 있다 — 사용자 질문으로 미리 확인한 위험). 한 건 받고 바로 handle_move_file()로 실제 NAS
-    # 폴더까지 옮긴 뒤 다음 건으로 넘어간다(2026-09-28부터 로컬 테스트 폴더 대신 실제 NAS로 이동 —
-    # handle_move_file() 자체는 더미파일로 먼저 별도 검증 완료).
-    print('[진행] === 5단계: 매물별 순차 열람·다운로드·NAS 이동 ===', flush=True)
-    for i, test_payload in enumerate(test_properties, start=1):
-        print(f'[진행] --- {i}/{len(test_properties)}건째 열람·다운로드 시도 ---', flush=True)
-        save_result = _view_and_save(driver, test_payload, bulk_download_dir)
-        print(f'[{i}번째 다운로드 결과]', save_result, flush=True)
-        if not save_result.get('ok'):
-            print('[오류] 이 건은 다운로드에 실패했습니다 — 나머지는 계속 진행합니다.', flush=True)
+    for i, (test_payload, item_result) in enumerate(zip(test_properties, bulk_result.get('results') or []), start=1):
+        print(f'[{i}번째 결과]', item_result)
+        if not item_result.get('ok') or not item_result.get('file_path'):
             continue
         save = test_payload.get('save') or {}
         moved = local_helper_main.handle_move_file({
-            'source_path': save_result['file_path'],
+            'source_path': item_result['file_path'],
             'folder_parts': save.get('folder_parts') or [],
-            'filename': save.get('filename') or os.path.basename(save_result['file_path']),
+            'filename': save.get('filename') or os.path.basename(item_result['file_path']),
         })
         print(f'[{i}번째 NAS 이동 결과]', moved, flush=True)
 
     print('[진행] 전체 완료 — 위 "NAS 이동 결과"의 full_path에서 각 파일을 확인해주세요.', flush=True)
     input('확인했으면 Enter를 눌러 브라우저를 닫으세요...')
-    driver.quit()
