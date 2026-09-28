@@ -1135,6 +1135,19 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
                 return _search_via_road_address(driver, wait, payload, property_category, road_loc, _fail)
             print('[진행] road_search 데이터 없음 — 간편검색으로 대체', flush=True)
             return _search_via_simple_search(driver, wait, payload, property_category, loc, _fail)
+        # [2026-09-28 추가 — 사용자 발견, 실사용 재현으로 확인] 일반건물(건물)도 소재지번검색이 쓰는
+        # "동/리" 표기가 등기부상 실제 표기(예: "원동" vs 실제는 "원리")와 어긋나면 0건이 나올 수
+        # 있다(매물 633337로 재현) — 도로명주소는 국가 부여값이라 이런 동/리 표기 불일치가 없다.
+        # getIrosIssuePayload()는 집합건물뿐 아니라 건물이 있는 매물이면 이미 road_search를 항상
+        # 계산해 내려주므로(pr_building.building_road 기반), _search_via_road_address() 자체도
+        # 이미 완전히 범용이라(집합건물 전용 동/호 입력만 그 함수 안에서 따로 분기돼 있음) 여기서
+        # 조건만 넓히면 된다. 폴백은 반드시 소재지번검색이어야 한다 — 간편검색은 부번 없는 지번일
+        # 때 여러 건물을 한꺼번에 찾아버리는 문제가 토지·일반건물에서 이미 확인돼 있다(위 2026-09-14
+        # 주석 참고, 간편검색은 집합건물 전용으로 남겨둔다).
+        if property_category == '건물':
+            road_loc = payload.get('road_search') or {}
+            if road_loc.get('road_name') and road_loc.get('road_building_no'):
+                return _search_via_road_address(driver, wait, payload, property_category, road_loc, _fail)
         return _search_via_location_search(driver, wait, payload, property_category, loc, _fail)
 
     def run_search_once():
