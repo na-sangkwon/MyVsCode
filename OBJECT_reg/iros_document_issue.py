@@ -607,12 +607,20 @@ def _convert_alphabet_to_korean_for_search(text):
 
 def _row_matches_target(addr_text, payload):
     """content_iros.js::rowMatchesTarget()과 동일한 판정 — 결제 이후 화면(미열람/재열람 목록)에서
-    이번 물건에 해당하는 줄을 고를 때도 재사용한다."""
+    이번 물건에 해당하는 줄을 고를 때도 재사용한다.
+
+    [2026-09-28 추가 — 실사용 재현으로 확인, 매물 633337] verify_register_target()의 "결제대상 표"
+    최종 대조와 완전히 같은 이유로, 도로명주소를 대조 후보로 함께 쓴다 — 등기부상 실제 동/리 표기가
+    location_search와 다르면(예: 저장된 값은 "원동"인데 실제는 "원리") 이 열람목록 대조도 똑같이
+    실패해서 "엉뚱한 문서를 열람하지 않도록 멈춘다"는 안전장치가 오히려 정상 건을 막아버렸다(이미
+    결제까지 끝난 뒤라 더 위험한 실패 — 결제는 됐는데 열람을 못 해 미열람 상태로 남음)."""
     addr = _squash(addr_text)
     loc = payload.get('location_search') or {}
     dong_jibun = _squash(loc.get('dong_or_li')) + _squash(loc.get('jibun'))
+    road_loc = payload.get('road_search') or {}
+    road_name_no = _squash(road_loc.get('road_name')) + _squash(road_loc.get('road_building_no'))
 
-    if dong_jibun == '':
+    if dong_jibun == '' and not road_name_no:
         base = _squash(re.sub(r'\S*호\s*$', '', str(payload.get('search_address') or '')))
         if base == '' or base not in addr:
             return False
@@ -620,7 +628,7 @@ def _row_matches_target(addr_text, payload):
         sigungu = _squash(loc.get('sigungu'))
         if sigungu != '' and sigungu not in addr:
             return False
-        if dong_jibun not in addr:
+        if dong_jibun not in addr and not (road_name_no and road_name_no in addr):
             return False
 
     room_digits = _squash(loc.get('room_no'))
@@ -1163,8 +1171,7 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
         print(f'[진행] 부동산 열람·발급 화면 진입 확인 — url={driver.current_url}', flush=True)
         _dismiss_cart_payment_reminder_popup_if_present(driver)
         if _is_captcha_required(driver):
-            _prefill_login_page_credentials(driver, credentials)
-            if not _wait_for_human_to_clear_captcha(driver):
+            if not _wait_for_human_to_clear_captcha(driver, credentials):
                 return _fail('로그인화면 캡차 입력 대기시간을 초과했습니다.')
             titles = _visible_section_titles(driver)
             print(f'[진행] 캡차 해소 직후 화면 제목={titles}, url={driver.current_url}', flush=True)
@@ -1539,21 +1546,29 @@ def _prefill_login_page_credentials(driver, credentials):
         pass
 
 
-def _wait_for_human_to_clear_captcha(driver, timeout_seconds=300):
+def _wait_for_human_to_clear_captcha(driver, credentials=None, timeout_seconds=300):
     """캡차가 화면에서 사라질 때까지(=사람이 캡차를 직접 입력하고 로그인을 완료할 때까지) 기다린다.
     [2026-09-18 신규 — 사용자 요청] 알림창은 발견 시 한 번만 띄운다 — 담당자가 그 창을 닫기 전에
-    이미 캡차를 입력해뒀을 수도 있으므로, 창을 띄우자마자 폴링을 시작해 그런 경우 곧바로 이어간다."""
+    이미 캡차를 입력해뒀을 수도 있으므로, 창을 띄우자마자 폴링을 시작해 그런 경우 곧바로 이어간다.
+
+    [2026-09-28 수정 — 사용자 발견] 아이디/비번 채움 + 캡차칸 포커스(_prefill_login_page_credentials())를
+    예전엔 이 함수를 부르기 "전"에 호출부가 먼저 했는데, 그러면 순서가 [포커스] → [알림창]이 되어
+    알림창(pyautogui, OS 레벨 창)이 뜨는 순간 방금 준 포커스를 곧바로 뺏어가 버렸다(실사용 재현으로
+    확인). 알림창이 사람이 직접 닫아야 하는 블로킹 호출이므로, 그 "다음"에 채움+포커스를 해야
+    사람이 알림창을 닫자마자 캡차칸에 커서가 있는 상태를 보게 된다 — credentials를 이 함수가 직접
+    받아서 순서를 강제한다(호출부가 순서를 매번 맞게 지키도록 기대하는 대신)."""
     print('[진행] 로그인화면에 캡차(자동입력 방지문자) 발견 — 담당자 입력 대기', flush=True)
     try:
         import pyautogui
         pyautogui.alert(
             '인터넷등기소 로그인에 자동입력 방지문자(캡차)가 나타났습니다.\n\n'
-            '아이디/비밀번호는 이미 입력해뒀습니다 — 캡차만 입력하고 로그인해주세요.\n'
+            '확인을 누르면 아이디/비밀번호가 자동 입력되고 캡차칸에 커서가 놓입니다 — 캡차만 입력하고 로그인해주세요.\n'
             '로그인이 완료되면 자동으로 이어서 진행됩니다.',
             '[인터넷등기소] 캡차 입력 필요',
         )
     except Exception:
         pass
+    _prefill_login_page_credentials(driver, credentials)
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         if not _is_captcha_required(driver):
@@ -2224,9 +2239,10 @@ def issue_real_estate_registers_bulk(items, credentials, options=None):
             # [2026-09-28 추가 — 사용자 요청] 이 시점엔 결제용 실제 계정정보(credentials)가 이미
             # 함수 인자로 들어와 있으므로(단건 issue_real_estate_register()와 달리 매물 검색 단계
             # (verify_register_target)에는 일부러 빈 값을 넘기지만, 이 최초 로그인화면은 그 제약과
-            # 무관하다), _verify_register_target_body()의 같은 처리와 동일하게 미리 채워준다.
-            _prefill_login_page_credentials(driver, credentials)
-            if not _wait_for_human_to_clear_captcha(driver):
+            # 무관하다), _verify_register_target_body()의 같은 처리와 동일하게 미리 채워준다 —
+            # 채움 순서는 _wait_for_human_to_clear_captcha()가 알림창 다음으로 보장한다(그 함수
+            # 주석 참고 — 여기서 미리 채우면 알림창이 포커스를 도로 뺏어간다).
+            if not _wait_for_human_to_clear_captcha(driver, credentials):
                 return _fail_all('캡차 입력 대기시간을 초과했습니다.')
             for _ in range(5):
                 titles = _visible_section_titles(driver)
