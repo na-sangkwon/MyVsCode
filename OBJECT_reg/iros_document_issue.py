@@ -1414,14 +1414,24 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
                 if 'display: none' not in (tr.get_attribute('style') or '')]
 
     dong_jibun = _squash(loc['dong_or_li']) + _squash(loc['jibun'])
+    # [2026-09-28 추가 — 실사용 재현으로 확인, 매물 633337] 검색 자체(소재지번검색/도로명주소검색
+    # 어느 쪽이든)는 성공해도, 이 최종 대조 단계는 지금까지 location_search의 동/리 표기(loc)만 보고
+    # 있었다 — 등기부상 실제 표기가 다르면(예: 저장된 값은 "원동"인데 실제는 "원리") 검색결과가
+    # 1건이라 이미 올바른 물건이 선택된 상태인데도 "일치하는 줄을 찾지 못했습니다"로 잘못 실패
+    # 처리됐다. 도로명주소는 국가 부여값이라 이런 표기 불일치가 없으므로(run_search_dispatch()가
+    # 도로명주소검색을 우선하는 이유와 동일), road_search 데이터가 있으면 대조 후보로 함께 쓴다 —
+    # 동/리 표기 또는 도로명 표기 둘 중 하나만 일치해도 통과시킨다.
+    road_loc = payload.get('road_search') or {}
+    road_name_no = _squash(road_loc.get('road_name', '')) + _squash(road_loc.get('road_building_no', ''))
     for tr in pay_rows:
         addr_td = _find_row_addr_cell(tr)
         if addr_td is None:
             continue
         addr_text = addr_td.text.strip()
-        if loc.get('sigungu') and _squash(loc['sigungu']) not in _squash(addr_text):
+        squashed_addr = _squash(addr_text)
+        if loc.get('sigungu') and _squash(loc['sigungu']) not in squashed_addr:
             continue
-        if dong_jibun not in _squash(addr_text):
+        if dong_jibun not in squashed_addr and not (road_name_no and road_name_no in squashed_addr):
             continue
         try:
             checkbox = tr.find_element(By.CSS_SELECTOR, 'td[data-col_id="chk_sel"] input[type="checkbox"]')
