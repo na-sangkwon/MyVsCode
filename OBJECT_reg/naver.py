@@ -15,6 +15,7 @@ import pyautogui
 import time
 import traceback
 import register
+import object_data
 import re
 import pymysql
 import tkinter as tk
@@ -1125,9 +1126,166 @@ class NaverThread(QThread):
                     if 미리보기요소:print('미리보기 요소찾음')  
 
                 except Exception as e:
-                    print(f"홍보확인서작성 오류: {e}")                    
+                    print(f"홍보확인서작성 오류: {e}")
 
-            def 검증방식선택및의뢰인정보입력(fail_msg):   
+            # [2026-09-28 추가 — 사용자 요청 "연장등록도 소유자정보 확인되면 검증방식을 자동전환"]
+            # 검증방식선택및의뢰인정보입력()이 신규등록(데스크톱) 화면 전용으로 갖고 있던 판정 로직과
+            # 동일한 규칙을, 화면 조작 없이 순수 계산만 하는 함수로 따로 뽑았다 — 연장등록()도 같은
+            # 규칙으로 검증방식을 판정해야 하는데, 신규등록 쪽은 self.data(landData 있는 흐름)의
+            # 클로저 변수에 의존하고 있어 그대로 재사용할 수 없었다(사용자와 상의해 신규등록 코드는
+            # 건드리지 않기로 함 — 이미 운영 중인 흐름의 회귀위험을 줄이기 위함).
+            # ⚠️ 동기화 경고: 이 함수는 검증방식선택및의뢰인정보입력() 안의 판정 부분(소유자유형·
+            # 검증방식 결정 규칙)과 로직이 같아야 한다 — 한쪽만 고치고 다른 쪽을 깜빡하지 않도록 주의.
+            def 판정할검증방식(등록된소유자들_arr, contactor_info, 등기부확인여부):
+                소유자명 = ''
+                소유자연락처 = ''
+                소유자유형 = '본인'
+                선택할검증방식 = '홍보확인서 확인'
+                소유자통신사 = ''
+
+                print("[연장] 등기부확인여부:"+등기부확인여부+" 등록된 소유자수:"+str(len(등록된소유자들_arr)))
+                if len(등록된소유자들_arr) > 0:
+                    소유자명 = 등록된소유자들_arr[0]
+                    if 등기부확인여부 == 'Y':
+                        if '(주)' in 소유자명 or '주식회사' in 소유자명 or '법인' in 소유자명:
+                            소유자유형 = '직원'
+                        elif '종중' in 소유자명 or '신탁' in 소유자명:
+                            소유자유형 = '직원'
+                        else:
+                            소유자유형 = '본인'
+                    else:
+                        소유자유형 = '본인'
+
+                    if 소유자유형 == '본인':
+                        의뢰인명 = 소유자명
+                    else:
+                        의뢰인명 = ''
+
+                    if contactor_info and 'contactor_name' in contactor_info:
+                        if ('미확인' not in contactor_info['contactor_name'] and contactor_info['contactor_name'] in 등록된소유자들_arr
+                                and contactor_info['contactor_type'] == '본인'):
+                            소유자명 = contactor_info['contactor_name']
+                            소유자연락처 = contactor_info['contactor_phone1']
+                            소유자통신사 = contactor_info['telecom']
+                        elif contactor_info['contactor_name'] not in 등록된소유자들_arr and contactor_info['contactor_type'] == '대리인-법인':
+                            소유자유형 = '직원'
+                        else:
+                            print(f"[연장] 소유자정보 불일치 — 등기부상 소유자:{등록된소유자들_arr}, 의뢰인:{contactor_info['contactor_name']}({contactor_info['contactor_type']})")
+
+                        if 소유자유형 == '본인' and 소유자연락처 and 소유자통신사 != '미확인':
+                            선택할검증방식 = '모바일확인V2 (집주인)'
+                    else:
+                        print("[연장] 접촉자정보 없음 — 홍보확인서 방식으로 진행")
+                else:
+                    소유자명 = contactor_info['contactor_name'] if contactor_info and 'contactor_name' in contactor_info else ''
+                    소유자유형 = '본인'
+
+                print(f"[연장] 판정된 검증방식:{선택할검증방식}, 소유자명:{소유자명}, 소유자유형:{소유자유형}")
+                return 선택할검증방식, 소유자명, 소유자유형, 소유자연락처, 소유자통신사
+
+            # [2026-09-28 신규] 연장(재등록) 화면 전용 — 신규등록 판정에 필요한 소유자/접촉자 정보를
+            # object_data.getData()로 조회해 판정할검증방식()에 넣을 수 있는 모양으로 정리한다.
+            # getData()가 돌려주는 clientData/contactorData/writeData 구조에서 필요한 값만 뽑는
+            # 방식은 이 파일의 신규등록 분기(run() 상단, "landData 없음" 아닌 else)가 하는 것과
+            # 같은 규칙이다 — 다만 신규등록 쪽 코드는 tr_target 등 등록화면 전용 값도 함께 계산해서
+            # 그대로 재사용할 수 없어(사용자와 상의해 신규등록 코드는 건드리지 않기로 함) 필요한
+            # 부분만 다시 정리했다.
+            def 연장용_소유자정보조회(object_code_new, admin_id, admin_pw):
+                try:
+                    조회결과 = object_data.getData(object_code_new, admin_id, admin_pw)
+                except Exception as e:
+                    print(f"[연장] 소유자정보 조회 실패: {e}")
+                    return [], None, 'N', ''
+
+                if not 조회결과:
+                    return [], None, 'N', ''
+
+                write_data = 조회결과.get('writeData') or {}
+                등기부확인여부 = write_data.get('master_check', 'N')
+                object_type = write_data.get('object_type', '')
+
+                등록된소유자들 = write_data.get('master_name', '') or ''
+                등록된소유자들_arr = [s.strip() for s in 등록된소유자들.split(',') if s.strip()]
+
+                client_data = 조회결과.get('clientData') or {}
+                client_code = client_data.get('client_code', '')
+                contactor_data = (조회결과.get('contactorData') or {}).get('contactor_data') or {}
+                contactor_info = None
+                contactor_keys_list = list(contactor_data.keys())
+                if contactor_keys_list:
+                    for key in contactor_keys_list:
+                        keyData = contactor_data[key]
+                        if (keyData.get('contactor_type') in ['본인', '대표']) and keyData.get('contactor_phone1'):
+                            if keyData.get('telecom') != '미확인':
+                                contactor_info = keyData
+                                break
+                            else:
+                                contactor_info = keyData
+                    if contactor_info is None:
+                        for key in contactor_keys_list:
+                            if key == client_code:
+                                contactor_info = contactor_data[key]
+                                break
+
+                return 등록된소유자들_arr, contactor_info, 등기부확인여부, object_type
+
+            # [2026-09-28 신규] "검증방식" 항목은 신규등록 화면(h2 구조)과 달리 연장(재등록) 화면에서
+            # 아코디언(v-radio-accordion-group) 구조를 쓴다 — 라이브 DOM을 직접 열어 확인함(th/strong도
+            # h2도 아니라 기존 라디오버튼선택()/검증방식선택및의뢰인정보입력()의 클릭 코드 둘 다 이
+            # 요소를 못 찾는다). 그래서 이 구조 전용 클릭 함수를 따로 둔다.
+            def 검증방식_라디오선택(선택할텍스트):
+                try:
+                    for label in driver.find_elements(By.CSS_SELECTOR, '.t-radio-accordion-group label'):
+                        if label.text.strip() == 선택할텍스트:
+                            driver.execute_script("arguments[0].click();", label)
+                            print(f"[연장] 검증방식 선택: {선택할텍스트}")
+                            return True
+                    print(f"[연장] 검증방식 라디오에서 '{선택할텍스트}'를 찾지 못함")
+                    return False
+                except Exception as e:
+                    print(f"[연장] 검증방식 라디오 선택 실패: {e}")
+                    return False
+
+            # [2026-09-28 신규] 검증방식에 따라 필요한 의뢰인 정보(홍보확인서 방식은 관계·소유자명,
+            # 모바일확인V2는 성별·휴대폰번호)를 채운다 — 입력칸 자체는 신규등록 화면과 같은 구조라
+            # 기존에 이미 쓰던 특정위치의x번째입력태그찾기()를 그대로 쓴다.
+            # ⚠️ 동기화 경고: 검증방식선택및의뢰인정보입력()의 의뢰인정보 입력 부분과 같은 규칙이어야
+            # 한다 — 한쪽만 고치고 다른 쪽을 깜빡하지 않도록 주의.
+            def 연장_의뢰인정보_채우기(선택할검증방식, 소유자명, 소유자유형, contactor_info, 소유자연락처, fail_msg):
+                소유자명입력창 = 특정위치의x번째입력태그찾기('등기부상 소유자 이름', 'text', 1)
+                if 소유자명입력창:
+                    소유자명입력창.send_keys(Keys.CONTROL + 'a')
+                    소유자명입력창.send_keys(Keys.DELETE)
+                    소유자명입력창.send_keys(소유자명)
+                else:
+                    print("[연장] 소유자명입력창을 찾을 수 없습니다.")
+
+                if 선택할검증방식 == '홍보확인서 확인':
+                    관계입력창 = 특정위치의x번째입력태그찾기('의뢰인과 등기부상 소유자와의 관계', 'text', 1)
+                    if 관계입력창:
+                        관계입력창.send_keys(Keys.CONTROL + 'a')
+                        관계입력창.send_keys(Keys.DELETE)
+                        관계입력창.send_keys(소유자유형)
+                    특정위치의x번째입력태그찾기('소유자 연락처 (홍보확인서2)', 'radio', 2).click()
+                    홍보확인서작성(소유자명, 소유자유형)
+                elif 선택할검증방식 == '모바일확인V2 (집주인)':
+                    if contactor_info and contactor_info.get('contactor_gender'):
+                        선택할성별위치 = 1 if contactor_info['contactor_gender'] == '남성' else 2
+                        특정위치의x번째입력태그찾기('등기부상 소유자 성별', 'radio', 선택할성별위치).click()
+                    if contactor_info and contactor_info.get('telecom'):
+                        통신사위치표 = {'SKT': 1, 'KT': 2, 'LGU+': 3, '알)SKT': 4, '알)KT': 5, '알)LGU+': 6}
+                        선택할통신사위치 = 통신사위치표.get(contactor_info['telecom'])
+                        if 선택할통신사위치:
+                            특정위치의x번째입력태그찾기('등기부상 소유자 휴대폰번호', 'radio', 선택할통신사위치).click()
+                    if len(소유자연락처) == 11:
+                        특정위치X번째셀렉트에서선택('등기부상 소유자 휴대폰번호', 1, '010')
+                        가운데4자리 = 소유자연락처[3:7]
+                        마지막4자리 = 소유자연락처[7:11]
+                        특정위치의x번째입력태그찾기('등기부상 소유자 휴대폰번호', 'number', 1).send_keys(가운데4자리)
+                        특정위치의x번째입력태그찾기('등기부상 소유자 휴대폰번호', 'number', 2).send_keys(마지막4자리)
+                return fail_msg
+
+            def 검증방식선택및의뢰인정보입력(fail_msg):
                 print("검증방식선택및의뢰인정보입력() 시작")
                 소유자명 = ''
                 소유자연락처 = ''        
@@ -1843,7 +2001,18 @@ class NaverThread(QThread):
                     object_tmoney1 = 네이버매물정보.get('object_tmoney1', '')
                     object_tmoney2 = 네이버매물정보.get('object_tmoney2', '')
                     object_mmoney = 네이버매물정보.get('object_mmoney', '')
-                    print(f"연장등록:{네이버매물번호}, 검증방식:{검증방식}")  
+                    print(f"연장등록:{네이버매물번호}, 검증방식:{검증방식}")
+
+                    # [2026-09-28 추가 — 사용자 요청 "소유자정보 확인되면 검증방식 자동전환"] 예전엔
+                    # 홍보확인서였는데 그 사이 등기부상 소유자 본인 연락처·통신사가 확인됐다면
+                    # 모바일확인V2로 올려준다 — 판단은 여기서 미리 해두고, 실제 전환은 화면이
+                    # "검증방식" 항목까지 이동한 뒤(빠른이동("검증방식") 다음)에 한다. 반대 방향
+                    # (이미 모바일확인V2인 것을 홍보확인서로 낮추는 것)은 절대 하지 않는다 — 소유자
+                    # 정보 조회 실패 등으로 판정이 애매해져도 기존 상태를 그대로 두는 쪽이 안전하다.
+                    등록된소유자들_arr, contactor_info, 등기부확인여부, _ = 연장용_소유자정보조회(새홈매물번호, manager_id, '')
+                    판정된검증방식, 소유자명, 소유자유형, 소유자연락처, 소유자통신사 = 판정할검증방식(등록된소유자들_arr, contactor_info, 등기부확인여부)
+                    검증방식_전환됨 = False
+
                     #첫번째 리스트의 재등록버튼 클릭
                     driver.find_element(By.XPATH, f'//*[@id="printArea"]/div/table/tbody/tr/td[4]/div[2]/div[1]/button').click() 
                     # time.sleep(1) 
@@ -1968,6 +2137,13 @@ class NaverThread(QThread):
                     
                     빠른이동("검증방식")
 
+                    # 홍보확인서 → 모바일확인V2 전환 판단 (업그레이드 방향만, 되돌리지 않음)
+                    if 판정된검증방식 == '모바일확인V2 (집주인)' and 검증방식 != '모바일확인2':
+                        if 검증방식_라디오선택(판정된검증방식):
+                            검증방식 = '모바일확인2'  # 이후 분기가 새로 전환된 상태를 보게 갱신
+                            검증방식_전환됨 = True
+                            self.step_progress.emit(f"매물 {새홈매물번호} — 소유자정보 확인되어 검증방식을 모바일확인V2로 전환")
+
                     #네이버등록권
                     # pyautogui.alert("'써브N 일반 패키지' 요소찾기")
                     잔여수량요소 = driver.find_element(By.XPATH, f'//table//tr[td[text()="써브N 일반 패키지"]]/td[3]//span')
@@ -1981,7 +2157,11 @@ class NaverThread(QThread):
                     빠른이동("의뢰인 정보")
                     
                     #홍보확인서 작성
-                    if 검증방식 != "모바일확인2": 
+                    if 검증방식_전환됨:
+                        # 방금 모바일확인V2로 전환된 경우 — 성별·휴대폰번호는 새로 채워야 한다
+                        # (홍보확인서로 등록될 때는 이 칸들이 없었으므로 화면에 값이 없다).
+                        연장결과_msg = 연장_의뢰인정보_채우기('모바일확인V2 (집주인)', 소유자명, 소유자유형, contactor_info, 소유자연락처, 연장결과_msg)
+                    elif 검증방식 != "모바일확인2":
                         관계입력창 = 특정위치의x번째입력태그찾기('의뢰인과 등기부상 소유자와의 관계', 'text', 1)
                         입력된관계 = 관계입력창.get_attribute("value")
                         소유자명입력창 = 특정위치의x번째입력태그찾기('등기부상 소유자 이름', 'text', 1)
@@ -4138,7 +4318,23 @@ class NaverThread(QThread):
                 # 부르는 바람에 "driver 참조 불가" 2차 예외가 나서 진짜 원인 위에 덮여쓰였다
                 # (2026-09-05 매물 920585 사례). driver가 실제로 만들어졌을 때만 닫는다.
                 if 'driver' in locals():
-                    driver.close() 
+                    # [2026-09-28 추가 — 사용자 지적 "검증도 못하는 테스트모드가 무슨 소용이야"]
+                    # 원래 여기서 결과 확인 절차 없이 곧장 driver.close()했던 건, 사람 없이 도는
+                    # 새벽 배치 연장(여러 매물 일괄)이 알림창에서 멈추지 않게 하려던 의도였다
+                    # (기간만료매물확인() 쪽 step_progress 전환 주석 참고). 그런데 테스트모드는
+                    # 정반대로 "사람이 채워진 값을 직접 보고 판단해야" 의미가 있는 기능이라, 이
+                    # 배치용 자동종료와 정면으로 충돌했다 — 매물등록_최종제출()에서 클릭만 생략해도
+                    # 창이 곧바로 닫혀버려 확인할 틈이 없었다. 그래서 테스트모드일 때만 닫지 않고
+                    # 열어둔 채로 알림만 띄운다(최상단알림창은 headless일 때 자동으로 비차단
+                    # 기록으로 전환되므로 여기서 따로 분기할 필요 없음).
+                    if self.test_mode:
+                        최상단알림창(
+                            "테스트모드 — 실제 매물등록 버튼 클릭은 생략했습니다.\n"
+                            "화면에 채워진 값을 확인한 뒤 창을 직접 닫아주세요.",
+                            "테스트모드 완료"
+                        )
+                    else:
+                        driver.close()
         except Exception as e:
             print(f"[❌예외] 네이버 매물 등록 중 오류 발생: {e}")
             # [2026-09-05 추가] 아래 alert는 headless일 때 화면 대신 headless_notes(→ 담당자가 보는
