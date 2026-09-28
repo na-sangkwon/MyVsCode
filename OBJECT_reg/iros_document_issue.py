@@ -2271,13 +2271,21 @@ def issue_real_estate_registers_bulk(items, credentials, options=None):
         print('[진행] 결제 확정 완료', flush=True)
 
         # [열람·다운로드] 결제는 이미 끝났으므로 여기부터는 개별 건 실패가 있어도 최상위 실패로 보지
-        # 않는다(위 docstring 참고) — 한 건씩 받고 바로 넘어간다(_wait_for_download()가 "다운로드
-        # 폴더 안의 파일 아무거나 하나"를 완료로 보는 구조라 동시 다운로드는 위험 — 실사용 재현으로
-        # 확인된 제약, _view_and_save() 자체가 이미 이전 열람 팝업을 닫고 시작하도록 되어 있다).
+        # 않는다(위 docstring 참고). _wait_for_download()는 "다운로드 폴더 안의 파일 아무거나 하나"를
+        # 완료로 보는 구조라(기존에 이미 알려진 제약), 모든 매물이 같은 폴더를 쓰면 이전 매물 파일이
+        # 아직 남아있는 채로 다음 매물을 받을 때 그 파일을 자기 것으로 잘못 집는다 — NAS 이동은 이제
+        # 호출부(local_helper)가 이 함수 전체가 끝난 뒤 한꺼번에 하므로(이 함수는 NAS를 모른다), 예전
+        # __main__ 테스트처럼 "받자마자 옮겨서 폴더를 비운다"에 기대는 방식은 더 이상 안전하지 않다
+        # (2026-09-28 실사용 재현으로 확인 — 2건째가 1건째와 완전히 같은 파일 경로를 돌려줌).
+        # 그래서 매물마다 크롬의 다운로드 경로 자체를 CDP로 바꿔 물리적으로 분리한다 — 폴더가 겹치지
+        # 않으므로 NAS 이동 시점과 무관하게 이 문제가 원천적으로 재발하지 않는다.
         print('[진행] === 매물별 순차 열람·다운로드 ===', flush=True)
         for i, item in enumerate(items):
             print(f'[진행] --- {i + 1}/{len(items)}건째 열람·다운로드 시도 ---', flush=True)
-            save_result = _view_and_save(driver, item, download_dir)
+            item_download_dir = os.path.join(download_dir, f'item_{i}_{uuid.uuid4().hex[:8]}')
+            os.makedirs(item_download_dir, exist_ok=True)
+            driver.execute_cdp_cmd('Page.setDownloadBehavior', {'behavior': 'allow', 'downloadPath': item_download_dir})
+            save_result = _view_and_save(driver, item, item_download_dir)
             print(f'[{i + 1}번째 다운로드 결과]', save_result, flush=True)
             results[i] = dict(results[i], ok=bool(save_result.get('ok')),
                                file_path=save_result.get('file_path', ''),
