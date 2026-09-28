@@ -67,8 +67,12 @@
 import re
 import time
 import os
+import shutil
 import tempfile
 import uuid
+import json
+import urllib.request
+import urllib.parse
 import pyautogui
 
 from selenium import webdriver
@@ -80,7 +84,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import (
     NoSuchElementException, UnexpectedAlertPresentException, WebDriverException,
-    NoSuchWindowException, InvalidSessionIdException,
+    NoSuchWindowException, InvalidSessionIdException, StaleElementReferenceException,
 )
 
 # [2026-09-12 추가 — 사용자 요청 "셀레니움 경로도 크롬확장처럼 사용자가 창을 닫은 경우를 구분해달라"]
@@ -484,15 +488,30 @@ def _find_first_visible(driver, css_selectors):
 def _visible_section_titles(driver):
     # 이 함수는 흐름 곳곳의 폴링 루프에서 반복 호출된다 — 여기서 alert 방어를 해두면 자동화 도중
     # 언제 alert가 떠도(위 _dismiss_alert_if_present() 주석 참고) 다음 폴링에서 자연히 걷힌다.
+    #
+    # [2026-09-28 추가 — 일괄발급 실사용 재현으로 확인] driver.find_elements()로 section 목록을 가져온
+    # "직후"에 화면이 다음 단계로 넘어가면서 WebSquare가 그 DOM을 통째로 교체하는 경우가 있다 —
+    # 그 사이에 낀 s.is_displayed()/s.find_elements() 호출이 StaleElementReferenceException으로
+    # 죽어서 함수 전체가 예외를 던졌다(등기기록유형 선택 직후 재현). 호출부는 이미 "제목을 하나도
+    # 못 읽으면 아직 로딩 중"으로 보고 재시도하는 구조라(PASS_THROUGH_TITLES 폴링 루프 참고),
+    # 그 관례에 맞춰 stale이 뜬 요소만 조용히 건너뛴다 — 화면이 막 바뀌는 중이라는 신호일 뿐이므로
+    # 함수를 죽이는 대신 지금까지 읽은 제목만이라도 돌려준다.
     _dismiss_alert_if_present(driver)
     titles = []
-    for s in driver.find_elements(By.CSS_SELECTOR, f'#{BASE} section'):
-        if not s.is_displayed():
+    try:
+        sections = driver.find_elements(By.CSS_SELECTOR, f'#{BASE} section')
+    except StaleElementReferenceException:
+        return titles
+    for s in sections:
+        try:
+            if not s.is_displayed():
+                continue
+            for h4 in s.find_elements(By.TAG_NAME, 'h4'):
+                t = h4.text.strip()
+                if t:
+                    titles.append(t)
+        except StaleElementReferenceException:
             continue
-        for h4 in s.find_elements(By.TAG_NAME, 'h4'):
-            t = h4.text.strip()
-            if t:
-                titles.append(t)
     return titles
 
 
@@ -747,6 +766,17 @@ def _pick_kind_cls_radio(driver, radio_id_fragment, property_category, _fail):
     return None
 
 
+# 행정구역 개편으로 시/도 명칭이 바뀐 경우의 별칭 목록 — 매물 주소 데이터는 개편 전 명칭을 그대로
+# 쓸 수 있는데, 등기소 드롭다운은 개편 후 명칭만 제공해서 정확히 일치하지 않으면 못 찾는다
+# (2026-09-28, 전라북도→전북특별자치도 매물로 실제 발생 확인). 주소 데이터 자체는 고치지 않고
+# 여기서 후보를 넓혀서 찾는다.
+SIDO_NAME_ALIASES = {
+    '전라북도': ['전북특별자치도'],
+    '강원도': ['강원특별자치도'],
+    '제주도': ['제주특별자치도'],
+}
+
+
 def _select_sido_via_websquare(driver, sel_id, sido_text, _fail):
     """시/도 드롭다운을 WebSquare setValue()로 선택한다 — 소재지번검색·간편검색 공용(2026-09-14
     정리). [2026-09-08 실측으로 원인 확인] 네이티브 <select> 조작(Select(), 옵션 클릭)은 화면에
@@ -755,13 +785,21 @@ def _select_sido_via_websquare(driver, sel_id, sido_text, _fail):
     반영된다(드롭다운 "선택"이라 키보드보안 프로그램 검사 대상이 아니라 이 방식이 안전하다)."""
     _dismiss_alert_if_present(driver)
     sido_el = driver.find_element(By.ID, sel_id)
+    candidates = [sido_text] + SIDO_NAME_ALIASES.get(sido_text, [])
     sido_value = None
-    for opt in sido_el.find_elements(By.TAG_NAME, 'option'):
-        if opt.text.strip() == sido_text:
-            sido_value = opt.get_attribute('value')
+    matched_text = None
+    for candidate in candidates:
+        for opt in sido_el.find_elements(By.TAG_NAME, 'option'):
+            if opt.text.strip() == candidate:
+                sido_value = opt.get_attribute('value')
+                matched_text = candidate
+                break
+        if sido_value is not None:
             break
     if sido_value is None:
-        return _fail(f'시/도 "{sido_text}" 옵션을 찾지 못했습니다.')
+        return _fail(f'시/도 "{sido_text}" 옵션을 찾지 못했습니다 (별칭 후보 {candidates}도 없음).')
+    if matched_text != sido_text:
+        print(f'[진행] 시/도 "{sido_text}"는 개편된 명칭 "{matched_text}"로 매칭됨', flush=True)
     comp_id = re.sub(r'___input$', '', sel_id)
     ok = driver.execute_script(
         """
@@ -1685,9 +1723,43 @@ def _wait_for_target_list_rows(driver, timeout=15):
     return []
 
 
+def _close_document_viewer_if_present(driver, timeout=5):
+    """[2026-09-28 신규 — 사용자 확인, 일괄발급 실사용 재현으로 원인 확인] 열람([열람] 버튼) 시 뜨는
+    미리보기는 새 창/탭이 아니라 **같은 화면 안의 팝업(모달)**이고, 우측 하단에 "닫기" 버튼이 있다
+    (사용자 직접 확인, 2026-09-28). 이 창을 안 닫고 다음 매물을 처리하면, 그다음 _view_and_save()가
+    부르는 'input[id$="_btn_download"]' 조회가 페이지 전체에서 찾다가 **안 닫힌 이전 문서의 저장
+    버튼**을 다시 찾아 눌러버린다 — 실제로 두 번째 매물(10514) 대신 첫 번째 매물(10521)이 두 번
+    다운로드되는 사고로 재현·확인됐다(2026-09-28). 단건 자동화는 열람이 한 번뿐이라 이 문제가
+    드러난 적이 없었다.
+    @return bool 닫았거나 애초에 없었으면 True, 시간 안에 못 닫았으면 False"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        close_btn = None
+        for el in driver.find_elements(By.CSS_SELECTOR, 'a, button, input'):
+            try:
+                if not el.is_displayed():
+                    continue
+                text = (el.text or el.get_attribute('value') or el.get_attribute('title') or '').strip()
+                if text == '닫기':
+                    close_btn = el
+                    break
+            except StaleElementReferenceException:
+                continue
+        if not close_btn:
+            return True  # 이미 닫혀있음(또는 애초에 열린 적 없음)
+        _click_with_fallback(driver, close_btn)
+        time.sleep(0.5)
+    return False
+
+
 def _view_and_save(driver, payload, download_dir):
     """content_iros.js::viewAndSaveFromListRows() 이식 — 목록에서 이번 물건 줄을 대조해 찾은 뒤
-    [열람] → [저장]까지. 첫 줄을 무조건 열람하지 않는다(열람은 되돌릴 수 없다 — 결제취소 불가)."""
+    [열람] → [저장]까지. 첫 줄을 무조건 열람하지 않는다(열람은 되돌릴 수 없다 — 결제취소 불가).
+
+    [2026-09-28 추가] 시작하자마자 이전 문서의 미리보기 팝업이 남아있으면 먼저 닫는다 — 위
+    _close_document_viewer_if_present() 주석 참고. 이 함수를 호출하는 어디서든(지금은 일괄발급
+    루프뿐이지만 나중에 다른 곳에서도) 안전하도록 함수 자신이 방어한다."""
+    _close_document_viewer_if_present(driver)
     rows = _wait_for_target_list_rows(driver)
     if not rows:
         return {'ok': False, 'message': f'열람 목록을 찾지 못했습니다. | {_diag_snapshot(driver)}'}
@@ -2027,8 +2099,21 @@ if __name__ == '__main__':
     # 최소 스크립트다. local_helper를 거치지 않고 이 파일을 직접 실행하면 된다(예: VSCode 실행) —
     # 아이디/비번·캡차는 기존 관례대로(credentials=None) 화면에서 직접 입력한다. 이후 단계
     # (매물 추가/일괄결제 진입)가 추가되면 이 블록도 함께 늘어날 예정 — 아직은 1단계 검증용이다.
+    # [2026-09-28 추가 — 4단계(결제~다운로드) 테스트] 다운로드 파일을 찾으려면 전용 폴더와
+    # Chrome prefs가 필요하다 — issue_real_estate_register()가 쓰는 것과 같은 설정을 그대로 가져온다.
+    bulk_download_dir = os.path.join(tempfile.gettempdir(), f'obang_bulk_test_{uuid.uuid4().hex}')
+    os.makedirs(bulk_download_dir, exist_ok=True)
+    bulk_output_dir = os.path.join(tempfile.gettempdir(), 'obang_bulk_test_output')
+    os.makedirs(bulk_output_dir, exist_ok=True)
+
     chrome_options = Options()
     chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+    chrome_options.add_experimental_option('prefs', {
+        'download.default_directory': bulk_download_dir,
+        'download.prompt_for_download': False,
+        'download.directory_upgrade': True,
+        'plugins.always_open_pdf_externally': True,
+    })
     driver = _launch_chrome(chrome_options)
     wait = WebDriverWait(driver, 20)
 
@@ -2064,37 +2149,137 @@ if __name__ == '__main__':
     reset_result = _reset_bulk_payment_cart(driver, _fail)
     print('[1단계 결과]', reset_result if reset_result is not None else {'ok': True})
 
-    # [2026-09-28 추가 — 2·3단계 테스트] "매물 1건을 결제만 안 하고 결제대상까지 추가"는 새 함수가
-    # 필요 없다 — verify_register_target()이 이미 정확히 이 동작이다(도로명주소검색→등기기록유형→
-    # 등록번호미공개→결제대상 확인 화면에서 자기 행 체크박스까지 선택하고 결제 버튼은 절대 안 누름,
-    # 그 함수 1335~1336행 주석 "여기서 반드시 멈춘다" 참고). 그래서 여러 건 반복(3단계)도 이 함수를
-    # 루프에서 그대로 여러 번 부르면 된다 — 두 번째 호출부터는 run_search_once()가 홈 재진입 시
-    # 기존 _dismiss_cart_payment_reminder_popup_if_present()로 "취소(=기존 항목 유지)"를 자동으로
-    # 골라주므로, 앞서 담아둔 항목이 지워지지 않은 채로 새 매물이 이어서 쌓인다(이번 테스트로 실측
-    # 확인 예정 — 아직 라이브로 검증 전).
+    # [2026-09-28 — 4단계(결제~다운로드) 실비용 재테스트] 10521/10514는 이미 오늘 결제 완료돼
+    # 이중결제 위험이 있어, 아직 오늘 결제 안 한 새 매물 644957(토지)/237142(집합건물)로 바꿔서
+    # 다시 검증한다 — 부동산구분이 서로 달라(토지=소재지번검색, 집합건물=도로명주소검색) 검색방식
+    # 분기까지 함께 확인된다. 값은 core/lib/lib_document_issue.php::getIrosIssuePayload()로 직접
+    # 조회해 확인한 실제 payload 그대로(2026-09-28, 본섭 스크래치 조회).
     test_properties = [
-        {  # 오부사 646543 — 이번 세션에서 이미 확인해둔 실제 값
-            'property_category': '집합건물',
-            'location_search': {'sido': '경기도', 'sigungu': '오산시', 'dong_or_li': '수청동', 'jibun': '608-8', 'building_dong_no': '', 'room_no': '106'},
+        {  # 오부사 644957 — 전라북도 완주군 봉동읍 제내리 산37-11, 토지
+            'property_category': '토지',
+            'location_search': {'sido': '전라북도', 'sigungu': '완주군', 'dong_or_li': '제내리', 'jibun': '산37-11', 'building_dong_no': '', 'room_no': ''},
             'register_record_type': '말소사항포함',
-            'road_search': {'sido': '경기도', 'sigungu': '오산시', 'road_name': '청학로', 'road_building_no': '250', 'building_dong_no': '', 'room_no': '106'},
+            'search_address': '전라북도 완주군 봉동읍 제내리 산37-11',
+            'save': {'folder_parts': ['전라북도', '완주군', '봉동읍', '제내리', '산37-11', '공적장부'],
+                     'filename': '20260928_등기부등본_토지_봉동읍제내리산37-11.pdf'},
         },
-        {  # 오부사 400603
+        {  # 오부사 237142 — 경기도 오산시 궐동 611-6, 집합건물(104호)
             'property_category': '집합건물',
-            'location_search': {'sido': '경기도', 'sigungu': '오산시', 'dong_or_li': '수청동', 'jibun': '620-1', 'building_dong_no': '', 'room_no': '102'},
+            'location_search': {'sido': '경기도', 'sigungu': '오산시', 'dong_or_li': '궐동', 'jibun': '611-6', 'building_dong_no': '', 'room_no': '104'},
             'register_record_type': '말소사항포함',
-            'road_search': {'sido': '경기도', 'sigungu': '오산시', 'road_name': '내삼미로', 'road_building_no': '93', 'building_dong_no': '', 'room_no': '102'},
+            'road_search': {'sido': '경기도', 'sigungu': '오산시', 'road_name': '대호로', 'road_building_no': '135', 'building_dong_no': '', 'room_no': '104'},
+            'search_address': '경기도 오산시 궐동 611-6 에스아이프라자 104호',
+            'save': {'folder_parts': ['경기도', '오산시', '궐동', '611-6', '에스아이프라자', '1층', '104호', '공적장부'],
+                     'filename': '20260928_등기부등본_집합건물_궐동611-6 에스아이프라자 104호.pdf'},
         },
     ]
     for i, test_payload in enumerate(test_properties, start=1):
         print(f'[진행] === 테스트 매물 {i}/{len(test_properties)} 결제대상 추가 시도 ===', flush=True)
-        add_result = verify_register_target(driver, test_payload, credentials=None)
+        add_result = verify_register_target(driver, test_payload, credentials={})
         print(f'[{i}번째 결과]', add_result)
+        if not add_result.get('ok'):
+            print('[오류] 결제대상 추가에 실패해 중단합니다 — 돈이 걸리기 전이라 안전합니다.', flush=True)
+            input('브라우저를 확인한 뒤 Enter를 누르면 종료합니다...')
+            driver.quit()
+            raise SystemExit(1)
 
-    print('[진행] 결제대상 목록에 총 몇 건 쌓였는지, 화면에서 직접 확인해주세요.')
-    input('확인했으면 Enter를 누르면 결제대상을 다시 초기화합니다(2단계 삭제 분기 검증)...')
+    # [4단계] 결제대상 전체선택 → [결제] 클릭(여기까지는 청구되지 않음, 기존 코드가 이미 확인한 사실)
+    # → 결제수단 자동입력 → 자동결제. 단건 발급이 이미 운영 중인 방식(2026-09-07 확정)과 동일.
+    print('[진행] === 4단계: 결제대상 전체선택 → 결제 진입 ===', flush=True)
+    try:
+        pay_tbody = driver.find_element(By.ID, f'{BASE}_grd_bpay_obj_list_body_tbody')
+    except NoSuchElementException:
+        print('[오류] 결제대상 표를 찾지 못했습니다.', flush=True)
+        input('브라우저를 확인한 뒤 Enter를 누르면 종료합니다...')
+        driver.quit()
+        raise SystemExit(1)
+    pay_rows = [tr for tr in pay_tbody.find_elements(By.TAG_NAME, 'tr')
+                if 'display: none' not in (tr.get_attribute('style') or '')]
+    for tr in pay_rows:
+        try:
+            checkbox = tr.find_element(By.CSS_SELECTOR, 'td[data-col_id="chk_sel"] input[type="checkbox"]')
+            if not checkbox.is_selected():
+                _click_with_fallback(driver, tr.find_element(By.CSS_SELECTOR, 'td[data-col_id="chk_sel"] label'))
+                time.sleep(0.3)
+        except NoSuchElementException:
+            continue
+    print(f'[진행] {len(pay_rows)}건 전체선택 완료 — 화면에 표시된 통수·금액이 {len(test_properties)}통과 맞는지 확인해주세요.', flush=True)
+    # input(f'금액을 확인하셨으면 Enter를 눌러 [결제] 버튼을 클릭합니다(아직 청구 안 됨)...')
 
-    final_reset_result = _reset_bulk_payment_cart(driver, _fail)
-    print('[최종 초기화 결과]', final_reset_result if final_reset_result is not None else {'ok': True})
+    pay_btn = driver.find_element(By.ID, f'{BASE}_btn_bpay')
+    print('[진행] [결제] 버튼 클릭 — 아직 청구되지 않음', flush=True)
+    _click_with_fallback(driver, pay_btn)
+    time.sleep(1)
+
+    # 계정정보(선불전자지급수단 포함) 조회 — local_helper/main.py::_fetch_iros_credentials()와 동일.
+    IROS_SERVICE_TOKEN = '51b5f2f355a2e3958e6d5e9a744ab00b53cd181c3a9864ac'
+    IROS_STARTED_FROM = 'https://obangkr.cafe24.com'
+    body = urllib.parse.urlencode({'fn': 'getirosservicecredentials', 'service_token': IROS_SERVICE_TOKEN}).encode('utf-8')
+    req = urllib.request.Request(f'{IROS_STARTED_FROM}/api/get_api_lib.php', data=body, method='POST')
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        parsed = json.loads(resp.read().decode('utf-8'))
+    if not parsed.get('ok'):
+        print(f'[오류] 등기소 계정정보 조회 실패: {parsed.get("message", "")}', flush=True)
+        driver.quit()
+        raise SystemExit(1)
+    iros_credentials = parsed.get('data') or {}
+    print('[진행] 계정정보 조회 완료(값은 로그에 남기지 않음)', flush=True)
+
+    routed = _route_after_payment_click(driver, credentials=iros_credentials)
+    print(f'[진행] 결제 클릭 후 라우팅 결과 = {routed}', flush=True)
+    if routed != 'payment-prep':
+        print(f'[오류] 예상하지 못한 라우팅 결과입니다 — {routed}. 화면을 직접 확인해주세요.', flush=True)
+        input('확인 후 Enter를 누르면 종료합니다...')
+        driver.quit()
+        raise SystemExit(1)
+
+    prep = _prepare_payment_screen(driver, iros_credentials)
+    if not prep.get('ready'):
+        print(f'[오류] 결제 준비 실패 — {prep.get("message", "")}', flush=True)
+        input('화면을 직접 확인한 뒤 Enter를 누르면 종료합니다...')
+        driver.quit()
+        raise SystemExit(1)
+    print('[진행] 결제수단 탭·이용동의·선불전자지급수단 자동입력 완료', flush=True)
+
+    print('[진행] [결제] 버튼(실제 결제) 클릭 — 진짜 마우스 클릭 시도', flush=True)
+    pay_btn2 = driver.find_element(By.ID, f'{BASE}_btn_bpay')
+    try:
+        pay_btn2.click()
+    except Exception as e:
+        print(f'[진행] 표준 click() 실패({type(e).__name__}) — execute_script 방식으로 재시도', flush=True)
+        _click_with_fallback(driver, pay_btn2)
+
+    finish = _finish_after_payment_confirm(driver)
+    print('[진행] 결제 확정 처리 결과 —', finish, flush=True)
+    if not finish.get('ok'):
+        input('결제확정 처리가 실패했습니다 — 화면을 직접 확인한 뒤 Enter를 누르면 종료합니다...')
+        driver.quit()
+        raise SystemExit(1)
+
+    # [5단계] 열람·다운로드·파일명변환 — 매물마다 순차로 한다(_wait_for_download()가 "다운로드
+    # 폴더 안의 파일 아무거나 하나"를 완료로 보는 구조라, 두 건을 동시에 받으면 엉뚱한 파일을 집을
+    # 수 있다 — 사용자 질문으로 미리 확인한 위험). 한 건 받고 바로 이름 바꿔 옮긴 뒤 폴더를 비우고
+    # 다음 건으로 넘어간다. 실제 NAS 대신 로컬 테스트 폴더로 옮긴다 — 첫 실비용 테스트라 실제
+    # 운영 폴더(NAS)에 바로 쓰지 않고 별도로 확인부터 하기 위함(로컬도우미의 handle_move_file()과
+    # 같은 copy→검증→원본삭제 순서만 흉내낸다).
+    print('[진행] === 5단계: 매물별 순차 열람·다운로드·파일명변환 ===', flush=True)
+    for i, test_payload in enumerate(test_properties, start=1):
+        print(f'[진행] --- {i}/{len(test_properties)}건째 열람·다운로드 시도 ---', flush=True)
+        save_result = _view_and_save(driver, test_payload, bulk_download_dir)
+        print(f'[{i}번째 다운로드 결과]', save_result, flush=True)
+        if not save_result.get('ok'):
+            print('[오류] 이 건은 다운로드에 실패했습니다 — 나머지는 계속 진행합니다.', flush=True)
+            continue
+        src = save_result['file_path']
+        dst_name = (test_payload.get('save') or {}).get('filename') or os.path.basename(src)
+        dst = os.path.join(bulk_output_dir, dst_name)
+        shutil.copy2(src, dst)
+        if os.path.getsize(dst) == os.path.getsize(src):
+            os.remove(src)
+            print(f'[진행] 파일명 변환·이동 완료 — {dst}', flush=True)
+        else:
+            print(f'[오류] 복사 후 크기가 달라 원본을 남겨둡니다 — src={src}, dst={dst}', flush=True)
+
+    print(f'[진행] 전체 완료 — 결과 파일은 {bulk_output_dir} 폴더에서 확인해주세요.', flush=True)
     input('확인했으면 Enter를 눌러 브라우저를 닫으세요...')
     driver.quit()
