@@ -1546,6 +1546,49 @@ def _prefill_login_page_credentials(driver, credentials):
         pass
 
 
+def _bring_chrome_window_to_foreground(driver):
+    """[2026-09-29 추가 — 사용자 리포트 "캡차 확인을 눌러도 바로 타이핑이 안 되고, 화면을 직접
+    클릭해야만 입력된다"] pyautogui.alert()는 셀레니움 크롬 창과 무관한 OS 레벨 별도 창이라, 사람이
+    "확인"을 눌러 닫아도 윈도우가 키보드 포커스를 크롬 창으로 돌려준다는 보장이 없다.
+    _prefill_login_page_credentials()가 캡차칸을 클릭해 주는 것은 브라우저 내부(DOM) 포커스일
+    뿐이라(커서가 보이는 이유), 정작 키보드 입력이 어디로 가는지를 정하는 크롬 창 자체의 OS 레벨
+    포커스는 그대로 방치돼 있었다(실사용 재현으로 확인) — 그래서 포커스가 간 것처럼 보여도 실제
+    타이핑은 안 먹혔다. 셀레니움이 띄운 크롬 프로세스(chromedriver의 자식 프로세스)를 정확히 찾아
+    그 창만 강제로 앞에 가져온다 — 화면에 다른 크롬 창이 떠 있어도 혼동하지 않도록.
+    pywin32/psutil은 이미 개발환경에 설치돼 있어 새 의존성이 아니다. 실패해도(창을 못 찾음 등)
+    캡차 자체는 계속 진행 가능하므로 무시하고 넘어간다 — 이 단계는 편의 기능이지 안전장치가 아니다."""
+    try:
+        import psutil
+        import win32gui
+        import win32process
+
+        driver_pid = driver.service.process.pid
+        target_pids = {driver_pid}
+        try:
+            for child in psutil.Process(driver_pid).children(recursive=True):
+                target_pids.add(child.pid)
+        except Exception:
+            pass
+
+        found_hwnd = []
+
+        def _enum_handler(hwnd, _):
+            if not win32gui.IsWindowVisible(hwnd) or not win32gui.GetWindowText(hwnd):
+                return True
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            if pid in target_pids:
+                found_hwnd.append(hwnd)
+                return False
+            return True
+
+        win32gui.EnumWindows(_enum_handler, None)
+        if found_hwnd:
+            win32gui.SetForegroundWindow(found_hwnd[0])
+            print('[진행] 크롬 창을 앞으로 가져옴(캡차 입력 준비)', flush=True)
+    except Exception as e:
+        print(f'[진행] 크롬 창을 앞으로 가져오지 못함(무시하고 계속): {e}', flush=True)
+
+
 def _wait_for_human_to_clear_captcha(driver, credentials=None, timeout_seconds=300):
     """캡차가 화면에서 사라질 때까지(=사람이 캡차를 직접 입력하고 로그인을 완료할 때까지) 기다린다.
     [2026-09-18 신규 — 사용자 요청] 알림창은 발견 시 한 번만 띄운다 — 담당자가 그 창을 닫기 전에
@@ -1568,6 +1611,7 @@ def _wait_for_human_to_clear_captcha(driver, credentials=None, timeout_seconds=3
         )
     except Exception:
         pass
+    _bring_chrome_window_to_foreground(driver)
     _prefill_login_page_credentials(driver, credentials)
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
