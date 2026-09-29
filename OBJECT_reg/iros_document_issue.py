@@ -1578,7 +1578,13 @@ def _bring_chrome_window_to_foreground(driver):
             _, pid = win32process.GetWindowThreadProcessId(hwnd)
             if pid in target_pids:
                 found_hwnd.append(hwnd)
-                return False
+            # [2026-09-29 수정 — 실측으로 원인 확인] 찾자마자 False를 반환해 순회를 일찍 멈추면
+            # pywin32 EnumWindows가 (18, 'EnumWindows', '더 이상 파일이 없습니다.') 예외를 던졌다
+            # (캡차 알림창이 막 닫힌 직후라는 타이밍과 겹쳐 재현, 3회 반복 100% 재현). 이 예외가
+            # 아래 except에 걸려 "못 찾음"으로 조용히 넘어가면서 SetForegroundWindow가 아예
+            # 실행되지 않고 있었다 — 즉 이 함수는 한 번도 실제로 포커스를 옮긴 적이 없었다.
+            # 끝까지 순회해도 어차피 found_hwnd[0](가장 먼저 찾은 것)을 쓰므로 선택 결과는 같고,
+            # 창 개수(약 600개)에 단순 조건검사만 하는 콜백이라 성능 영향도 없다(재검증 완료).
             return True
 
         win32gui.EnumWindows(_enum_handler, None)
