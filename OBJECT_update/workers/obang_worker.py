@@ -3,6 +3,7 @@ import time
 import datetime
 import random
 import platform
+import traceback
 import urllib.request
 import urllib.parse
 import json
@@ -591,6 +592,10 @@ class ObangAutomationWorker:
             except Exception as 오류:
                 self.error_count += 1
                 print(f"   [❌ 처리 실패 - 오방코드:{update_code}] 예상치 못한 예외로 이 매물을 건너뜁니다: {오류}")
+                # [2026-09-29 추가 — 실사용 중 "stale element reference" 실패 원인을 정확히
+                # 몇 번째 줄인지 특정 못해 정황 추정에 그쳤다] 메시지(str(오류))만으로는 어느 줄에서
+                # 났는지 알 수 없다 — 다음에 재현되면 바로 정확한 줄을 알 수 있게 traceback을 남긴다.
+                print(f"   [🔎 디버그 - {update_code}] 상세 traceback:\n{traceback.format_exc()}")
                 if self.progress_callback:
                     self.progress_callback(idx, total_items, f"⚠️ 오방코드 {update_code} 처리 실패 — 건너뜀 (실패:{self.error_count}개)")
                 # [연쇄 실패 방지] 예외가 어느 화면에서 났는지 알 수 없으므로, 다음 매물을 시도하기
