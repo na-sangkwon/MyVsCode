@@ -2588,15 +2588,6 @@ class NaverThread(QThread):
                     # 네이버종료일 = self.data.get('adData', {}).get('네이버', {}).get('ad_end', '')
                     # 네이버종료일_date = datetime.strptime(네이버종료일, "%Y-%m-%d").date()
                     # pyautogui.alert(f"등록된매물번호추출{object_code_new}")
-                    def get_ad_dates():
-                        """
-                        광고 시작일과 종료일을 반환합니다.
-                        시작일은 오늘 날짜, 종료일은 30일 후 날짜입니다.
-                        """
-                        start_date = datetime.now().strftime("%Y-%m-%d")  # 오늘 날짜
-                        end_date = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")  # 30일 후 날짜
-                        return start_date, end_date
-
                     try:
                         # 매물번호 저장 딕셔너리 초기화
                         매물번호 = {"네이버": "", "써브": ""}
@@ -2654,8 +2645,14 @@ class NaverThread(QThread):
                         # DB 연결
                         conn = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', charset='utf8')
 
-                        # 광고 시작일과 종료일 계산
-                        ad_start, ad_end = get_ad_dates()   
+                        # 광고 시작일과 종료일 — 예전엔 여기서 오늘~30일 뒤로 바로 채웠는데, 네이버는
+                        # 등록/연장 요청 직후가 아니라 사이트 자체 검수를 통과해야 실제로 노출된다
+                        # (사용자 지적, 2026-10-01). 검수 확인 없이 바로 채우면 화면이 "이미 노출중"
+                        # 처럼 잘못 보인다 — PHP 쪽(saveExternalAdRegisterResult(),
+                        # core/lib/lib_external_ad.php)과 똑같이 비워서 "검수 확인 필요" 상태로 남긴다.
+                        # 담당자가 그 사이트에서 직접 검수 통과를 확인한 뒤 프로중개인 팝업의
+                        # 시작일/종료일 칸에 입력해 저장하면 그때부터 정상 광고기간으로 취급된다.
+                        ad_start, ad_end = '', ''
 
                         # 변수 확인
                         print(f"INSERT 쿼리에 사용될 변수:")
@@ -2747,9 +2744,13 @@ class NaverThread(QThread):
                                     # else:
                                     
                                     # 기본 UPDATE 쿼리 구성
+                                    # [2026-10-01 추가 — PHP saveExternalAdRegisterResult()와 동일 취지]
+                                    # 여기까지 왔다는 것 자체가 사이트가 방금 실제로 매물번호를 발급했다는
+                                    # 뜻이다 — 전에 검수실패로 표시돼 있었더라도(ad_review_failed='Y') 이
+                                    # 저장이 곧 재확인이므로 함께 푼다.
                                     update_query = """
                                         UPDATE pr_externalad
-                                        SET ad_code = %s, ad_udate = %s, ad_utime = %s, ad_memo = %s
+                                        SET ad_code = %s, ad_udate = %s, ad_utime = %s, ad_memo = %s, ad_review_failed = 'N'
                                     """
                                     # 광고중이 아닌 경우 시작일과 종료일 추가
                                     if 광고상태 != "광고중":
