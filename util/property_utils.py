@@ -1181,6 +1181,23 @@ def 당근_끌어올리기_마스터_통합엔진(driver, row_element, ad_code, 
                     except TimeoutException:
                         print(f"   [🔎 디버그 - {ad_code}] 가격변경 팝업 닫힘 미감지 — "
                               f"{time.time() - 닫힘대기_시작:.2f}초 경과 후 타임아웃(그냥 진행)")
+
+                    # [2026-09-30 버그 수정 — 당근 비즈니스센터에서 직접 재현해 확인] '가격만
+                    # 변경하기' 처리로 실제 가격이 바뀌면, 당근이 위 dialog_popup과는 완전히 별개인
+                    # '가격 변경 완료! 집주인 인증하면 상단에 더 오래 노출돼요' 프로모션 팝업을 새로
+                    # 띄운다. 이건 dialog_popup의 invisibility만 보는 위 대기로는 감지가 안 되고,
+                    # 안 닫고 넘어가면 그 배경(backdrop)이 화면에 남아 다음 매물의 모든 클릭을
+                    # 가로막아 연쇄 실패한다(2026-09-30 나스 실행에서 실제 재현: 매물 1건 처리 후
+                    # 나머지 3건 연쇄 실패 — 직접 재현 테스트로 원인 확정). '다음에 할게요'를 눌러
+                    # 인증 절차 없이 닫는다 — 안 뜨는 경우가 더 흔해서 실패를 정상으로 취급한다.
+                    try:
+                        인증유도_닫기 = WebDriverWait(driver, 2).until(
+                            EC.element_to_be_clickable((By.XPATH, "//div[@role='dialog']//button[text()='다음에 할게요']"))
+                        )
+                        driver.execute_script("arguments[0].click();", 인증유도_닫기)
+                        print(f"   [🔎 디버그 - {ad_code}] '집주인 인증' 유도 팝업 감지 → 닫음")
+                    except TimeoutException:
+                        pass
                 except Exception as button_err:
                     print(f"   [⚠️ 경고 - {ad_code}] '가격만 변경하기' 저장 버튼 작동 실패: {button_err}")
                 final_action_code = "PRICE_UPDATE_SUCCESS"
