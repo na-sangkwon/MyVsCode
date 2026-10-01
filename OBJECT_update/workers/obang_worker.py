@@ -14,7 +14,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, UnexpectedAlertPresentException
+from selenium.common.exceptions import TimeoutException, UnexpectedAlertPresentException, StaleElementReferenceException
 
 # core/config.php의 $CFG['local_helper']['service_token'], OBJECT_reg/test.py·test_iros_manual.py의
 # 같은 이름 상수와 반드시 같은 값이어야 한다(하나를 바꾸면 전부 같이 바꿀 것).
@@ -479,7 +479,19 @@ class ObangAutomationWorker:
                 매물번호입력창.send_keys(Keys.ENTER)
                 print("----- 3.엔터(매물조회)")
 
-                WebDriverWait(self.driver, 5).until(lambda d: d.find_elements(By.CSS_SELECTOR, "#search-items tr strong")[0].text.strip() == update_code)
+                # [2026-10-01 버그수정 — 실사용 재현(오방코드 19731, 오방사이트에서 이미 삭제됨)으로
+                # 확인] 삭제된 매물은 검색결과가 영구히 0건이라 아래처럼 결과[0]을 바로 인덱싱하면
+                # IndexError로 죽어서 "처리 실패"로 잘못 집계됐었다. 빈 리스트일 때는 False를 돌려줘
+                # WebDriverWait가 계속 재시도하게 하고, 끝까지 안 뜨면(=삭제 추정) 타임아웃을 잡아
+                # 바로 아래 "자료없는 오방코드"와 같은 취급(건너뜀)으로 수렴시킨다.
+                try:
+                    WebDriverWait(self.driver, 5).until(
+                        lambda d: (els := d.find_elements(By.CSS_SELECTOR, "#search-items tr strong")) and els[0].text.strip() == update_code
+                    )
+                except TimeoutException:
+                    print(f"[⚠️ 검색결과 없음 - 오방코드:{update_code}] 삭제된 매물로 추정되어 건너뜁니다")
+                    self.skip_count += 1
+                    continue
                 if len(self.driver.find_element(By.ID, "search-items").find_element(By.TAG_NAME, "tr").find_elements(By.TAG_NAME, "td")) == 1:
                     print(f"자료없는 오방코드: {update_code}")
                     self.skip_count += 1
@@ -571,10 +583,20 @@ class ObangAutomationWorker:
                     print("----- 5-2.최신등록일로갱신 클릭")
 
                 #거래완료 해제
+                # [2026-10-01 버그수정 — 실사용 재현(오방코드 15603)으로 확인] 바로 위 "최신등록일로갱신"
+                # 클릭이 비동기로 해당 행을 다시 그리는데, 그 재렌더링이 하필 아래 요소 조회 직후~text
+                # 읽기 사이에 끼면 StaleElementReferenceException으로 이 매물 전체가 처리실패 처리됐다.
+                # iros_document_issue.py의 기존 관례(stale이 뜬 개별 요소는 조용히 건너뛰고 나머지는
+                # 그대로 쓴다)를 그대로 따른다 — 전부 stale이어도 아래 "완료라벨 없음" 분기로 안전하게
+                # 빠지므로 재시도 없이도 죽지 않는다.
                 status_span = self.driver.find_elements(By.XPATH, f'//*[@id="tr_{update_code}"]/td[10]/span')
                 # print(status_span.text)
-                span_texts = []    
-                for span in status_span: span_texts.append(span.text)
+                span_texts = []
+                for span in status_span:
+                    try:
+                        span_texts.append(span.text)
+                    except StaleElementReferenceException:
+                        continue
                 if "완료" in span_texts:
                     print("----- 6.완료라벨 표시중 -> 완료라벨 제거")
                     self.driver.execute_script(f"change('is_finished','{update_code}','0');")
