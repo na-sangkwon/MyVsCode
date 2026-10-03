@@ -15,6 +15,7 @@ from selenium.webdriver.chrome.options import Options
 # 외부 폴더의 진짜 일꾼 모듈들을 정상적으로 매핑
 from workers.obang_worker import ObangAutomationWorker
 from workers.carrot_worker import CarrotAutomationWorker
+from workers.obs_worker import ObsAutomationWorker
 
 # 🎯 [2026-09-06 통합] 당근 업데이트 사이클 직후 자동 검증(verify_carrot_registration.py)을
 # 연결한다. import 자체가 실패해도(예: 파일 누락, selenium 버전 불일치) 오방/당근 업데이트라는
@@ -775,7 +776,7 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
     counts = {
         'complete': 0, 'restart': 0, 'update': 0, 'end': 0, 'skip': 0, 'error': 0,
         '작업모드': 작업모드_표시,
-        '오방_요약': "선택 안 함(스킵됨)", '당근_요약': "선택 안 함(스킵됨)",
+        '오방_요약': "선택 안 함(스킵됨)", '당근_요약': "선택 안 함(스킵됨)", '오부사_요약': "선택 안 함(스킵됨)",
     }
     print(f"   [⚙️ 작업 모드] {작업모드_표시} | 오방:{'실행' if user_settings['obang'] else '건너뜀'} 당근:{'실행' if user_settings['carrot'] else '건너뜀'}")
 
@@ -904,6 +905,31 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
                 )
         else:
             progress_callback('carrot', 0, 100, "⏭️ 당근부동산 스킵됨", 'determinate')
+
+        # [2026-10-03 신규] 오부사(새홈, osan-bns.com) — 무인 모드의 cafe24 환경설정 카드 값으로만 켜진다
+        # (user_settings에 'obs'가 없는 GUI 실행은 꺼진 것으로 본다 — GUI 설정창은 아직 오부사를 모른다).
+        # 오방/당근과 달리 이 블록만 따로 예외를 삼켜 요약에 남긴다: 오부사 로그인/사이트 문제가 이미 끝난
+        # 오방·당근 결과(요약 로그 전체)를 날려버리면 안 되고, 순서상 맨 마지막이라 뒤에 막을 작업도 없다.
+        if user_settings.get('obs'):
+            try:
+                obs_worker = ObsAutomationWorker(
+                    driver, target_mode,
+                    progress_callback=lambda c, t, txt, mode='determinate': progress_callback('obs', c, t, txt, mode),
+                    unattended=unattended,
+                )
+                o_ok, o_end, o_skip, o_err, o_nf = obs_worker.run()
+                counts['complete'] += o_ok; counts['end'] += o_end; counts['skip'] += o_skip; counts['error'] += o_err
+                # 총건수 = 처리 대상이었던 매물 수. 갱신/비공개 성공 + 건너뜀 + 실패 + 미등록의 합과 같다
+                # (오방/당근과 같은 검산 원칙 — 오방과 달리 '재등록' 같은 부가 지표가 없다).
+                오부사_총건수 = o_ok + o_end + o_skip + o_err + o_nf
+                counts['오부사_요약'] = f"(총{오부사_총건수}건) 성공:{o_ok} 비공개:{o_end} 건너뜀:{o_skip} 실패:{o_err} 미등록:{o_nf}"
+                progress_callback('obs', 100, 100, f"✅ 오부사 업데이트 완료 V \n{counts['오부사_요약']}", 'determinate')
+            except Exception:
+                counts['error'] += 1
+                counts['오부사_요약'] = "❌ 실행 오류 — 로그 확인 필요(오방·당근 결과에는 영향 없음)"
+                print(f"[❌ 오부사 실행 오류]\n{traceback.format_exc()}")
+        else:
+            progress_callback('obs', 0, 100, "⏭️ 오부사 스킵됨", 'determinate')
     finally:
         # 워커 도중 예외가 나도(예: 로그인 세션 만료) 크롬 프로세스가 좀비로 남지 않도록 항상 종료한다.
         # 무인 모드는 사람이 지켜보지 않으므로 이 보장이 특히 중요하다.
@@ -1098,6 +1124,7 @@ def update_start():
             요약_줄들 = [
                 f"🟠 오방부동산 — {counts.get('오방_요약')}",
                 f"🥕 당근부동산 — {counts.get('당근_요약')}",
+                f"🟦 오부사 — {counts.get('오부사_요약')}",
             ]
             lbl_summary = tk.Label(dash_win, text="\n".join(요약_줄들), font=("Malgun Gothic", 10), fg="#333333", justify="left")
             lbl_summary.pack(pady=(0, 10))
@@ -1145,6 +1172,9 @@ def load_unattended_settings():
     return {
         'obang': rows['obang'] == 'Y',
         'carrot': rows['carrot'] == 'Y',
+        # [2026-10-03 신규] 오부사는 필수 항목(required)이 아니다 — 환경설정 카드에 이 값이 아직 없으면
+        # "꺼짐"으로 본다(없다고 기존 오방/당근 무인 실행까지 멈추면 안 된다).
+        'obs': rows.get('obs') == 'Y',
         'before_day': int(rows['before_day']),
         'mode': rows['run_mode'],
     }
@@ -1218,7 +1248,7 @@ def run_unattended(log_path):
         # 당근_요약, run_platform_workers가 만들어둔 것)을 항상 같이 남긴다(선택 안 한 플랫폼도
         # "선택 안 함(스킵됨)"으로 명시돼 있어 결과가 비어있는 이유를 따로 물을 필요가 없다).
         # 작업모드(전체/업데이트만/거래완료만)도 같이 남겨 어떤 범위로 실행됐는지 바로 알 수 있게 한다.
-        summary = f"[모드: {counts.get('작업모드', '?')}] 🟠오방 — {counts.get('오방_요약')} | 🥕당근 — {counts.get('당근_요약')}"
+        summary = f"[모드: {counts.get('작업모드', '?')}] 🟠오방 — {counts.get('오방_요약')} | 🥕당근 — {counts.get('당근_요약')} | 🟦오부사 — {counts.get('오부사_요약')}"
         log(f"✅ 무인 업데이트 사이클 완료 — {summary}")
         write_run_log('success', summary)
     except Exception:
