@@ -9,6 +9,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, UnexpectedAlertPresentException, NoAlertPresentException
 
 # [동기화 주의] 같은 구조(공용계정 API 조회 → 로그인 → 사이트 상태 읽기 → 처리 → DB 반영)를 따르는
 # 짝꿍 워커는 obang_worker.py(오방)다. 공통 흐름(모드 해석, 요약 카운트 형식)을 고칠 땐 그쪽과
@@ -62,8 +63,12 @@ const done = arguments[arguments.length - 1];
       // (2026-10-03 실측: '.catx-c-date .reg_date_box'는 빈 값) — 응답 원본에도 있는 클래스를 쓴다.
       const dt = tr.querySelector('.date_view_box .reg_date_box');
       const ad = tr.querySelector('.item_address');
+      const dl = tr.querySelector('.deal_status_box .deal');
+      const pr = tr.querySelector('.price_type_box');
       byId[tr.dataset.id] = {
         id: tr.dataset.id,
+        deal: ((dl || {}).textContent || '').replace(/\\s+/g, ' ').trim(),
+        price: ((pr || {}).textContent || '').replace(/\\s+/g, ' ').trim(),
         pub: !!(pub && pub.checked),
         date: ((dt || {}).innerText || '').replace(/\\s+/g, ' ').trim(),
         addr: ((ad || {}).textContent || '').replace(/\\s+/g, ' ').trim(),
@@ -104,6 +109,23 @@ def 주소에서_동지번_추출(주소):
     return m.group(1), {x.strip() for x in m.group(2).split(',')}
 
 
+# 목록의 가격 문구('보1억월900만(부가세 별도) 관127원', '매13억6,706만', '전1억1,000만')를 만원 단위로 푼다.
+# 억/만 단위가 섞여 있어 숫자만 뽑으면 틀린다(실제로 '보1억'을 1로 읽는 오류가 있었다). 여기서 못 읽거나 DB와
+# 달라 보이는 매물은 수정 폼의 원값(만원 단위)으로 한 번 더 비교하므로, 이 해석은 "수정 폼을 열 대상"을
+# 가려내는 1차 거름망일 뿐이다 — 틀려도 불필요하게 폼을 한 번 더 여는 것으로 끝난다.
+_가격_조각_패턴 = re.compile(r'(보|월|전|매)\s*(?:([\d,]+)\s*억)?\s*(?:([\d,]+)\s*만)?')
+
+
+def 목록_가격문구_해석(가격문구):
+    """ '보1억월900만' → {'보': 10000, '월': 900}. 값 없이 라벨만 있는 조각은 건너뛴다. """
+    결과 = {}
+    for 라벨, 억, 만 in _가격_조각_패턴.findall(가격문구 or ''):
+        if not 억 and not 만:
+            continue
+        결과[라벨] = (int(억.replace(',', '')) * 10000 if 억 else 0) + (int(만.replace(',', '')) if 만 else 0)
+    return 결과
+
+
 def 목록행_갱신일시_해석(날짜문구):
     """ '갱신 : 26-10-03 19:25:54' → ('갱신', datetime). 한 번도 갱신 안 한 매물은 '등록 : ...'이 보인다. """
     m = _갱신일_패턴.search(날짜문구 or '')
@@ -129,6 +151,7 @@ class ObsAutomationWorker:
         self.skip_count = 0
         self.error_count = 0
         self.not_found_count = 0  # DB상 오부사 활성 매물인데 사이트 목록에 없음
+        self.price_fix_ok = 0     # 사이트 가격을 DB 값으로 고친 건수 — 갱신/건너뜀 등으로 이미 집계된 매물의 부가 지표(총건수에 안 더함)
 
     def _알림(self, current, total, text):
         if self.progress_callback:
@@ -176,7 +199,8 @@ class ObsAutomationWorker:
         conn = self._DB연결()
         try:
             cur = conn.cursor(pymysql.cursors.DictCursor)
-            cur.execute("SELECT object_code_new, object_status, object_del, obs_open_yn, object_address "
+            cur.execute("SELECT object_code_new, object_status, object_del, obs_open_yn, object_address, "
+                        "object_ttype, object_tmoney1, object_tmoney2, object_udate "
                         "FROM pr_object WHERE CHAR_LENGTH(object_code_new)=5")
             return {str(r['object_code_new']): r for r in cur.fetchall()}
         finally:
@@ -199,11 +223,125 @@ class ObsAutomationWorker:
         site = 주소에서_동지번_추출(사이트행.get('addr'))
         return bool(db and site and db[0] == site[0] and (db[1] & site[1]))
 
+    # DB 거래종류 → (사이트 목록의 거래유형 문구, {수정폼 입력칸 이름: DB 컬럼}, {목록 가격 라벨: DB 컬럼}).
+    # 거래유형이 하나인 월세/전세/매매만 맞춘다 — 관리비·권리금·'전월세' 같은 복수 거래유형·단기임대는
+    # 입력 구조가 달라 이 단계에서는 다루지 않는다(DB가 그 값을 어떻게 나눠 갖는지 아직 확인 못 함).
+    # 네 번째 값은 "자동으로 사이트 가격을 덮어써도 되는가"다. 매매는 False — 2026-10-03 드라이런에서 매매 11건이
+    # 1억 단위로 어긋났는데, DB 수정일이 2025년인 건도 있어 DB가 최신이라는 근거가 없고(사이트 '수정일'은 갱신이
+    # 같이 덮어써서 가격을 언제 마지막으로 고쳤는지 알 수 없다), 공개 매물의 매매가를 틀린 값으로 바꾸는 피해가 크다.
+    # 그래서 매매는 불일치를 로그에만 남겨 사람이 확인하게 한다. 월세/전세는 어긋난 건 대부분 DB 수정일이 최근이고
+    # 원본 의뢰(pr_request_give)와도 일치해 자동 반영한다.
+    _가격_동기화_규칙 = {
+        '월세': ('월세', {'price_month_deposit': 'object_tmoney1', 'price_month_rent': 'object_tmoney2'}, {'보': 'object_tmoney1', '월': 'object_tmoney2'}, True),
+        '전세': ('전세', {'price_full_rent': 'object_tmoney1'}, {'전': 'object_tmoney1'}, True),
+        '매매': ('매매', {'price_sell': 'object_tmoney1'}, {'매': 'object_tmoney1'}, False),
+    }
+
+    def 가격_판정(self, db행, 사이트행):
+        """
+        :return: ('대상아님'|'같음'|'확인필요', 사유). '확인필요'는 목록 표기가 DB와 달라 보이거나 못 읽었다는 뜻이라
+            수정 폼 원값으로 한 번 더 비교해야 한다 — 목록 표기만 믿고 바로 고치지 않는다.
+        """
+        규칙 = self._가격_동기화_규칙.get(db행.get('object_ttype'))
+        if not 규칙:
+            return '대상아님', f"DB 거래종류 '{db행.get('object_ttype')}'은(는) 가격 동기화 대상이 아님"
+        사이트_거래유형, _, 목록라벨, _ = 규칙
+        if 사이트행.get('deal') != 사이트_거래유형:
+            return '대상아님', f"거래유형 불일치(DB:{db행.get('object_ttype')} / 사이트:{사이트행.get('deal')})"
+        사이트가격 = 목록_가격문구_해석(사이트행.get('price'))
+        for 라벨, 컬럼 in 목록라벨.items():
+            if 사이트가격.get(라벨) != int(db행[컬럼] or 0):
+                return '확인필요', f"{라벨} DB:{db행[컬럼]} / 목록:{사이트가격.get(라벨)}"
+        return '같음', ''
+
+    def 수정폼에서_가격_맞추기(self, 코드, db행):
+        """
+        오부사 수정 폼을 열어 가격 입력칸의 원값(만원 단위)을 DB와 비교하고, 다르면 DB 값으로 고쳐 저장한다.
+        화면의 [매물 저장] 버튼(btn_submit)을 실제로 눌러 폼 자신의 검증과 후처리를 그대로 거친다 — 폼 데이터를
+        직접 POST하면 그 처리를 건너뛰어 다른 칸이 어긋날 수 있다. 저장 후 폼을 다시 열어 반영을 확인한다.
+        :return: '이미같음' | '수정함' | '수정안함' | '실패' ('수정안함'은 자동 덮어쓰기가 허용되지 않은 거래종류의 불일치)
+        """
+        _, 입력칸규칙, _, 자동수정 = self._가격_동기화_규칙[db행['object_ttype']]
+        목표 = {이름: int(db행[컬럼] or 0) for 이름, 컬럼 in 입력칸규칙.items()}
+        try:
+            현재 = self._수정폼_가격읽기(코드, list(목표))
+            if 현재 == 목표:
+                return '이미같음'
+            if not 자동수정:
+                print(f"   [⚠️ 가격 불일치 - 사람 확인 필요 - 오부사 {코드}] {db행['object_ttype']} 사이트:{현재} / DB:{목표} (DB 수정일 {db행.get('object_udate')}) — 자동 수정하지 않습니다")
+                return '수정안함'
+            print(f"   [💲 가격 수정 - 오부사 {코드}] 사이트:{현재} → DB:{목표}")
+            for 이름, 값 in 목표.items():
+                self._입력칸_값_넣기(self.driver.find_element(By.NAME, 이름), 값)
+            저장버튼 = next(b for b in self.driver.find_elements(By.CSS_SELECTOR, '.save_btn') if b.is_displayed())
+            self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", 저장버튼)
+            저장버튼.click()
+            self._저장후_알림_처리()
+            # 저장이 통과하면 목록으로 이동하고, 막히면 같은 화면에 필수항목 안내창이 뜬다. 오부사는 중개대상물
+            # 표시·광고법상 필수항목(예: 화장실)이 비어 있는 옛 매물은 가격만 고쳐도 저장을 거부한다 — 임의로
+            # 채울 수 없는 값이라 사유를 그대로 로그에 남기고 실패로 둔다(2026-10-03 10039에서 실측).
+            결과 = WebDriverWait(self.driver, 20).until(self._저장_결과_판정)
+            if 결과 != '이동함':
+                print(f"   [❌ 가격 저장 거부 - 사람이 채워야 함 - 오부사 {코드}] {결과}")
+                return '실패'
+            확인 = self._수정폼_가격읽기(코드, list(목표))
+            if 확인 == 목표:
+                return '수정함'
+            print(f"   [❌ 가격 수정 미반영 - 오부사 {코드}] 저장 후 다시 열어보니 {확인} (목표 {목표})")
+            return '실패'
+        except Exception as e:
+            print(f"   [❌ 가격 수정 실패 - 오부사 {코드}] {type(e).__name__}: {str(e)[:200]}")
+            self._알림창_정리()
+            return '실패'
+
+    def _수정폼_가격읽기(self, 코드, 입력칸이름들):
+        self.driver.get(f'https://osan-bns.com/admin_item/edit/{코드}?page=1')
+        WebDriverWait(self.driver, 20).until(EC.presence_of_element_located((By.NAME, 입력칸이름들[0])))
+        값들 = {}
+        for 이름 in 입력칸이름들:
+            원값 = (self.driver.find_element(By.NAME, 이름).get_attribute('value') or '').replace(',', '').strip()
+            값들[이름] = int(원값) if 원값.isdigit() else None
+        return 값들
+
+    def _입력칸_값_넣기(self, 칸, 값):
+        # 이 칸들은 입력할 때 천단위 쉼표를 붙이는 스크립트가 달려 있다 — 실제 키 입력으로 넣어 그 처리를 거친다.
+        if 칸.is_displayed():
+            칸.clear()
+            칸.send_keys(str(값))
+        else:
+            self.driver.execute_script(
+                "arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', {bubbles:true})); "
+                "arguments[0].dispatchEvent(new Event('change', {bubbles:true}));", 칸, str(값))
+
+    def _저장_결과_판정(self, driver):
+        """ 저장 클릭 후 상태: 목록으로 이동했으면 '이동함', 필수항목 안내창이 떴으면 그 문구, 아직이면 False. """
+        if '/admin_item/edit/' not in driver.current_url:
+            return '이동함'
+        안내 = driver.execute_script(
+            "var m = document.querySelector('#modal-item_form_checks');"
+            "return (m && m.offsetParent !== null) ? m.innerText.replace(/\\s+/g, ' ').trim().slice(0, 200) : '';")
+        return 안내 or False
+
+    def _저장후_알림_처리(self):
+        try:
+            WebDriverWait(self.driver, 2).until(EC.alert_is_present())
+            알림 = self.driver.switch_to.alert
+            print(f"   [🔎 오부사 저장 알림] {알림.text}")
+            알림.accept()
+        except (TimeoutException, NoAlertPresentException):
+            pass
+
+    def _알림창_정리(self):
+        try:
+            self.driver.switch_to.alert.accept()
+        except Exception:
+            pass
+
     def _요청(self, url, body):
         return self.driver.execute_async_script(_요청_전송_JS, url, body)
 
     def run(self):
-        """ :return: (성공, 비공개, 건너뜀, 실패, 미등록) — 총건수는 이 다섯의 합과 같다. """
+        """ :return: (성공, 비공개, 건너뜀, 실패, 미등록, 가격수정) — 총건수는 앞의 다섯의 합과 같고, 가격수정은 부가 지표다. """
         시작시각 = datetime.datetime.now().replace(microsecond=0)
         오늘 = 시작시각.date()
         갱신함 = self.mode in ('all', 'update_only')
@@ -230,6 +368,19 @@ class ObsAutomationWorker:
                     print(f"   [⚠️ 주소 불일치 - 오부사 {코드}] DB:{db행.get('object_address')} / 사이트:{행.get('addr')} — 같은 번호의 다른 매물일 수 있어 건너뜁니다")
                     self.skip_count += 1
                     continue
+                # 가격 동기화(DB → 사이트): 갱신 전에 먼저 맞춘다. 가격 맞추기에 실패한 매물은 갱신(= 목록 상단
+                # 재노출)하지 않고 실패로 집계한다 — 가격이 틀린 채로 다시 띄우는 것보다 낫고, 한 매물이 두 번
+                # 집계되지 않는다(수정 성공은 부가 지표라 총건수에 더하지 않음).
+                가격판정, 가격사유 = self.가격_판정(db행, 행)
+                if 가격판정 == '확인필요':
+                    가격결과 = self.수정폼에서_가격_맞추기(코드, db행)
+                    if 가격결과 == '수정함':
+                        self.price_fix_ok += 1
+                    elif 가격결과 == '실패':
+                        self.error_count += 1
+                        continue
+                elif 가격판정 == '대상아님' and '거래유형 불일치' in 가격사유:
+                    print(f"   [⚠️ 가격 동기화 건너뜀 - 오부사 {코드}] {가격사유}")
                 라벨, 일시 = 목록행_갱신일시_해석(행['date'])
                 if 라벨 == '갱신' and 일시 and 일시.date() == 오늘:
                     self.skip_count += 1
@@ -277,7 +428,7 @@ class ObsAutomationWorker:
                 print(f"   [❌ 비공개 미반영 - 오부사 {코드}] 처리 후에도 공개 상태입니다")
 
         self.공개상태_DB반영(사이트, db)
-        return self.complete_count, self.end_ok, self.skip_count, self.error_count, self.not_found_count
+        return self.complete_count, self.end_ok, self.skip_count, self.error_count, self.not_found_count, self.price_fix_ok
 
     def 공개상태_DB반영(self, 사이트, db):
         """
