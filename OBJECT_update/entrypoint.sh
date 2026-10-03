@@ -11,6 +11,9 @@
 #   check). 나스 코드 반영 폴링 스크립트(nas_deploy_poll.sh)가 이 이미지 안의 pymysql로
 #   운영 DB를 확인/기록할 때 쓴다 — Xvfb 등 다른 준비가 필요 없는 가벼운 작업이라 별도
 #   분기로 뺐다.
+# - "observe" 인자: 당근 목록 전체를 "보기만" 하고 pr_log에 기록한다(observe_carrot_exposure.py —
+#   당근 노출 규칙 규명용 관측, 2026-10-03). 새벽 5시 자동업데이트와 같은 크롬 프로필을 쓰므로
+#   DSM 작업 스케줄러에서 새벽 4~7시대를 피해 3시간마다 등록한다(겹치면 그 파일이 스스로 건너뛴다).
 set -e
 
 export DISPLAY=:99
@@ -33,6 +36,8 @@ elif [ "$1" = "login" ]; then
     x11vnc -display :99 -forever -shared -rfbport 5900 -nopw &
     websockify --web=/usr/share/novnc/ 7900 localhost:5900 &
     google-chrome --no-sandbox --disable-dev-shm-usage --disable-gpu --disable-software-rasterizer --user-data-dir=/app/OBJECT_update/daangn_profile "https://realty.daangn.com/ceo/home"
+elif [ "$1" = "observe" ]; then
+    python observe_carrot_exposure.py
 else
     # 설정값은 이제 파일이 아니라 cafe24 환경설정 카드가 쓰는 pr_config(운영 DB)에서 직접 읽는다
     # (2026-08-30, web_config Flask 앱 폐기와 함께 전환).

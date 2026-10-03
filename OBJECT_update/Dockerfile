@@ -49,6 +49,13 @@ RUN pip install --no-cache-dir -r OBJECT_update/requirements.txt
 
 COPY OBJECT_update/auto.py ./OBJECT_update/auto.py
 COPY OBJECT_update/workers ./OBJECT_update/workers
+# [2026-10-03 추가 — 사용자 결정] 이 파일이 빠져 있어서 나스에서는 auto.py의 `import verify_carrot_registration`이
+# 항상 실패해 "업데이트 직후 실제 판매중 여부 사후검증"이 건너뛰어졌을 가능성이 높다(auto.py는 import 실패를
+# 조용히 삼키도록 돼 있어 겉으로 티가 안 남 — 나스 실행 로그로 직접 확인 필요). 이 줄을 넣으면 나스에서도 사후검증이
+# 동작해, 숨겨진 채 남은 매물의 광고종료일(ad_end)이 확인일로 갱신되어 프로중개인 당근 아이콘이 꺼진다.
+COPY OBJECT_update/verify_carrot_registration.py ./OBJECT_update/verify_carrot_registration.py
+# 당근 노출 규칙 관측 전용 도구(entrypoint.sh의 observe 분기가 실행).
+COPY OBJECT_update/observe_carrot_exposure.py ./OBJECT_update/observe_carrot_exposure.py
 COPY OBJECT_update/nas_deploy_check.py ./OBJECT_update/nas_deploy_check.py
 COPY OBJECT_update/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
