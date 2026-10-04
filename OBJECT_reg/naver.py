@@ -29,6 +29,52 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # 이제 공용 함수를 내 파일 안에 있는 것처럼 자유롭게 불러옵니다!
 from util.property_utils import 건축법상건축물용도로변환
 
+_느린조회_기록자 = [None]  # 현재 실행 중인 연장등록의 진단 기록 함수(없으면 아무것도 안 함)
+
+
+def 느린조회_감시_설치(진단기록함수, 기준초=3.0, 최대건수=40):
+    """
+    [2026-10-04 신규 — 사용자 요청 "연장등록 처리속도가 느려지는 부분 확인"] 요소 조회(find_element/
+    find_elements)가 기준초 이상 걸리면 그 조회를 진단 기록에 한 줄 남긴다. 동작은 바꾸지 않고 측정만
+    한다. 배경: 이 프로그램은 implicitly_wait(10)을 켜둔 채 쓰는데, 그러면 "없는 게 정상인" 조회가
+    매번 10초씩 걸린다(실측: 2초짜리 WebDriverWait도 10.1초, find_elements도 10.0초). 어느 조회가
+    그런지는 코드만 봐서는 다 알 수 없어서, 실제 실행에서 느린 조회만 골라 남긴다.
+    클래스 단위로 한 번만 감싸고(중복 설치 방지), 기록자만 실행마다 바꿔 끼운다. 감시 코드의 오류가
+    본 동작을 깨뜨리지 않도록 기록 쪽은 전부 예외를 삼킨다.
+    """
+    from selenium.webdriver.remote.webdriver import WebDriver
+    from selenium.webdriver.remote.webelement import WebElement
+    _느린조회_기록자[0] = 진단기록함수
+    if getattr(WebDriver, '_obang_slow_lookup_patched', False):
+        return
+    남은건수 = [최대건수]
+
+    def 감싸기(원본, 구분):
+        def 측정(self, by=By.ID, value=None):
+            시작 = time.time()
+            결과 = None
+            try:
+                결과 = 원본(self, by, value)
+                return 결과
+            finally:
+                try:
+                    걸린초 = time.time() - 시작
+                    기록자 = _느린조회_기록자[0]
+                    if 기록자 and 걸린초 >= 기준초 and 남은건수[0] > 0:
+                        남은건수[0] -= 1
+                        건수 = ('없음/예외' if 결과 is None else (f'{len(결과)}건' if isinstance(결과, list) else '찾음'))
+                        기록자(f"느린 조회 {걸린초:.1f}s — {구분} {by} {str(value)[:90]} → {건수}")
+                except Exception:
+                    pass
+        return 측정
+
+    WebDriver.find_element = 감싸기(WebDriver.find_element, 'find_element')
+    WebDriver.find_elements = 감싸기(WebDriver.find_elements, 'find_elements')
+    WebElement.find_element = 감싸기(WebElement.find_element, 'el.find_element')
+    WebElement.find_elements = 감싸기(WebElement.find_elements, 'el.find_elements')
+    WebDriver._obang_slow_lookup_patched = True
+
+
 options = Options()
 
 options.add_argument("--disable-blink-features=AutomationControlled")
@@ -476,9 +522,15 @@ class NaverThread(QThread):
             # 절대 안 띄우고(데스크톱 사용자 방해 안 함), self.report_error가 채워져 있을 때만
             # 일반 오류로그(pr_error_log)에 낮은 심각도로 남긴다 — 담당자가 보는 연장등록 이력에는
             # 안 섞이고, 다음 문제 발생 시 개발자가 오류로그 화면에서 추측 없이 바로 확인할 수 있다.
+            # [2026-10-04 추가 — 사용자 요청 "연장등록 처리속도가 느려지는 부분 확인"] 진단 줄마다 "이 매물
+            # 연장등록을 시작한 지 몇 초째인지"를 붙인다. 서버 로그의 시각은 초 단위로만 찍혀서, 줄과
+            # 줄 사이가 왜 벌어졌는지(어느 단계가 느린지)를 알 수 없었다. 배열로 둔 이유: 안쪽 함수들이
+            # 값을 바꿔 쓸 수 있게(재할당이 아니라 [0] 갱신) 하기 위함이다.
+            _진단기준시각 = [time.time()]
+
             def 진단_기록(message):
                 if self.report_error:
-                    self.report_error(f"[연장등록 진단] {message}", severity='diag')
+                    self.report_error(f"[연장등록 진단] [+{time.time() - _진단기준시각[0]:.0f}s] {message}", severity='diag')
 
             def 한글금액(금액):
                 단위 = ["만원", "억", "조"]
@@ -1888,6 +1940,11 @@ class NaverThread(QThread):
                 if self.headless:
                     options.add_argument('--headless=new')
                 driver = webdriver.Chrome(options=options)
+                # [2026-10-04] 느린 조회 측정용 감시 — 동작은 바꾸지 않는다(함수 설명 참고).
+                try:
+                    느린조회_감시_설치(진단_기록)
+                except Exception as e:
+                    print(f"느린 조회 감시 설치 실패(무시하고 계속): {e}")
                 # driver = webdriver.Chrome('/chromedriver', options=options)
                 # driver = webdriver.Chrome(ChromeDriverManager().install())
                 # URL 열기
@@ -1918,6 +1975,7 @@ class NaverThread(QThread):
                 )
                 # 로그인확인겸 첫 파란등록버튼 기다리기(관리자로 로그인시)
                 driver.implicitly_wait(10)
+                진단_기록("써브 로그인 완료")
 
 
 
@@ -1988,8 +2046,25 @@ class NaverThread(QThread):
                     # print(f"검색완료 - 네이버매물번호: {네이버매물번호} ")                   
 
 
+                def 짧게_기다려_찾기(제한초, 로케이터, 클릭가능=False):
+                    """
+                    [2026-10-04 신규 — 사용자 요청 "연장등록 처리속도가 느려지는 부분 확인"] "없는 게 정상일 수
+                    있는" 요소를 제한초 안에서만 기다린다. 이 프로그램은 위에서 implicitly_wait(10)을 켜두는데,
+                    그 상태로 WebDriverWait(2)를 쓰면 조회 한 번이 10초를 먹어 실제로는 10.1초 걸린다(셀레니움
+                    실측). 그래서 이 대기 동안만 암묵 대기를 0으로 낮추고 반드시 10으로 되돌린다(다시보지않기
+                    확인()과 같은 방식 — 복구를 빠뜨리면 이후 모든 동작이 영향받으므로 finally로 보장).
+                    못 찾으면 TimeoutException을 그대로 올린다(호출부의 기존 except가 그대로 동작).
+                    """
+                    driver.implicitly_wait(0)
+                    try:
+                        조건 = EC.element_to_be_clickable if 클릭가능 else EC.presence_of_element_located
+                        return WebDriverWait(driver, 제한초, poll_frequency=0.2).until(조건(로케이터))
+                    finally:
+                        driver.implicitly_wait(10)
+
                 def 연장등록(네이버매물정보, 검증방식, 실패_msg):
-                    print(f"네이버매물정보:{네이버매물정보}")  
+                    _진단기준시각[0] = time.time()  # 이 매물의 경과시간을 0부터 센다
+                    print(f"네이버매물정보:{네이버매물정보}")
                     # pyautogui.alert(네이버매물정보, "네이버매물정보")
 
                     연장결과_msg = ""
@@ -2022,8 +2097,10 @@ class NaverThread(QThread):
                     try:
                         duplicate_code = "확인불가"
                         # 중복 안내 문구가 출력되는지 최대 2초간 동적 감시 실행
-                        dup_msg_el = WebDriverWait(driver, 2).until(
-                            EC.presence_of_element_located((By.XPATH, '//p[@class="alert-message" and contains(text(), "동일한 매물")]'))
+                        # [2026-10-04] 중복이 없는 게 정상이라 거의 매번 "못 찾음"으로 끝나는 조회다 —
+                        # 암묵 대기(10초)가 겹치면 2초 감시가 10초가 되어 매 매물마다 8초를 낭비했다.
+                        dup_msg_el = 짧게_기다려_찾기(
+                            2, (By.XPATH, '//p[@class="alert-message" and contains(text(), "동일한 매물")]')
                         )
                         popup_text = dup_msg_el.text
                         print(f"⚠️ [중복 매물 경고 발생] {popup_text}")
@@ -2453,10 +2530,10 @@ class NaverThread(QThread):
                     # 성공했다면 전체 결과를 실패로 덮어쓰지 않는다 — 2차 확인이 아예 없는 게
                     # 정상인 흐름을 실패로 오판하지 않기 위함.
                     try:
-                        완료확인버튼요소 =  WebDriverWait(driver, 3).until(
-                            EC.element_to_be_clickable(
-                                (By.XPATH, '//div[contains(@class, "modal-container")]//button[.//span[text()="확인"]]')
-                            )
+                        # [2026-10-04] 위 주석대로 2차 확인창이 없는 게 정상인 흐름이 있어 "못 찾음"이 흔하다 —
+                        # 암묵 대기(10초)와 겹치면 3초 감시가 10초가 되어 그만큼 낭비했다.
+                        완료확인버튼요소 = 짧게_기다려_찾기(
+                            3, (By.XPATH, '//div[contains(@class, "modal-container")]//button[.//span[text()="확인"]]'), 클릭가능=True
                         )
                         완료확인버튼요소.click()
                         진단_기록("완료확인버튼 클릭 성공 (modal-container 셀렉터로 찾음)")
