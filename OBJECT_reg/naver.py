@@ -925,7 +925,17 @@ class NaverThread(QThread):
                         #    선택된 라디오 버튼은 'v-selection-control--dirty' 클래스와 'mdi-radiobox-marked' 아이콘을 가집니다.
                         try:
                             # 'v-selection-control--dirty' 클래스를 가지는 v-selection-control div 찾기
-                            selected_control_div = tr_element.find_element(By.XPATH, './/div[contains(@class, "v-selection-control") and contains(@class, "v-selection-control--dirty")]')
+                            # [2026-10-04 속도개선 — 실측 기록으로 확인] 선택된 항목이 없는 그룹도 정상이라
+                            # "없음"이 흔한데, 암묵 대기(10초)가 겹치면 그때마다 10초가 걸렸다. strong/tr은 위에서
+                            # 이미 찾아 화면이 그려진 상태이므로 이 조회만 기다리지 않는다(finally로 반드시 복구).
+                            driver.implicitly_wait(0)
+                            try:
+                                dirty_divs = tr_element.find_elements(By.XPATH, './/div[contains(@class, "v-selection-control") and contains(@class, "v-selection-control--dirty")]')
+                            finally:
+                                driver.implicitly_wait(10)
+                            if not dirty_divs:
+                                continue  # 이 tr에는 선택된 항목이 없음 — 다음 strong으로(예전의 예외→continue와 같은 흐름)
+                            selected_control_div = dirty_divs[0]
 
                             # 찾은 div 내에서 label 태그 찾기
                             selected_label = selected_control_div.find_element(By.TAG_NAME, 'label')
@@ -2062,6 +2072,18 @@ class NaverThread(QThread):
                     finally:
                         driver.implicitly_wait(10)
 
+                def 기다림없이_모두찾기(로케이터):
+                    """
+                    [2026-10-04 신규 — 연장 속도 개선] 이미 화면이 그려진 것을 확인한 뒤 "있는지 없는지"만 보는
+                    조회용이다. 암묵 대기(10초)가 켜진 채로 없는 요소를 find_elements하면 10초가 걸리므로
+                    이 조회 동안만 0으로 낮췄다가 반드시 10으로 복구한다(짧게_기다려_찾기()와 같은 이유).
+                    """
+                    driver.implicitly_wait(0)
+                    try:
+                        return driver.find_elements(*로케이터)
+                    finally:
+                        driver.implicitly_wait(10)
+
                 def 연장등록(네이버매물정보, 검증방식, 실패_msg):
                     _진단기준시각[0] = time.time()  # 이 매물의 경과시간을 0부터 센다
                     print(f"네이버매물정보:{네이버매물정보}")
@@ -3106,7 +3128,10 @@ class NaverThread(QThread):
                             WebDriverWait(driver, 5).until(
                                 lambda d: d.find_elements(By.XPATH, "//*[@id='printArea']//button[contains(., '재등록')]")
                             )
-                            간편재등록_버튼들 = driver.find_elements(By.XPATH, "//*[@id='printArea']//button[contains(., '간편 재등록')]")
+                            # [2026-10-04 속도개선 — 실측 기록으로 확인] 바로 위 대기로 버튼 영역이 이미 그려진 것이
+                            # 보장되므로 여기서는 기다릴 이유가 없다. 간편 재등록 버튼은 없는 게 흔해서, 암묵 대기
+                            # (10초)가 겹치면 매 매물마다 10초를 그냥 보냈다(진단 로그 "느린 조회 10.0s"로 확인).
+                            간편재등록_버튼들 = 기다림없이_모두찾기((By.XPATH, "//*[@id='printArea']//button[contains(., '간편 재등록')]"))
                             if 간편재등록_버튼들:
                                 연장등록결과 = 간편_재등록(네이버매물정보)
                             else:
