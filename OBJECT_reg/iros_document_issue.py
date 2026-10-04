@@ -1419,6 +1419,7 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
         return _fail('검색결과에서 일치하는 부동산을 찾지 못했습니다.')
 
     owner_masked = ''
+    selected_unique_no = ''  # 검색결과에서 특정한 1건의 부동산 고유번호 — 아래 결제대상 표 대조에 쓴다
     if len(matched) > 1:
         # [2026-09-19 재설계 — 사용자 지적 "여러 건이면 조용히 실패하고 끝나는 게 문제"] 예전엔 여기서
         # 바로 실패 처리했다 — 캡차·결제확인처럼 사람 판단이 필요한 상황인데 사람에게 알리지도 않고
@@ -1438,6 +1439,8 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
         except NoSuchElementException:
             owner_masked = ''
         print(f'[진행] 대상 부동산 1건 특정 — 소유자(마스킹)={owner_masked}', flush=True)
+        unique_in_row = re.search(r'\d{4}-\d{4}-\d{6}', row.text or '')
+        selected_unique_no = unique_in_row.group(0) if unique_in_row else ''
 
         # [2026-09-19 수정 — 실사용 재현으로 원인 확인, 매물 10385] 예전엔 이 줄 선택 칸(WebSquare 그리드)
         # 안에서 <input>을 찾아 "이미 체크됐는지" 확인한 뒤에만 클릭했는데, 그 선택자가 실제로는 input을
@@ -1567,16 +1570,28 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
     # 동/리 표기 또는 도로명 표기 둘 중 하나만 일치해도 통과시킨다.
     road_loc = payload.get('road_search') or {}
     road_name_no = _squash(road_loc.get('road_name', '')) + _squash(road_loc.get('road_building_no', ''))
+    # [2026-10-04 추가 — 로컬 재현으로 발견, 매물 716318] 아래 주소 대조만으로는 같은 지번의 **다른 문서**를
+    # 구분하지 못한다 — 결제대상(장바구니)에 같은 "청학동 290-5"의 토지 등기가 남아 있으면(이전 테스트·이전
+    # 신청의 잔여물은 "취소(추가)"로 일부러 안 비운다) 건물을 조회했는데도 그 토지 줄이 먼저 걸려 체크까지
+    # 눌러버렸다(건물 고유번호 1348-2021-029049 대신 토지 1348-2023-029852을 확정으로 돌려줌) — 결제로
+    # 이어지면 엉뚱한 문서에 돈을 쓰는 사고다. 검색결과에서 이미 확정한 1건의 고유번호가 있으면(위
+    # selected_unique_no) 그 번호가 적힌 줄만 대상으로 삼는다 — 주소 표기(동/리·지번·도로명) 불일치와도
+    # 무관하게 가장 확실한 식별자다. 고유번호를 못 읽은 예외(사람이 직접 고른 경우 등)에만 예전처럼
+    # 주소로 대조한다.
     for tr in pay_rows:
         addr_td = _find_row_addr_cell(tr)
         if addr_td is None:
             continue
         addr_text = addr_td.text.strip()
         squashed_addr = _squash(addr_text)
-        if loc.get('sigungu') and _squash(loc['sigungu']) not in squashed_addr:
-            continue
-        if dong_jibun not in squashed_addr and not (road_name_no and road_name_no in squashed_addr):
-            continue
+        if selected_unique_no:
+            if selected_unique_no not in (tr.text or ''):
+                continue
+        else:
+            if loc.get('sigungu') and _squash(loc['sigungu']) not in squashed_addr:
+                continue
+            if dong_jibun not in squashed_addr and not (road_name_no and road_name_no in squashed_addr):
+                continue
         try:
             checkbox = tr.find_element(By.CSS_SELECTOR, 'td[data-col_id="chk_sel"] input[type="checkbox"]')
             if not checkbox.is_selected():
@@ -1584,6 +1599,20 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
                 time.sleep(0.8)
         except NoSuchElementException:
             pass
+        # [2026-10-04 추가] 결제는 "체크된 줄 전부"에 나가므로, 장바구니에 남아있던 다른 줄(이전 테스트·신청의
+        # 잔여물 — "취소(추가)"로 일부러 안 비운다)이 미리 체크돼 있으면 같이 결제될 수 있다. 대상 줄 외에
+        # 체크된 줄은 해제한다(일괄발급은 이후 단계에서 전체선택을 다시 하므로 영향 없다).
+        for other in pay_rows:
+            if other is tr:
+                continue
+            try:
+                other_checkbox = other.find_element(By.CSS_SELECTOR, 'td[data-col_id="chk_sel"] input[type="checkbox"]')
+                if other_checkbox.is_selected():
+                    _click_with_fallback(driver, other.find_element(By.CSS_SELECTOR, 'td[data-col_id="chk_sel"] label'))
+                    time.sleep(0.5)
+                    print('[진행] 대상이 아닌 다른 결제대상 줄이 체크돼 있어 해제함', flush=True)
+            except NoSuchElementException:
+                continue
         unique_no = ''
         m = re.search(r'\d{4}-\d{4}-\d{6}', tr.text)
         if m:
