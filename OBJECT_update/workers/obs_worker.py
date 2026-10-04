@@ -226,15 +226,14 @@ class ObsAutomationWorker:
     # DB 거래종류 → (사이트 목록의 거래유형 문구, {수정폼 입력칸 이름: DB 컬럼}, {목록 가격 라벨: DB 컬럼}).
     # 거래유형이 하나인 월세/전세/매매만 맞춘다 — 관리비·권리금·'전월세' 같은 복수 거래유형·단기임대는
     # 입력 구조가 달라 이 단계에서는 다루지 않는다(DB가 그 값을 어떻게 나눠 갖는지 아직 확인 못 함).
-    # 네 번째 값은 "자동으로 사이트 가격을 덮어써도 되는가"다. 매매는 False — 2026-10-03 드라이런에서 매매 11건이
-    # 1억 단위로 어긋났는데, DB 수정일이 2025년인 건도 있어 DB가 최신이라는 근거가 없고(사이트 '수정일'은 갱신이
-    # 같이 덮어써서 가격을 언제 마지막으로 고쳤는지 알 수 없다), 공개 매물의 매매가를 틀린 값으로 바꾸는 피해가 크다.
-    # 그래서 매매는 불일치를 로그에만 남겨 사람이 확인하게 한다. 월세/전세는 어긋난 건 대부분 DB 수정일이 최근이고
-    # 원본 의뢰(pr_request_give)와도 일치해 자동 반영한다.
+    # 네 번째 값은 "자동으로 사이트 가격을 덮어써도 되는가"다. 지금은 셋 다 True지만 값 자체는 남겨둔다 —
+    # 새 거래종류를 추가할 때 근거가 확인되기 전까지 False(불일치를 로그에만 남기고 사람이 확인)로 시작할 수 있게.
+    # 매매는 2026-10-03 드라이런에서 11건이 1억 단위로 어긋나 처음에 False로 뒀고(DB 수정일이 2025년인 건도 있어
+    # DB가 최신이라는 근거가 없었다), 2026-10-04 사용자가 "DB 기준으로 수정"하기로 확정해 True로 바꿨다.
     _가격_동기화_규칙 = {
         '월세': ('월세', {'price_month_deposit': 'object_tmoney1', 'price_month_rent': 'object_tmoney2'}, {'보': 'object_tmoney1', '월': 'object_tmoney2'}, True),
         '전세': ('전세', {'price_full_rent': 'object_tmoney1'}, {'전': 'object_tmoney1'}, True),
-        '매매': ('매매', {'price_sell': 'object_tmoney1'}, {'매': 'object_tmoney1'}, False),
+        '매매': ('매매', {'price_sell': 'object_tmoney1'}, {'매': 'object_tmoney1'}, True),
     }
 
     def 가격_판정(self, db행, 사이트행):
@@ -273,6 +272,14 @@ class ObsAutomationWorker:
             print(f"   [💲 가격 수정 - 오부사 {코드}] 사이트:{현재} → DB:{목표}")
             for 이름, 값 in 목표.items():
                 self._입력칸_값_넣기(self.driver.find_element(By.NAME, 이름), 값)
+            # 사이트의 저장 검사는 '위치정보 소재지'(#dong_id)가 비어 있으면 "소재지를 입력해주세요"로 막는데, 이 칸은
+            # 페이지가 열린 뒤 시/도→구/군→동 선택 목록을 불러오며 나중에 채워진다. 폼이 열리자마자 저장하면 아직
+            # 비어 있는 시점에 걸려(2026-10-04 매매 11건이 전부 이 사유로 거부됨) 데이터가 멀쩡한데도 저장이 막힌다.
+            # 채워질 때까지 기다린다 — 끝까지 비어 있으면(진짜 미입력) 기다림을 포기하고 사이트의 거부 사유를 그대로 받는다.
+            try:
+                WebDriverWait(self.driver, 15).until(lambda d: d.execute_script("return !!$('#dong_id').val();"))
+            except TimeoutException:
+                pass
             저장버튼 = next(b for b in self.driver.find_elements(By.CSS_SELECTOR, '.save_btn') if b.is_displayed())
             self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", 저장버튼)
             저장버튼.click()
