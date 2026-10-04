@@ -2068,51 +2068,88 @@ class NaverThread(QThread):
                     # 않는다). 신규등록/수정은 크롬확장(content_serve.js::attachRegistryDocumentIfAny())
                     # 이 같은 값을 base64로 변환해 파일칸에 넣지만, 이 함수는 셀레니움이라 로컬
                     # 파일시스템(NAS가 매핑된 드라이브)에 직접 접근할 수 있어 그 변환이 필요 없다.
+                    #
+                    # [2026-10-04 위치 이동 — 매물 716318 실사용 재현 + 라이브 화면 확인] 예전엔 이
+                    # 블록이 검증방식 전환(홍보확인서→모바일확인V2)보다 "앞"에 있었다. 그런데 써브
+                    # 연장 화면의 "등기부등본 첨부" 행은 검증방식이 홍보확인서일 때 화면에서 숨겨져
+                    # 있고(라이브 확인: 크기 0x0), 모바일확인V2를 고르면 나타난다(880x387). 예전 탐색
+                    # 코드는 보이는 행만 인정해서 전환 전에는 항상 "칸을 못 찾아 건너뜀"이 되었고,
+                    # 전환 뒤에는 파일을 넣는 코드가 없어 필수 첨부가 빈 채로 제출돼 막혔다(제출 시
+                    # 확인창이 안 떠서 "확정버튼 클릭 에러"로 보였음). 그래서 전환·의뢰인정보 입력이
+                    # 모두 끝난 뒤, 제출 직전에 호출한다.
                     def 등기부등본_파일칸_찾기():
-                        # 기존 특정위치의x번째입력태그찾기()는 is_displayed()로 걸러진 요소만
-                        # 인정하는데, 파일 첨부칸은 흔히 실제 <input type=file>을 화면에서 숨기고
-                        # 버튼/라벨만 보여주는 방식이라(직접 확인 필요 — 재등록 화면의 실제 구조를
-                        # 아직 육안으로 확인하지 못함) 그 필터에 걸려 못 찾을 위험이 있다. 그래서
-                        # 여기서는 라벨이 보이는 행을 찾은 뒤에는 보이는지 여부와 무관하게 그 안의
-                        # input[type=file]을 그대로 찾는다.
+                        # 파일 칸은 흔히 실제 <input type=file>을 화면에서 숨기고(라이브 확인: opacity 0,
+                        # 크기 0) 버튼만 보여주므로 input의 가시성은 따지지 않는다. 행(strong) 자체의
+                        # 가시성도 따지지 않는다 — 행이 숨겨진 상태(홍보확인서 방식)인지는 호출부가
+                        # 별도로 판단하고, 여기서는 DOM에 있는 칸을 그대로 돌려준다.
                         try:
                             for strong in driver.find_elements(By.XPATH, "//th/strong"):
-                                if not strong.is_displayed():
-                                    continue
                                 텍스트 = strong.get_attribute('textContent').replace('\n', '').replace('\r', '').replace(' ', '')
                                 if 텍스트 != '등기부등본첨부':
                                     continue
                                 tr = strong.find_element(By.XPATH, './ancestor::tr')
                                 파일입력들 = tr.find_elements(By.XPATH, './/input[@type="file"]')
                                 if 파일입력들:
-                                    return 파일입력들[0]
-                            return None
+                                    return 파일입력들[0], tr
+                            return None, None
                         except Exception as e:
                             print(f"등기부등본 첨부칸 탐색 실패: {e}")
+                            return None, None
+
+                    def 등기부등본_첨부개수읽기(tr):
+                        # 행 안의 "0 / 10개" 표시에서 현재 첨부 개수를 읽는다(라이브 확인: 첨부 전 "0 / 10").
+                        try:
+                            m = re.search(r'(\d+)\s*/\s*10', tr.get_attribute('textContent') or '')
+                            return int(m.group(1)) if m else None
+                        except Exception:
                             return None
 
-                    등기부_첨부정보 = 네이버매물정보.get('registry_attach')
-                    if 등기부_첨부정보 and 등기부_첨부정보.get('folder') and 등기부_첨부정보.get('name'):
-                        self.step_progress.emit(f"매물 {새홈매물번호} — 등기부등본 첨부 중")
+                    def 등기부등본_첨부하기():
+                        등기부_첨부정보 = 네이버매물정보.get('registry_attach')
+                        if not (등기부_첨부정보 and 등기부_첨부정보.get('folder') and 등기부_첨부정보.get('name')):
+                            print("등기부등본 첨부정보 없음 — 첨부 건너뜀(재발급 불필요 판정 또는 대상 아님)")
+                            진단_기록("등기부 첨부 건너뜀 — registry_attach 없음")
+                            return
                         로컬파일경로 = os.path.join(등기부_첨부정보['folder'], 등기부_첨부정보['name'])
                         if not os.path.isfile(로컬파일경로):
                             print(f"등기부등본 첨부 건너뜀 — 파일을 찾을 수 없음: {로컬파일경로}")
+                            진단_기록(f"등기부 첨부 건너뜀 — 파일 없음: {로컬파일경로}")
+                            return
+                        파일input, 첨부행 = 등기부등본_파일칸_찾기()
+                        if not 파일input:
+                            print("연장등록 화면에서 '등기부등본 첨부'칸을 찾지 못해 건너뜀")
+                            진단_기록("등기부 첨부 건너뜀 — 화면에서 '등기부등본 첨부' 칸을 찾지 못함")
+                            return
+                        if not 첨부행.is_displayed():
+                            # 홍보확인서 등 등기부 첨부가 필요 없는 검증방식 — 칸이 숨겨져 있으면 넣지 않는다.
+                            print("'등기부등본 첨부'칸이 숨겨진 검증방식이라 첨부 건너뜀")
+                            진단_기록("등기부 첨부 건너뜀 — 첨부 칸이 숨겨진 검증방식")
+                            return
+                        self.step_progress.emit(f"매물 {새홈매물번호} — 등기부등본 첨부 중")
+                        try:
+                            # 이미 다른 파일이 첨부된 채로 열렸을 수 있으므로(예전에 등록된
+                            # 오래된 등기부) 값을 지우지 않고 그대로 send_keys — 파일 입력
+                            # 요소는 새 경로를 보내면 기존 선택을 새 파일로 대체한다(표준
+                            # HTML 동작, clear() 불필요).
+                            파일input.send_keys(로컬파일경로)
+                        except Exception as e:
+                            print(f"등기부등본 첨부 실패: {e}")
+                            진단_기록(f"등기부 첨부 실패 — send_keys 예외: {e}")
+                            return
+                        # send_keys가 예외 없이 끝나도 화면(Vue)이 파일을 못 받았을 수 있어서, 첨부
+                        # 개수 표시가 실제로 올라갔는지 확인한다(최대 8초).
+                        첨부개수 = None
+                        for _ in range(16):
+                            time.sleep(0.5)
+                            첨부개수 = 등기부등본_첨부개수읽기(첨부행)
+                            if 첨부개수 is not None and 첨부개수 >= 1:
+                                break
+                        if 첨부개수 is not None and 첨부개수 >= 1:
+                            print(f"등기부등본 첨부 완료: {로컬파일경로} ({첨부개수}개 표시됨)")
+                            진단_기록(f"등기부 첨부 완료 — 화면 첨부개수 {첨부개수}")
                         else:
-                            파일input = 등기부등본_파일칸_찾기()
-                            if not 파일input:
-                                print("연장등록 화면에서 '등기부등본 첨부'칸을 찾지 못해 건너뜀")
-                            else:
-                                try:
-                                    # 이미 다른 파일이 첨부된 채로 열렸을 수 있으므로(예전에 등록된
-                                    # 오래된 등기부) 값을 지우지 않고 그대로 send_keys — 파일 입력
-                                    # 요소는 새 경로를 보내면 기존 선택을 새 파일로 대체한다(표준
-                                    # HTML 동작, clear() 불필요).
-                                    파일input.send_keys(로컬파일경로)
-                                    print(f"등기부등본 첨부 완료: {로컬파일경로}")
-                                except Exception as e:
-                                    print(f"등기부등본 첨부 실패: {e}")
-                    else:
-                        print("등기부등본 첨부정보 없음 — 첨부 건너뜀(재발급 불필요 판정 또는 대상 아님)")
+                            print(f"등기부등본 첨부 확인 실패 — 화면 첨부개수 표시: {첨부개수}")
+                            진단_기록(f"등기부 첨부 확인 실패 — 파일 전달 후에도 화면 첨부개수가 {첨부개수}")
 
                     # pyautogui.alert(basic_secret, "basic_secret")
                     # 비밀메모요소 = 특정위치의x번째입력태그찾기('관리자 메모 (비공개 정보)', 'textarea', 1)
@@ -2181,6 +2218,10 @@ class NaverThread(QThread):
                     if 동의결과_msg != "200":
                         연장결과_msg += 동의결과_msg
                         pyautogui.alert(f"동의결과_msg: {동의결과_msg}")
+                    # [2026-10-04 이동] 등기부등본 첨부는 검증방식 전환과 의뢰인정보 입력이 모두 끝난 뒤에
+                    # 해야 한다 — 위 등기부등본_첨부하기() 주석 참고.
+                    등기부등본_첨부하기()
+
                     # [2026-09-15 매물등록_최종제출()로 추출 — 사용자 요청 "간편재등록에도 재사용"]
                     # 아래 있던 "매물등록" 버튼 클릭~확정/완료 모달 처리 인라인 코드를
                     # 연장등록()/간편_재등록() 둘 다 쓰는 공용 함수로 옮겼다. 동작은 그대로이고
@@ -2374,8 +2415,36 @@ class NaverThread(QThread):
                         진단_기록("확정버튼 클릭 성공 (modal-container 셀렉터로 찾음)")
                     except Exception as e:
                         print(f"확정버튼 클릭 에러: {e}")
-                        self.report_unexpected_exception(e, f'매물등록_최종제출 - 확정버튼 클릭(새홈 {새홈매물번호})')
-                        최상단알림창(f"확정버튼 클릭 에러: {e}\n\n매물번호를 수동으로 추출해야합니다.")
+                        # [2026-10-04 추가 — 매물 716318 실사용 재현] 필수항목이 비어 있으면 써브가 확인창을
+                        # 띄우지 않고 해당 칸 아래에 붉은 안내문만 보여준다. 그러면 위 확정버튼 대기가 그냥
+                        # 타임아웃(Message가 빈 예외)으로 끝나 "확정버튼 클릭 에러"로만 보여서, 실제 원인
+                        # ("등기부등본 파일을 첨부해주세요" 등)을 알 수 없었다. 화면에 붉게 떠 있는 안내문을
+                        # 읽어 그대로 알려준다. 붉은 글자 판정은 색(R 높고 G·B 낮음)으로 하는 휴리스틱이라
+                        # 못 찾을 수도 있다(그땐 기존 문구 그대로).
+                        막힌사유들 = []
+                        try:
+                            막힌사유들 = driver.execute_script("""
+                                var out = [];
+                                var els = document.querySelectorAll('p, span, div, li');
+                                for (var i = 0; i < els.length && out.length < 8; i++) {
+                                    var el = els[i];
+                                    if (el.children.length > 1 || el.offsetParent === null) continue;
+                                    var t = (el.textContent || '').trim();
+                                    if (!t || t.length > 80) continue;
+                                    var m = getComputedStyle(el).color.match(/\\d+/g);
+                                    if (m && +m[0] > 180 && +m[1] < 90 && +m[2] < 90 && out.indexOf(t) < 0) out.push(t);
+                                }
+                                return out;
+                            """) or []
+                        except Exception:
+                            막힌사유들 = []
+                        if 막힌사유들:
+                            사유문구 = ' / '.join(막힌사유들)
+                            진단_기록(f"매물등록 제출이 필수항목 안내로 막힘(새홈 {새홈매물번호}): {사유문구}")
+                            최상단알림창(f"매물등록이 막혔습니다 — 써브 화면의 안내:\n{사유문구}\n\n(확인창이 뜨지 않았습니다. 등록은 되지 않았습니다.)")
+                        else:
+                            self.report_unexpected_exception(e, f'매물등록_최종제출 - 확정버튼 클릭(새홈 {새홈매물번호})')
+                            최상단알림창(f"확정버튼 클릭 에러: {e}\n\n매물번호를 수동으로 추출해야합니다.")
                         연장결과_msg = '404'
 
                     # [2026-09-15 수정 — 사용자 확인] 검증방식(즉시등록 등)에 따라 "확정" 한 번으로
