@@ -145,8 +145,48 @@ PAYMENT_TITLES = ['결제대상 확인']
 HUMAN_CONFIRM_TIMEOUT_SEC = 600
 
 
+IROS_LOOPBACK_ALLOWED_ORIGINS = ('https://www.iros.go.kr', 'https://iros.go.kr')
+
+
 def _launch_chrome(chrome_options):
-    """issue_real_estate_register() 공용 — Chrome을 띄우는 지점을 하나로
+    """Chrome을 띄우는 지점(단건/일괄 공용) — 실제 기동은 _start_chrome_process()가 하고, 이 함수는
+    그 앞뒤에 등기소 "루프백 네트워크 권한" 팝업을 미리 허용해두는 처리만 얹는다.
+
+    [2026-10-04 추가 — 사용자 리포트 "캡차칸에 포커스가 가 있는데 바로 타이핑이 안 된다"]
+    등기소 페이지가 PC에 설치된 키보드보안 프로그램(127.0.0.1)에 접속하려 하면 크롬(146+)이
+    "이 기기의 다른 앱 및 서비스에 액세스" 권한 팝업을 띄운다. 이 팝업은 브라우저와 별개의 최상위
+    창이라, 팝업이 떠 있는 동안에는 OS 키보드 포커스가 그쪽으로 가서 입력칸에 커서가 보여도 타이핑이
+    페이지에 전달되지 않았다(로컬 재현으로 확인 — 아래 _bring_chrome_window_to_foreground() 주석).
+    자동화 크롬은 매번 새 임시 프로필이라 한 번 허용해도 기억되지 않으므로, 띄울 때마다 미리
+    허용한다. 두 방법(프로필 설정 + CDP)을 함께 쓰는 이유는 크롬 버전이 올라가며 한쪽 이름이 바뀌어도
+    다른 쪽이 막아주게 하기 위함이다 — 둘 다 로컬 재현에서 팝업이 사라지는 것을 개별로 확인했다
+    (CDP는 'loopback-network'만 효과가 있고 'local-network-access'/'local-network'는 효과 없음).
+    실패해도 발급 흐름 자체는 막지 않는다(팝업이 떠도 아래 포커스 처리가 한 번 더 막아준다)."""
+    try:
+        prefs = chrome_options.experimental_options.get('prefs')
+        if prefs is None:
+            chrome_options.add_experimental_option('prefs', {})
+            prefs = chrome_options.experimental_options['prefs']
+        loopback_exceptions = prefs.setdefault('profile.content_settings.exceptions.loopback_network', {})
+        for origin in IROS_LOOPBACK_ALLOWED_ORIGINS:
+            loopback_exceptions[origin + ',*'] = {'setting': 1}
+    except Exception as e:
+        print(f'[진행] 루프백 권한 사전허용(프로필 설정) 실패 — 무시하고 계속: {e}', flush=True)
+
+    driver = _start_chrome_process(chrome_options)
+
+    for origin in IROS_LOOPBACK_ALLOWED_ORIGINS:
+        try:
+            driver.execute_cdp_cmd('Browser.setPermission', {
+                'permission': {'name': 'loopback-network'}, 'setting': 'granted', 'origin': origin,
+            })
+        except Exception as e:
+            print(f'[진행] 루프백 권한 사전허용(CDP, {origin}) 실패 — 무시하고 계속: {e}', flush=True)
+    return driver
+
+
+def _start_chrome_process(chrome_options):
+    """_launch_chrome() 공용 — Chrome을 띄우는 지점을 하나로
     모아, chromedriver에 새 콘솔을 명시적으로 준다(위 파일 상단 CREATE_NEW_CONSOLE 주석 참고 —
     콘솔 없는 DETACHED_PROCESS에서 chromedriver가 응답 없이 사라지던 문제의 핵심 원인으로 실측
     확인됨). Job 분리(CREATE_BREAKAWAY_FROM_JOB)가 거부되는 환경(handle_iros_issue()의 자기 자신
@@ -1541,9 +1581,49 @@ def _prefill_login_page_credentials(driver, credentials):
     try:
         captcha_input = driver.find_element(By.CSS_SELECTOR, 'input[id$="_answer___input"]')
         if captcha_input.is_displayed():
-            _click_with_fallback(driver, captcha_input)
+            # [2026-10-04 변경 — 사용자 리포트 "포커스가 가 있는데 바로 타이핑이 안 된다"] 예전엔 Selenium
+            # 클릭(브라우저 안에서 만든 합성 클릭)만 썼는데, 이건 DOM 포커스(커서 깜빡임)만 줄 뿐
+            # OS 키보드 포커스·키보드보안 프로그램에는 진짜 사람 클릭으로 보이지 않는다. 진짜 마우스
+            # 클릭(OS 입력)으로 바꾸고, 어떤 이유로든 실패하면 예전 방식으로 대체한다.
+            if not _focus_with_real_mouse_click(driver, captcha_input):
+                _click_with_fallback(driver, captcha_input)
     except NoSuchElementException:
         pass
+
+
+def _find_chrome_main_window(driver):
+    """셀레니움이 띄운 크롬의 "메인 브라우저 창" 핸들을 찾는다. 크롬 권한 팝업·툴팁 등도 같은
+    프로세스 소속의 별도 최상위 창(Chrome_WidgetWin_1)으로 잡히기 때문에, 맨 처음 발견한 창을 쓰면
+    팝업을 집을 수 있다(2026-10-04 실제로 그렇게 오작동한 것을 재현으로 확인) — 화면 면적이 가장 큰
+    창을 메인으로 본다(팝업은 항상 메인 창보다 훨씬 작다). 못 찾으면 None."""
+    import psutil
+    import win32gui
+    import win32process
+
+    driver_pid = driver.service.process.pid
+    target_pids = {driver_pid}
+    try:
+        for child in psutil.Process(driver_pid).children(recursive=True):
+            target_pids.add(child.pid)
+    except Exception:
+        pass
+
+    candidates = []
+
+    def _enum_handler(hwnd, _):
+        if not win32gui.IsWindowVisible(hwnd) or not win32gui.GetWindowText(hwnd):
+            return True
+        _, pid = win32process.GetWindowThreadProcessId(hwnd)
+        if pid in target_pids:
+            left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+            candidates.append(((right - left) * (bottom - top), hwnd))
+        # [2026-09-29 수정 — 실측으로 원인 확인] 찾자마자 False를 반환해 순회를 일찍 멈추면
+        # pywin32 EnumWindows가 (18, 'EnumWindows', '더 이상 파일이 없습니다.') 예외를 던졌다 —
+        # 그래서 항상 끝까지 순회하고(True 반환), 선택은 순회가 끝난 뒤에 한다.
+        return True
+
+    win32gui.EnumWindows(_enum_handler, None)
+    return max(candidates)[1] if candidates else None
 
 
 def _bring_chrome_window_to_foreground(driver):
@@ -1556,43 +1636,131 @@ def _bring_chrome_window_to_foreground(driver):
     타이핑은 안 먹혔다. 셀레니움이 띄운 크롬 프로세스(chromedriver의 자식 프로세스)를 정확히 찾아
     그 창만 강제로 앞에 가져온다 — 화면에 다른 크롬 창이 떠 있어도 혼동하지 않도록.
     pywin32/psutil은 이미 개발환경에 설치돼 있어 새 의존성이 아니다. 실패해도(창을 못 찾음 등)
-    캡차 자체는 계속 진행 가능하므로 무시하고 넘어간다 — 이 단계는 편의 기능이지 안전장치가 아니다."""
+    캡차 자체는 계속 진행 가능하므로 무시하고 넘어간다 — 이 단계는 편의 기능이지 안전장치가 아니다.
+
+    [2026-10-04 수정 — 사용자 리포트로 재발 확인, 로컬 재현으로 원인 확정] 위 처리를 넣었는데도
+    증상이 그대로였다. 크롬이 띄우는 권한 팝업("이 기기의 다른 앱 및 서비스에 액세스")이 브라우저와
+    별개의 최상위 창이라, 예전 코드가 "맨 처음 발견한 창"을 집다가 이 팝업을 앞으로 가져오고 있었다
+    — 그러면 DOM상으로는 캡차칸에 포커스가 있는데(document.activeElement/hasFocus 모두 정상) OS
+    키보드 입력은 팝업으로 가서 페이지에 글자가 안 들어갔다(같은 조건으로 재현: 입력 결과 빈 값).
+    로그에 "앞으로 가져옴"이 찍혔어도 엉뚱한 창이었던 것이다. 그래서 (1) 메인 브라우저 창만 정확히
+    고르고(_find_chrome_main_window), (2) 윈도우의 포그라운드 잠금 때문에 호출이 조용히 무시되는
+    경우를 AttachThreadInput으로 우회하며, (3) 실제로 포그라운드가 됐는지 확인해서 로그에 남긴다.
+    @return bool 메인 창이 실제로 포그라운드가 됐으면 True"""
     try:
-        import psutil
+        import win32api
+        import win32con
         import win32gui
         import win32process
 
-        driver_pid = driver.service.process.pid
-        target_pids = {driver_pid}
-        try:
-            for child in psutil.Process(driver_pid).children(recursive=True):
-                target_pids.add(child.pid)
-        except Exception:
-            pass
-
-        found_hwnd = []
-
-        def _enum_handler(hwnd, _):
-            if not win32gui.IsWindowVisible(hwnd) or not win32gui.GetWindowText(hwnd):
-                return True
-            _, pid = win32process.GetWindowThreadProcessId(hwnd)
-            if pid in target_pids:
-                found_hwnd.append(hwnd)
-            # [2026-09-29 수정 — 실측으로 원인 확인] 찾자마자 False를 반환해 순회를 일찍 멈추면
-            # pywin32 EnumWindows가 (18, 'EnumWindows', '더 이상 파일이 없습니다.') 예외를 던졌다
-            # (캡차 알림창이 막 닫힌 직후라는 타이밍과 겹쳐 재현, 3회 반복 100% 재현). 이 예외가
-            # 아래 except에 걸려 "못 찾음"으로 조용히 넘어가면서 SetForegroundWindow가 아예
-            # 실행되지 않고 있었다 — 즉 이 함수는 한 번도 실제로 포커스를 옮긴 적이 없었다.
-            # 끝까지 순회해도 어차피 found_hwnd[0](가장 먼저 찾은 것)을 쓰므로 선택 결과는 같고,
-            # 창 개수(약 600개)에 단순 조건검사만 하는 콜백이라 성능 영향도 없다(재검증 완료).
-            return True
-
-        win32gui.EnumWindows(_enum_handler, None)
-        if found_hwnd:
-            win32gui.SetForegroundWindow(found_hwnd[0])
-            print('[진행] 크롬 창을 앞으로 가져옴(캡차 입력 준비)', flush=True)
+        hwnd = _find_chrome_main_window(driver)
+        if not hwnd:
+            print('[진행] 크롬 메인 창을 찾지 못함(무시하고 계속)', flush=True)
+            return False
+        if win32gui.IsIconic(hwnd):
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        if win32gui.GetForegroundWindow() != hwnd:
+            current_thread = win32api.GetCurrentThreadId()
+            foreground_window = win32gui.GetForegroundWindow()
+            foreground_thread = win32process.GetWindowThreadProcessId(foreground_window)[0] if foreground_window else 0
+            attached = False
+            try:
+                if foreground_thread and foreground_thread != current_thread:
+                    win32process.AttachThreadInput(current_thread, foreground_thread, True)
+                    attached = True
+                try:
+                    win32gui.BringWindowToTop(hwnd)
+                except Exception:
+                    pass
+                try:
+                    win32gui.SetForegroundWindow(hwnd)
+                except Exception:
+                    pass  # 윈도우가 거부해도 아래에서 실제 결과를 확인한다
+            finally:
+                if attached:
+                    win32process.AttachThreadInput(current_thread, foreground_thread, False)
+        is_foreground = win32gui.GetForegroundWindow() == hwnd
+        print(f'[진행] 크롬 메인 창을 앞으로 가져옴(캡차 입력 준비) — 포그라운드 확인={is_foreground}', flush=True)
+        return is_foreground
     except Exception as e:
         print(f'[진행] 크롬 창을 앞으로 가져오지 못함(무시하고 계속): {e}', flush=True)
+        return False
+
+
+def _focus_with_real_mouse_click(driver, el):
+    """입력칸을 "진짜 마우스 클릭(OS 입력)"으로 포커스한다. Selenium의 el.click()은 브라우저 안에서
+    만든 합성 이벤트라 DOM 포커스(커서 깜빡임)만 줄 뿐이고, OS 키보드 포커스나 키보드보안 프로그램에는
+    사람이 누른 클릭으로 보이지 않는다 — 사람이 직접 클릭하면 되는 이유가 이것이다.
+
+    창 안의 위치 → 화면 좌표 변환은 브라우저 주소창/테두리 크기 때문에 계산만으로는 오차가 날 수
+    있어, 먼저 계산한 위치로 마우스를 움직여 페이지가 받은 실제 마우스 좌표(mousemove)를 읽고 그
+    오차만큼 보정하는 방식으로 맞춘다(DPI 배율·창 위치와 무관하게 동작). 클릭 직전에 그 지점이 정말
+    이 입력칸인지(다른 요소가 덮고 있지 않은지)도 확인하고, 클릭 후 실제 포커스를 검증한다.
+    @return bool 진짜 클릭으로 포커스가 확인되면 True (False면 호출부가 기존 방식으로 대체한다)"""
+    try:
+        _bring_chrome_window_to_foreground(driver)
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", el)
+        driver.execute_script("""
+            if (!window.__obangMouseWatch) {
+              window.__obangMouseWatch = true;
+              window.__obangLastMouse = null;
+              window.addEventListener('mousemove', function (e) {
+                window.__obangLastMouse = [e.clientX, e.clientY];
+              }, true);
+            }
+            window.__obangLastMouse = null;
+        """)
+        geometry = driver.execute_script("""
+            var r = arguments[0].getBoundingClientRect();
+            return {cx: r.left + r.width / 2, cy: r.top + r.height / 2,
+                    dpr: window.devicePixelRatio || 1,
+                    ox: window.screenX + (window.outerWidth - window.innerWidth) / 2,
+                    oy: window.screenY + (window.outerHeight - window.innerHeight)
+                        - (window.outerWidth - window.innerWidth) / 2};
+        """, el)
+        cx, cy, dpr = geometry['cx'], geometry['cy'], geometry['dpr']
+        screen_x = (geometry['ox'] + cx) * dpr
+        screen_y = (geometry['oy'] + cy) * dpr
+
+        screen_w, screen_h = pyautogui.size()
+        for _ in range(5):
+            if not (0 <= screen_x < screen_w and 0 <= screen_y < screen_h):
+                print('[진행] 캡차칸 진짜 클릭 불가 — 계산된 위치가 화면 밖(기존 방식으로 대체)', flush=True)
+                return False
+            # 같은 자리로의 이동은 mousemove가 안 생기므로 살짝 비켜 갔다가 들어온다.
+            pyautogui.moveTo(int(screen_x) + 3, int(screen_y) + 3)
+            pyautogui.moveTo(int(screen_x), int(screen_y), duration=0.1)
+            time.sleep(0.15)
+            seen = driver.execute_script('return window.__obangLastMouse;')
+            if not seen:
+                print('[진행] 캡차칸 진짜 클릭 불가 — 페이지가 마우스 이동을 받지 못함(기존 방식으로 대체)', flush=True)
+                return False
+            dx, dy = cx - seen[0], cy - seen[1]
+            if abs(dx) <= 2 and abs(dy) <= 2:
+                break
+            screen_x += dx * dpr
+            screen_y += dy * dpr
+            driver.execute_script('window.__obangLastMouse = null;')
+        else:
+            print('[진행] 캡차칸 진짜 클릭 불가 — 마우스 위치 보정이 수렴하지 않음(기존 방식으로 대체)', flush=True)
+            return False
+
+        on_target = driver.execute_script(
+            'var t = document.elementFromPoint(arguments[1], arguments[2]); return t === arguments[0] || arguments[0].contains(t);',
+            el, cx, cy)
+        if not on_target:
+            print('[진행] 캡차칸 진짜 클릭 불가 — 그 위치를 다른 요소가 덮고 있음(기존 방식으로 대체)', flush=True)
+            return False
+
+        pyautogui.click(int(screen_x), int(screen_y))
+        time.sleep(0.2)
+        focused = driver.execute_script(
+            'return document.activeElement === arguments[0] && document.hasFocus();', el)
+        print(f'[진행] 캡차칸을 진짜 마우스 클릭으로 포커스함 — 포커스 확인={bool(focused)}', flush=True)
+        return bool(focused)
+    except Exception as e:
+        print(f'[진행] 캡차칸 진짜 클릭 중 오류(기존 방식으로 대체): {e}', flush=True)
+        return False
 
 
 def _wait_for_human_to_clear_captcha(driver, credentials=None, timeout_seconds=300):
