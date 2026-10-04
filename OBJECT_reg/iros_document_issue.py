@@ -366,6 +366,45 @@ def _dismiss_cart_payment_reminder_popup_if_present(driver):
     return True
 
 
+def _dismiss_road_search_no_result_popup_if_present(driver):
+    """도로명주소검색이 0건이면 등기소가 "도로명 등기부 검색결과가 존재하지 않습니다 … 아직 도로명으로
+    전환되지 않은 등기기록일 수 있습니다 … 소재지번으로 재검색 하시기 바랍니다" 안내창을 띄운다
+    (2026-10-04 화면 캡처로 확인, 매물 716318). 네이티브 alert가 아니라 사이트 내부 팝업이라 위
+    _dismiss_alert_if_present()로는 안 닫히고, 열려 있으면 다음 탭 클릭을 가로막는다 — [확인]을 눌러 닫는다.
+    @return bool 안내창이 있어서 닫았으면 True"""
+    marker = '도로명 등기부 검색결과가 존재하지 않습니다'
+    if not any(el.is_displayed() for el in driver.find_elements(By.XPATH, f'//*[contains(., "{marker}")]')):
+        return False
+    confirm_btn = None
+    for _ in range(10):
+        confirm_btn = _find_first_visible(driver, [
+            'a[id*="message_popup"][id*="btn_confirm"]',
+            'button[id*="message_popup"][id*="btn_confirm"]',
+            'input[id*="message_popup"][id*="btn_confirm"]',
+        ])
+        if not confirm_btn:
+            for el in driver.find_elements(By.CSS_SELECTOR, 'a, button, input'):
+                if el.is_displayed() and (el.text or el.get_attribute('value') or '').strip() == '확인':
+                    confirm_btn = el
+                    break
+        if confirm_btn:
+            break
+        time.sleep(0.2)
+    if not confirm_btn:
+        print('[진행] "도로명 등기부 검색결과 없음" 안내창의 확인 버튼을 찾지 못해 그대로 진행', flush=True)
+        return False
+    try:
+        confirm_btn.click()
+    except Exception:
+        try:
+            driver.execute_script('arguments[0].click();', confirm_btn)
+        except Exception:
+            print('[진행] "도로명 등기부 검색결과 없음" 안내창 확인 클릭에 실패해 그대로 진행', flush=True)
+            return False
+    time.sleep(0.5)
+    return True
+
+
 def _reset_bulk_payment_cart(driver, _fail):
     """[2026-09-28 신규 — 사용자 요청 "등기부일괄발급"] 일괄발급을 시작하기 전, 결제대상(장바구니)에
     남아있을 수 있는 이전 항목을 모두 비운다.
@@ -1253,6 +1292,47 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
         print('[진행] 검색결과 0건 — 3초 더 기다린 뒤 재확인', flush=True)
         time.sleep(3)
         rows = _visible_result_rows(driver)
+
+    # [2026-10-04 추가 — 사용자 리포트 + 로컬 재현, 매물 716318] 도로명주소검색이 0건인데 사실은 등기가
+    # 있는 경우가 있다. 이 건물은 등기부상 소재지번이 택지개발지구 임시 지번("청학동 세교2택지개발지구
+    # 알에이4-64")이라 정식 지번(290-5)으로는 소재지번검색이 안 되고, 도로명이 등기에 병기되지 않아
+    # 도로명주소검색도 0건이었다 — 등기소도 이 경우를 "도로명으로 전환되지 않은 등기기록일 수 있다"고
+    # 안내한다. 그런데 같은 도로명 주소 한 줄을 **간편검색**에 넣으면 정확히 이 등기 1건이 잡혔다
+    # (간편검색은 주소 한 줄을 국가주소정보와 연결해 해석해서 등기부상 표기와 무관하게 찾는다 —
+    # 그렇게 동작하는 것으로 확인됨, 내부 원리는 추정). 그래서 도로명주소검색이 0건이면 ①간편검색(도로명
+    # 주소 한 줄) → ②소재지번검색 순으로 자동 재시도한다. 간편검색을 토지·일반건물에 못 쓰게 했던
+    # 2026-09-14 결정은 "지번"으로 검색할 때 이웃 필지까지 섞여 나오는 문제였고, 여기는 건물번호가 붙은
+    # 도로명 주소라 그 문제가 없다(그래도 여러 건이면 아래 좁히기가 도로명+번호로 한 번 더 걸러낸다).
+    road_loc_used = payload.get('road_search') or {}
+    road_search_was_used = (property_category in ('건물', '집합건물')
+                            and road_loc_used.get('road_name') and road_loc_used.get('road_building_no'))
+    if not rows and road_search_was_used:
+        _dismiss_road_search_no_result_popup_if_present(driver)
+        road_address_text = ' '.join(p for p in [road_loc_used.get('sido'), road_loc_used.get('sigungu'),
+                                                 road_loc_used.get('road_name'), road_loc_used.get('road_building_no')] if p)
+        if property_category == '집합건물':
+            if road_loc_used.get('building_dong_no'):
+                road_address_text += f" {road_loc_used['building_dong_no']}동"
+            if road_loc_used.get('room_no'):
+                road_address_text += f" {road_loc_used['room_no']}호"
+        fallbacks = [
+            ('간편검색(도로명 주소 한 줄)', lambda: _search_via_simple_search(
+                driver, wait, dict(payload, search_address=road_address_text), property_category, loc, _fail)),
+            ('소재지번검색', lambda: _search_via_location_search(driver, wait, payload, property_category, loc, _fail)),
+        ]
+        for label, run_fallback in fallbacks:
+            print(f'[진행] 도로명주소검색 0건 — {label}으로 재시도 (등기소 안내: 도로명으로 전환되지 않은 등기기록일 수 있음)', flush=True)
+            fail = run_fallback()
+            if fail is not None:
+                return fail
+            rows = _visible_result_rows(driver)
+            if not rows:
+                time.sleep(3)
+                rows = _visible_result_rows(driver)
+            if rows:
+                print(f'[진행] {label}으로 {len(rows)}건 찾음', flush=True)
+                break
+            print(f'[진행] {label}도 0건', flush=True)
     print(f'[진행] 검색결과 {len(rows)}건 확인', flush=True)
     matched = [tr for tr in rows if _row_category_text(tr) == property_category]
 
@@ -1287,6 +1367,23 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
                 narrowed.append(tr)
         if 0 < len(narrowed) < len(matched):
             print(f'[진행] 검색결과 {len(matched)}건 — 지번("{loc["jibun"]}")으로 {len(narrowed)}건으로 좁힘', flush=True)
+            matched = narrowed
+
+    # [2026-10-04 추가] 위 도로명주소검색 0건 → 간편검색 재시도로 얻은 결과는 등기부상 지번이 우리 지번과
+    # 다를 수 있어(위 지번 좁히기가 못 거름) 도로명+건물번호로 한 번 더 좁힌다. "14-8"이 "14-80"/"14-8-1"의
+    # 앞부분으로 잘못 걸리지 않도록 뒤에 숫자가 더 이어지지 않는지 확인한다(위 지번 좁히기와 같은 경계 확인).
+    road_name_no_for_narrow = _squash(road_loc_used.get('road_name', '')) + _squash(road_loc_used.get('road_building_no', ''))
+    if len(matched) > 1 and road_name_no_for_narrow:
+        roadPattern = re.compile(re.escape(road_name_no_for_narrow) + r'(?!-?\d)')
+        narrowed = []
+        for tr in matched:
+            addr_td = _find_row_addr_cell(tr)
+            if addr_td is None:
+                continue
+            if roadPattern.search(_squash(addr_td.text)):
+                narrowed.append(tr)
+        if 0 < len(narrowed) < len(matched):
+            print(f'[진행] 검색결과 {len(matched)}건 — 도로명+건물번호("{road_name_no_for_narrow}")로 {len(narrowed)}건으로 좁힘', flush=True)
             matched = narrowed
 
     # [2026-09-17 추가 — 사용자 발견, 실사용 재현·웹 조사로 확인] 한 지번 위에 일반건물이 2동 이상이면
@@ -1710,22 +1807,50 @@ def _focus_with_real_mouse_click(driver, el):
             }
             window.__obangLastMouse = null;
         """)
-        geometry = driver.execute_script("""
-            var r = arguments[0].getBoundingClientRect();
-            return {cx: r.left + r.width / 2, cy: r.top + r.height / 2,
-                    dpr: window.devicePixelRatio || 1,
-                    ox: window.screenX + (window.outerWidth - window.innerWidth) / 2,
-                    oy: window.screenY + (window.outerHeight - window.innerHeight)
-                        - (window.outerWidth - window.innerWidth) / 2};
-        """, el)
-        cx, cy, dpr = geometry['cx'], geometry['cy'], geometry['dpr']
-        screen_x = (geometry['ox'] + cx) * dpr
-        screen_y = (geometry['oy'] + cy) * dpr
+        # [2026-10-04 보강 — 실사용에서 "계산된 위치가 화면 밖"으로 한 번 대체 처리된 사례] 로컬에서는 창
+        # 최소화·스크롤 위치 등으로 재현되지 않아 원인을 확정하지 못했다. 그래서 (1) 창 복원·레이아웃
+        # 변화 같은 일시적 요인에 대비해 잠깐 기다렸다가 한 번 더 계산하고, (2) 그래도 실패하면 어떤 숫자
+        # 때문이었는지 로그에 남기며, (3) 화면 경계는 주 모니터만이 아니라 보조 모니터까지 포함한 가상
+        # 화면 기준으로 판단한다(pyautogui.size()는 주 모니터만 알려줘 보조 모니터의 창을 잘못 거부할 수 있다).
+        import win32api
+        import win32con
+        virtual_left = win32api.GetSystemMetrics(win32con.SM_XVIRTUALSCREEN)
+        virtual_top = win32api.GetSystemMetrics(win32con.SM_YVIRTUALSCREEN)
+        virtual_right = virtual_left + win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN)
+        virtual_bottom = virtual_top + win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN)
 
-        screen_w, screen_h = pyautogui.size()
+        def _read_geometry():
+            g = driver.execute_script("""
+                var r = arguments[0].getBoundingClientRect();
+                return {cx: r.left + r.width / 2, cy: r.top + r.height / 2,
+                        dpr: window.devicePixelRatio || 1,
+                        sx: window.screenX, sy: window.screenY,
+                        ow: window.outerWidth, oh: window.outerHeight,
+                        iw: window.innerWidth, ih: window.innerHeight};
+            """, el)
+            g['ox'] = g['sx'] + (g['ow'] - g['iw']) / 2
+            g['oy'] = g['sy'] + (g['oh'] - g['ih']) - (g['ow'] - g['iw']) / 2
+            g['screen_x'] = (g['ox'] + g['cx']) * g['dpr']
+            g['screen_y'] = (g['oy'] + g['cy']) * g['dpr']
+            return g
+
+        def _on_screen(g):
+            return virtual_left <= g['screen_x'] < virtual_right and virtual_top <= g['screen_y'] < virtual_bottom
+
+        geometry = _read_geometry()
+        if not _on_screen(geometry):
+            time.sleep(0.6)
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'center'});", el)
+            geometry = _read_geometry()
+        if not _on_screen(geometry):
+            print(f'[진행] 캡차칸 진짜 클릭 불가 — 계산된 위치가 화면 밖(기존 방식으로 대체) — 진단: {geometry}, 가상화면=({virtual_left},{virtual_top})~({virtual_right},{virtual_bottom})', flush=True)
+            return False
+        cx, cy, dpr = geometry['cx'], geometry['cy'], geometry['dpr']
+        screen_x, screen_y = geometry['screen_x'], geometry['screen_y']
+
         for _ in range(5):
-            if not (0 <= screen_x < screen_w and 0 <= screen_y < screen_h):
-                print('[진행] 캡차칸 진짜 클릭 불가 — 계산된 위치가 화면 밖(기존 방식으로 대체)', flush=True)
+            if not (virtual_left <= screen_x < virtual_right and virtual_top <= screen_y < virtual_bottom):
+                print('[진행] 캡차칸 진짜 클릭 불가 — 위치 보정 중 화면 밖으로 벗어남(기존 방식으로 대체)', flush=True)
                 return False
             # 같은 자리로의 이동은 mousemove가 안 생기므로 살짝 비켜 갔다가 들어온다.
             pyautogui.moveTo(int(screen_x) + 3, int(screen_y) + 3)
