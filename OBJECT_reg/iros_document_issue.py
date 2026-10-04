@@ -1678,6 +1678,38 @@ def _is_captcha_required(driver):
     return answer_input.is_displayed()
 
 
+def _wait_until_page_has_focus(driver, timeout_seconds=3.0):
+    """크롬 창이 앞으로 와서 페이지가 실제로 키보드 포커스를 받을 때까지(document.hasFocus()) 기다린다.
+    창이 활성화되는 중에 보낸 키 입력은 앞쪽이 유실된다(_prefill_login_page_credentials() 주석 참고).
+    @return bool 포커스를 받았으면 True, 시간 안에 못 받았으면 False"""
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        try:
+            if driver.execute_script('return document.hasFocus();'):
+                return True
+        except Exception:
+            return False
+        time.sleep(0.1)
+    return False
+
+
+def _type_login_id_with_verification(driver, selector, value, attempts=3):
+    """로그인 아이디칸에 입력하고, 칸의 값이 실제로 입력값과 같은지 읽어서 확인한다. 다르면(앞쪽 글자 유실 등)
+    다시 입력한다. 요소는 시도마다 새로 찾는다(그 사이 화면이 다시 그려져도 낡은 참조로 실패하지 않게).
+    @return bool 값이 맞게 들어간 것을 확인했으면 True"""
+    for _ in range(attempts):
+        try:
+            el = driver.find_element(By.CSS_SELECTOR, selector)
+            _type_into_field(driver, el, value)
+            time.sleep(0.2)
+            if (driver.find_element(By.CSS_SELECTOR, selector).get_attribute('value') or '') == value:
+                return True
+        except WebDriverException:
+            time.sleep(0.5)
+            continue
+    return False
+
+
 def _prefill_login_page_credentials(driver, credentials):
     """검색이 로그인화면(독립 페이지, 결제 팝업과는 다른 화면)으로 튕겼을 때 아이디/비번칸을
     미리 채운다 — 담당자는 캡차만 입력하면 된다. [2026-09-18 신규 — 사용자 요청] 로그인 버튼은
@@ -1692,10 +1724,25 @@ def _prefill_login_page_credentials(driver, credentials):
     iros_pw = (credentials or {}).get('iros_pw') or ''
     if not iros_id or not iros_pw:
         return
+    # [2026-10-04 수정 — 사용자 리포트 "간헐적으로 아이디는 입력 안 되고 비번만 입력된다", 로컬 재현으로
+    # 원인 확정] 캡차 알림창을 닫는 순간 크롬이 막 앞으로 오는 중이라 페이지가 아직 포커스를 받지
+    # 못한 상태(document.hasFocus()=false)인데, 그 상태에서 곧바로 아이디를 치면 앞쪽 글자가 유실됐다
+    # (다른 프로그램을 앞에 둔 채 같은 순서로 8번 재현: "testid1234"가 "234"/"4"/"1234"로 남음 — 8/8).
+    # 아이디가 가장 먼저 입력되고 비밀번호는 그 뒤라 비번만 멀쩡해 보인 것이다. 활성화 속도가 알림창을
+    # 닫는 시점마다 달라 간헐적이었다. 그래서 ①페이지가 실제로 포커스를 받을 때까지 기다린 뒤 채우고,
+    # ②아이디는 일반 입력칸이라 값을 읽어 확인할 수 있으니 다르면 지우고 다시 입력한다. 비밀번호는 보안
+    # 입력칸이라 값을 읽어도 믿을 수 없어(읽을 때마다 일부만/빈 값으로 나옴) 확인하지 않고, 포커스를 확보한
+    # 뒤에 입력하는 것으로 유실을 막는다.
+    if not _wait_until_page_has_focus(driver):
+        print('[진행] 페이지가 3초 안에 포커스를 받지 못함 — 그대로 아이디/비번 입력 시도', flush=True)
+    id_selector = 'input[id$="sbx_user_id_g___input"]'
     try:
-        id_input = driver.find_element(By.CSS_SELECTOR, 'input[id$="sbx_user_id_g___input"]')
+        id_input = driver.find_element(By.CSS_SELECTOR, id_selector)
         if id_input.is_displayed() and not id_input.get_attribute('value'):
-            _type_into_field(driver, id_input, iros_id)
+            if _type_login_id_with_verification(driver, id_selector, iros_id):
+                print('[진행] 아이디 입력 확인됨', flush=True)
+            else:
+                print('[진행] 아이디 입력을 3번 시도했지만 값이 맞게 들어갔는지 확인하지 못함 — 직접 확인 필요', flush=True)
     except NoSuchElementException:
         pass
     try:
