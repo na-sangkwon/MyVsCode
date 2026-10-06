@@ -138,9 +138,13 @@ def 목록행_갱신일시_해석(날짜문구):
 class ObsAutomationWorker:
     """ 오부사(새홈, osan-bns.com) 매물 갱신 및 공개상태 정리를 전담하는 클래스 """
 
-    def __init__(self, driver, mode, progress_callback=None, unattended=False, 강제_새홈번호_목록=None):
+    def __init__(self, driver, mode, progress_callback=None, unattended=False, 강제_새홈번호_목록=None, 갱신_기준일수=1):
         self.driver = driver
         self.mode = mode
+        # 오방과 같은 기준(auto.py의 before_day)으로 "최근 N일 안에 의뢰확인일이 갱신된 매물"만 갱신한다.
+        # 2026-10-06 사용자 결정: 처음엔 활성 매물 전체를 매일 갱신했으나(하루 약 180건) 요청이 있었던
+        # 매물만 올리는 오방 방식(B안)으로 바꿨다 — 갱신_대상_여부() 참고.
+        self.갱신_기준일수 = 갱신_기준일수
         self.progress_callback = progress_callback
         self.unattended = unattended
         # 새홈번호 테스트 모드(auto.py의 test_code)용 — 주어지면 그 번호들만 처리한다.
@@ -199,9 +203,14 @@ class ObsAutomationWorker:
         conn = self._DB연결()
         try:
             cur = conn.cursor(pymysql.cursors.DictCursor)
-            cur.execute("SELECT object_code_new, object_status, object_del, obs_open_yn, object_address, "
-                        "object_ttype, object_tmoney1, object_tmoney2, object_udate "
-                        "FROM pr_object WHERE CHAR_LENGTH(object_code_new)=5")
+            # request_*/관심여부는 갱신_대상_여부()가 오방과 같은 기준(최근 의뢰확인 또는 관심 매물)으로
+            # 갱신 대상을 고르기 위한 값이다. LEFT JOIN이라 의뢰가 없는 매물도 행은 그대로 나온다.
+            cur.execute("SELECT o.object_code_new, o.object_status, o.object_del, o.obs_open_yn, o.object_address, "
+                        "o.object_ttype, o.object_tmoney1, o.object_tmoney2, o.object_udate, "
+                        "p.request_status, p.request_date, p.request_del, "
+                        "EXISTS(SELECT 1 FROM pr_request_fix f WHERE f.request_code=o.request_code AND f.fix_del='N') AS 관심여부 "
+                        "FROM pr_object o LEFT JOIN pr_request p ON p.request_code=o.request_code "
+                        "WHERE CHAR_LENGTH(o.object_code_new)=5")
             return {str(r['object_code_new']): r for r in cur.fetchall()}
         finally:
             conn.close()
@@ -209,6 +218,29 @@ class ObsAutomationWorker:
     @staticmethod
     def 활성매물_여부(db행):
         return db행['object_status'] == '중개요청' and db행['object_del'] == 'N'
+
+    def 갱신_대상_여부(self, db행, 오늘):
+        """
+        오방(auto.py::obang_data)의 갱신 대상 기준을 그대로 따른다: 의뢰가 접수/진행 상태이면서
+        (의뢰확인일이 최근 N일 안이거나 관심 매물). 오방은 여기에 보증금/월세 입력 여부도 보지만, 오부사는
+        전세·매매도 다루므로 그 조건은 따르지 않는다. request_date를 의뢰확인일로 본 것은 구버전 오방
+        쿼리(autp_260530.py)의 주석("의뢰확인일 기준 request_date")을 따른 것이다.
+        테스트 모드(강제_새홈번호_목록)는 지정한 번호를 무조건 대상으로 삼는다.
+        """
+        if self.강제_새홈번호_목록 is not None:
+            return True
+        if db행.get('request_status') not in ('접수', '진행') or db행.get('request_del') == 'Y':
+            return False
+        if db행.get('관심여부'):
+            return True
+        기준일 = db행.get('request_date')
+        if isinstance(기준일, str):
+            # 날짜 칸이 비어있거나 '0000-00-00' 같은 값이 문자열로 오는 행이 있다(실측) — 못 읽으면 대상이 아니다.
+            try:
+                기준일 = datetime.datetime.strptime(기준일[:10], '%Y-%m-%d').date()
+            except ValueError:
+                return False
+        return bool(기준일 and 오늘 - datetime.timedelta(days=self.갱신_기준일수) <= 기준일 <= 오늘)
 
     @staticmethod
     def 종결매물_여부(db행):
@@ -388,6 +420,11 @@ class ObsAutomationWorker:
                         continue
                 elif 가격판정 == '대상아님' and '거래유형 불일치' in 가격사유:
                     print(f"   [⚠️ 가격 동기화 건너뜀 - 오부사 {코드}] {가격사유}")
+                # 가격 맞추기는 요청 여부와 무관하게 모든 활성 매물에 하되(가격이 틀린 채 노출되면 안 됨),
+                # 목록 상단 재노출(갱신)은 요청이 있었던 매물에만 한다.
+                if not self.갱신_대상_여부(db행, 오늘):
+                    self.skip_count += 1
+                    continue
                 라벨, 일시 = 목록행_갱신일시_해석(행['date'])
                 if 라벨 == '갱신' and 일시 and 일시.date() == 오늘:
                     self.skip_count += 1

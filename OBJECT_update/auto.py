@@ -916,6 +916,7 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
                     driver, target_mode,
                     progress_callback=lambda c, t, txt, mode='determinate': progress_callback('obs', c, t, txt, mode),
                     unattended=unattended,
+                    갱신_기준일수=user_settings['before_day'],
                 )
                 o_ok, o_end, o_skip, o_err, o_nf, o_price = obs_worker.run()
                 counts['complete'] += o_ok; counts['end'] += o_end; counts['skip'] += o_skip; counts['error'] += o_err
