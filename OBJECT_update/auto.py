@@ -918,13 +918,14 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
                     unattended=unattended,
                     갱신_기준일수=user_settings['before_day'],
                 )
-                o_ok, o_end, o_skip, o_err, o_nf, o_price = obs_worker.run()
+                o_ok, o_end, o_skip, o_err, o_nf, o_price, o_autofix = obs_worker.run()
                 counts['complete'] += o_ok; counts['end'] += o_end; counts['skip'] += o_skip; counts['error'] += o_err
                 # 총건수 = 처리 대상이었던 매물 수. 갱신/비공개 성공 + 건너뜀 + 실패 + 미등록의 합과 같다
                 # (오방/당근과 같은 검산 원칙 — 오방과 달리 '재등록' 같은 부가 지표가 없다).
                 오부사_총건수 = o_ok + o_end + o_skip + o_err + o_nf
-                # 가격수정(o_price)은 오방의 재등록처럼 이미 위 항목으로 집계된 매물의 부가 지표라 총건수에 안 더한다.
-                counts['오부사_요약'] = f"(총{오부사_총건수}건) 성공:{o_ok} 가격수정:{o_price} 비공개:{o_end} 건너뜀:{o_skip} 실패:{o_err} 미등록:{o_nf}"
+                # 가격수정(o_price)·자동보정(o_autofix: 필수항목 자동 입력 또는 거래유형 맞춤)은 오방의 재등록처럼
+                # 이미 위 항목으로 집계된 매물의 부가 지표라 총건수에 안 더한다.
+                counts['오부사_요약'] = f"(총{오부사_총건수}건) 성공:{o_ok} 가격수정:{o_price} 자동보정:{o_autofix} 비공개:{o_end} 건너뜀:{o_skip} 실패:{o_err} 미등록:{o_nf}"
                 progress_callback('obs', 100, 100, f"✅ 오부사 업데이트 완료 V \n{counts['오부사_요약']}", 'determinate')
             except Exception:
                 counts['error'] += 1
