@@ -85,6 +85,7 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import (
     NoSuchElementException, UnexpectedAlertPresentException, WebDriverException,
     NoSuchWindowException, InvalidSessionIdException, StaleElementReferenceException,
+    TimeoutException,
 )
 
 # [2026-09-12 추가 — 사용자 요청 "셀레니움 경로도 크롬확장처럼 사용자가 창을 닫은 경우를 구분해달라"]
@@ -1415,7 +1416,17 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
                 matched = narrowed
 
     if len(matched) == 0:
-        return _fail('검색결과에서 일치하는 부동산을 찾지 못했습니다.')
+        # [2026-10-07 진단 추가 — 오류로그 #2103/#2110] 이 지점은 "검색결과는 있는데 부동산구분이 찾는 구분과 다른
+        # 줄뿐"일 때 도달한다(위 matched 계산). 구분이 어긋난 이유(예: 집합건물로 찾았는데 등기소엔 일반건물로
+        # 등재)를 로그만으로 알 수 있도록 찾는 구분·결과의 구분·결과 주소 일부를 메시지에 남긴다. 구분이 어긋난
+        # 줄을 자동으로 고르게 하지는 않는다 — 다른 물건을 결제하는 사고가 되기 때문.
+        found_categories = sorted({_row_category_text(tr) or '(빈값)' for tr in rows})
+        sample_addresses = []
+        for tr in rows[:3]:
+            addr_td = _find_row_addr_cell(tr)
+            sample_addresses.append((addr_td.text.strip() if addr_td is not None else '(주소칸 못찾음)')[:80])
+        return _fail(f'검색결과에서 일치하는 부동산을 찾지 못했습니다. (찾는 구분={property_category}, '
+                     f'결과 {len(rows)}건의 구분={found_categories}, 결과 주소 예={sample_addresses})')
 
     owner_masked = ''
     selected_unique_no = ''  # 검색결과에서 특정한 1건의 부동산 고유번호 — 아래 결제대상 표 대조에 쓴다
@@ -1555,7 +1566,15 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
     print('[진행] 결제대상 확인 화면 도달', flush=True)
     time.sleep(0.5)
 
-    pay_tbody = driver.find_element(By.ID, f'{BASE}_grd_bpay_obj_list_body_tbody')
+    # [2026-10-07 수정 — 오류로그 #2111/#2112] 화면 제목이 먼저 바뀐 뒤 표가 그려지는 데 시간이 걸리는 PC에서
+    # 0.5초 대기 후 곧바로 찾으면 NoSuchElementException이 그대로 터져 "자동화 중 오류"로 보고됐다(같은 파일의
+    # 결제대상목록 조회 두 곳은 이미 이 예외를 잡아 정상 실패로 처리한다). 최대 10초까지 표가 나타나길 기다리고,
+    # 그래도 없으면 같은 방식으로 정상 실패 처리한다. 왜 이 두 번에서만 늦었는지(PC 속도/등기소 지연)는 확인 못 함.
+    try:
+        pay_tbody = WebDriverWait(driver, 10).until(
+            lambda d: d.find_element(By.ID, f'{BASE}_grd_bpay_obj_list_body_tbody'))
+    except TimeoutException:
+        return _fail('결제대상 확인 화면의 결제대상 표를 10초 안에 찾지 못했습니다.', owner_masked)
     pay_rows = [tr for tr in pay_tbody.find_elements(By.TAG_NAME, 'tr')
                 if 'display: none' not in (tr.get_attribute('style') or '')]
 
