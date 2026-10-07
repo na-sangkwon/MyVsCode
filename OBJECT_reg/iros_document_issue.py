@@ -1168,8 +1168,7 @@ def _wait_for_human_to_pick_property(driver, candidate_count, timeout_seconds=30
     (선택 과정 자체를 다시 자동화하지 않는다)."""
     print(f'[진행] 검색결과 {candidate_count}건 — 담당자 직접 선택 대기', flush=True)
     try:
-        import pyautogui
-        pyautogui.alert(
+        _show_always_on_top_notice(   # [2026-10-07 변경] 캡차 알림창과 같은 이유로 항상 맨 앞에 뜨는 알림창을 쓴다
             f'검색결과가 {candidate_count}건이라 자동으로 고르지 못했습니다.\n\n'
             '이 창을 닫고, 열려있는 등기소 창에서 정확한 부동산을 직접 선택(체크)한 뒤 [다음]을 눌러주세요.\n'
             '다음 화면으로 넘어가면 자동으로 이어서 진행됩니다.',
@@ -1799,6 +1798,86 @@ def _find_chrome_main_window(driver):
     return max(candidates)[1] if candidates else None
 
 
+def _show_always_on_top_notice(text, title):
+    """[2026-10-07 신규 — 사용자 요청 "캡차 입력 필요 확인창이 숨겨져서 표시되지 않게 항상 위로 보이게"] 사람이 직접 처리해야 하는
+    상황(캡차·부동산 선택·결제 버튼)을 알리는 알림창을 어떤 창에도 가려지지 않게 맨 앞에 띄운다. 확인을 누를 때까지 돌아오지 않는다.
+
+    [왜 pyautogui.alert()로는 부족한가] pyautogui.alert()는 윈도우 기본 메시지 상자에 맨 위 표시(MB_TOPMOST)·앞으로 가져오기
+    (MB_SETFOREGROUND) 옵션을 이미 주는데도 실사용 PC에서는 크롬 같은 다른 창 뒤에 깔리거나 숨어 보이지 않았다.
+    이 자동화는 도우미가 "화면에 안 보이게"(SW_HIDE) 띄운 자식 프로세스에서 돌고, 윈도우는 백그라운드 프로세스가 창을 앞으로
+    가져오는 것(포그라운드 잠금)을 막기 때문으로 보이지만 정확한 원인은 확정하지 못했다(추정). 옵션을 믿지 않고 창이 뜬 뒤에 직접
+    ① 숨겨져 있으면 보이게 하고 ② 모든 창 위에 고정하고 ③ 포그라운드로 가져오고 ④ 작업표시줄을 깜빡이게 한다.
+
+    메시지 상자는 확인을 누를 때까지 이 스레드를 붙잡아 두므로, 창을 붙드는 일은 별도 스레드가 한다. 포그라운드로 가져오는 것은
+    처음 한 번만 한다 — 반복하면 담당자가 캡차를 입력하려고 크롬을 누르는 순간마다 포커스를 도로 빼앗는다. 맨 위 고정만 포커스를
+    가져가지 않는 방식으로 주기적으로 다시 건다(다른 창이 맨 위를 가로챘을 때를 대비).
+    윈도우 API를 못 쓰는 환경이면 예전 방식(pyautogui.alert)으로 그대로 띄운다 — 이 함수는 편의 기능이지 안전장치가 아니다."""
+    import ctypes
+    import threading
+
+    try:
+        import win32api
+        import win32con
+        import win32gui
+        import win32process
+    except Exception:
+        import pyautogui
+        pyautogui.alert(text, title)
+        return
+
+    stop_pinning = threading.Event()
+
+    def _pin_notice_window():
+        pinned_once = False
+        deadline = time.time() + 600   # 알림창이 안 닫혀도 감시가 영원히 도는 일이 없게 한다(캡차 대기 한도와 비슷하게)
+        while not stop_pinning.is_set() and time.time() < deadline:
+            try:
+                hwnd = win32gui.FindWindow('#32770', title)   # 윈도우 메시지 상자의 창 종류 이름
+                if hwnd:
+                    if not pinned_once:
+                        # 숨겨졌거나 최소화돼 있으면 먼저 보이게 한다
+                        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE if win32gui.IsIconic(hwnd) else win32con.SW_SHOW)
+                    is_topmost = bool(win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE) & win32con.WS_EX_TOPMOST)
+                    if not pinned_once or not is_topmost or not win32gui.IsWindowVisible(hwnd):
+                        win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0,
+                                              win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE | win32con.SWP_SHOWWINDOW)
+                    if not pinned_once:
+                        foreground_window = win32gui.GetForegroundWindow()
+                        foreground_thread = win32process.GetWindowThreadProcessId(foreground_window)[0] if foreground_window else 0
+                        current_thread = win32api.GetCurrentThreadId()
+                        attached = False
+                        try:
+                            if foreground_thread and foreground_thread != current_thread:
+                                win32process.AttachThreadInput(current_thread, foreground_thread, True)
+                                attached = True
+                            try:
+                                win32gui.SetForegroundWindow(hwnd)
+                            except Exception:
+                                pass   # 윈도우가 거부해도 아래에서 실제 결과를 확인해 로그에 남긴다
+                        finally:
+                            if attached:
+                                win32process.AttachThreadInput(current_thread, foreground_thread, False)
+                        try:
+                            win32gui.FlashWindowEx(hwnd, win32con.FLASHW_ALL | win32con.FLASHW_TIMERNOFG, 5, 0)
+                        except Exception:
+                            pass
+                        pinned_once = True
+                        print(f'[진행] 알림창을 맨 앞에 고정함({title}) — 보임={bool(win32gui.IsWindowVisible(hwnd))}, '
+                              f'맨위={bool(win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE) & win32con.WS_EX_TOPMOST)}, '
+                              f'포그라운드={win32gui.GetForegroundWindow() == hwnd}', flush=True)
+            except Exception as e:
+                print(f'[진행] 알림창 고정 중 오류(무시하고 계속): {e}', flush=True)
+            stop_pinning.wait(0.3)
+
+    pin_thread = threading.Thread(target=_pin_notice_window, daemon=True)
+    pin_thread.start()
+    try:
+        MB_OK, MB_ICONWARNING, MB_SETFOREGROUND, MB_TOPMOST = 0x0, 0x30, 0x10000, 0x40000
+        ctypes.windll.user32.MessageBoxW(0, text, title, MB_OK | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST)
+    finally:
+        stop_pinning.set()
+
+
 def _bring_chrome_window_to_foreground(driver):
     """[2026-09-29 추가 — 사용자 리포트 "캡차 확인을 눌러도 바로 타이핑이 안 되고, 화면을 직접
     클릭해야만 입력된다"] pyautogui.alert()는 셀레니움 크롬 창과 무관한 OS 레벨 별도 창이라, 사람이
@@ -1976,9 +2055,9 @@ def _wait_for_human_to_clear_captcha(driver, credentials=None, timeout_seconds=3
     사람이 알림창을 닫자마자 캡차칸에 커서가 있는 상태를 보게 된다 — credentials를 이 함수가 직접
     받아서 순서를 강제한다(호출부가 순서를 매번 맞게 지키도록 기대하는 대신)."""
     print('[진행] 로그인화면에 캡차(자동입력 방지문자) 발견 — 담당자 입력 대기', flush=True)
+    # [2026-10-07 변경] pyautogui.alert → _show_always_on_top_notice() — 기본 알림창은 다른 창에 가려져 보이지 않는 일이 있었다.
     try:
-        import pyautogui
-        pyautogui.alert(
+        _show_always_on_top_notice(
             '인터넷등기소 로그인에 자동입력 방지문자(캡차)가 나타났습니다.\n\n'
             '확인을 누르면 아이디/비밀번호가 자동 입력되고 캡차칸에 커서가 놓입니다 — 캡차만 입력하고 로그인해주세요.\n'
             '로그인이 완료되면 자동으로 이어서 진행됩니다.',
@@ -2480,8 +2559,7 @@ def issue_real_estate_register(payload, credentials, options=None):
             # 직접 눌러야 한다는 것과 최대 대기시간을 명시적으로 알려준다.
             print(f'[진행] 사람이 직접 [결제] 누르길 최대 {HUMAN_CONFIRM_TIMEOUT_SEC}초 대기 중...', flush=True)
             try:
-                import pyautogui
-                pyautogui.alert(
+                _show_always_on_top_notice(   # [2026-10-07 변경] 캡차 알림창과 같은 이유로 항상 맨 앞에 뜨는 알림창을 쓴다
                     '인터넷등기소 화면에서 [결제] 버튼을 직접 눌러주세요.\n\n'
                     f'확인 후 최대 {HUMAN_CONFIRM_TIMEOUT_SEC}초({HUMAN_CONFIRM_TIMEOUT_SEC // 60}분) 동안 기다립니다.',
                     '[인터넷등기소] 결제 버튼 확인 필요',
