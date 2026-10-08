@@ -862,10 +862,19 @@ class CarrotAutomationWorker:
             time.sleep(0.6)
             
             print(f"   [🔎 디버그 - {당근매물번호}] 하부 레이어 팝업 메뉴 노출 감지. 종료/숨기기 탭 저격 중...")
+            # [버그 수정 - 2026-10-08] 메뉴 글자(span)를 직접 클릭하면 ElementClickInterceptedException이 난다 —
+            # 실제 화면에서 확인: 이 글자 위치의 최상단 요소는 span이 아니라 바깥 div[role=menuitem]이라
+            # 클릭을 그 div가 받는다(거래완료 상태의 4414573 비공개가 이 사유로 실패). 클릭 대상을 글자를
+            # 감싼 menuitem div로 잡는다. 문구는 부분 일치가 아니라 정확 일치로 본다 — 부분 일치는 이미 숨김
+            # 매물의 '숨기기 해제'와도 맞아 엉뚱한 항목을 누를 수 있다(위 이미 숨김 건너뜀 처리와 별개의 안전장치).
             비공개_메뉴_선택 = WebDriverWait(self.브라우저, 3).until(
-                EC.element_to_be_clickable((By.XPATH, "//div[@role='menuitem' or @class='seed-context-menu']//*[contains(text(),'종료') or contains(text(),'숨기기')]"))
+                EC.element_to_be_clickable((By.XPATH, "//div[@role='menuitem'][normalize-space(.)='숨기기' or normalize-space(.)='종료']"))
             )
-            비공개_메뉴_선택.click()
+            try:
+                비공개_메뉴_선택.click()
+            except Exception:
+                # 클릭이 가로채이면(안내 팝업 등) 자바스크립트 클릭으로 한 번 더 시도한다(위 점세개 버튼과 같은 폴백).
+                self.브라우저.execute_script("arguments[0].click();", 비공개_메뉴_선택)
             time.sleep(1.2)
             
             print(f"   [✅ 성공 - {당근매물번호}] 거래완료 비공개 전환 마감")

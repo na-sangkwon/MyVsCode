@@ -535,26 +535,41 @@ class ObangAutomationWorker:
 
                 if 현재_비공개여부 and not 제목 in ['상가/사무실','원룸','투룸','테스트','투룸/쓰리룸+']:
                     print(f"기본제목을 사용하지 않는 비공개매물 오방코드:{update_code}")
+                    재오픈_성공 = False
                     try:
-                        # 1. viewbadge span 클릭해서 input 보이게 하기
-                        view_span = 행.find_element(By.CSS_SELECTOR, "td:nth-of-type(18) .viewbadge"); view_span.click()
-                        # 2. input 태그가 보이게 된 후 다시 찾기
-                        조회수입력란 = WebDriverWait(self.driver, 5).until(EC.element_to_be_clickable((By.CSS_SELECTOR, f"#tr_{update_code} td:nth-of-type(18) span:nth-of-type(2) input[type='text']")))
-                        조회수입력란.send_keys(Keys.CONTROL + "a")
-                        조회수입력란.send_keys("0")
-                        print("조회수입력란 초기화")
+                        # [버그 수정 - 2026-10-08] 조회수 배지(.viewbadge)를 클릭해 입력칸을 여는 방식은 쓸 수 없다 —
+                        # '조회' 열(td 18번째)이 class="hidden-xs responsive_cell"이라 창 폭에 따라 display:none이고
+                        # (headless 1400px에서도 숨겨짐을 실제로 확인), 그러면 배지 크기가 0이라 클릭하면
+                        # "element not interactable"이 난다(오방코드 25247, 21533이 이틀 연속 이 사유로 공개전환 실패).
+                        # 사이트가 입력칸에서 포커스가 빠질 때 보내는 요청(/adminproduct/view_cnt_change)을 UI 없이
+                        # 그대로 보낸다 — 열이 보이든 숨겨졌든 같은 결과다. 응답 "1"이 성공이다(사이트 스크립트 기준).
+                        조회수응답 = self.driver.execute_async_script(
+                            "var cb=arguments[arguments.length-1];"
+                            "$.ajax({url:'/adminproduct/view_cnt_change',type:'POST',data:{product_id:arguments[0],view_cnt:0},"
+                            "success:function(d){cb(String(d));},error:function(){cb('ERR');}});", update_code)
+                        if 조회수응답.strip() != "1":
+                            raise RuntimeError(f"조회수 초기화 요청이 실패했습니다(응답: {조회수응답.strip()[:40]})")
+                        print("조회수 초기화")
 
                         토글.click() #공개로 전환
                         print("공개전환 완료")
                         self.restart_ok += 1
+                        재오픈_성공 = True
                     except Exception as e:
                         print("조회수 초기화 및 공개전환 실패")
-                        self._경고_또는_로그(f"[오방코드:{update_code}] 토글버튼을 찾을 수 없습니다: {e}")
+                        self._경고_또는_로그(f"[오방코드:{update_code}] 조회수 초기화/공개전환 실패: {e}")
 
                     # 클릭 시도가 실제로 먹혔는지는 예외 발생 여부만으로 단정할 수 없으므로,
                     # 토글을 다시 읽어 최종 상태 그대로 DB에 반영한다(추정이 아니라 실측).
                     if 새홈매물번호:
                         self.데이터베이스_공개상태_동기화(새홈매물번호, 공개여부=not self.비공개여부(토글))
+
+                    # [2026-10-08] 다시 공개하지 못했으면 이 매물은 목적(재노출)을 이루지 못한 것이다 — 예전에는
+                    # 실패가 로그에만 남고 아래 갱신까지 이어져 성공으로 집계돼, 요약에 실패 0으로 찍히며 이틀간
+                    # 조용히 지나갔다. 비공개 상태 그대로 갱신해 봐야 의미가 없으므로 실패로 집계하고 넘어간다.
+                    if not 재오픈_성공:
+                        self.error_count += 1
+                        continue
 
                     #수정페이지로 전환
                     행.find_element(By.CSS_SELECTOR, "td:nth-child(14) > div:nth-child(1)").click() #관리 클릭
