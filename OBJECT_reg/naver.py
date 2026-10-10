@@ -2785,6 +2785,61 @@ class NaverThread(QThread):
                     #     cursor.close()
                     #     conn.close()                
 
+                # [2026-10-10 신규 — 사용자 요청 "선택연장 '소유자불일치 / 현매물 소유자:찾을 수 없음' 원인 확정"]
+                # 등록 결과 화면의 소유자 이름을 읽는다. 예전 방식(바로 아래 두 번째 표의 첫 칸을 XPath로 20초 기다림)은
+                # 표 구성이 다르면 못 읽거나 엉뚱한 칸을 읽었다. 그래서 "소유자 이름" 항목 글자 옆 값 칸을 먼저 찾고,
+                # 못 찾을 때만 예전과 같은 자리로 가며, 항목 글자·숫자뿐인 값은 이름으로 보지 않는다.
+                # 못 읽으면 ('', 화면상태)를 돌려준다 — 화면상태는 호출부가 서버 오류로그(진단)에 남긴다.
+                # ⚠️ 동기화 경고: 읽는 규칙은 크롬확장 chrome_extension/serve_autofill/autofill_core.js 의 readOwner()
+                # (1순위 항목글자 옆 값 칸 → 예전 자리, 이름 판정 looksLikeName)와 같아야 한다 — 한쪽만 고치지 말 것.
+                # 직접 확인 못한 부분: 간편 재등록·V2 경로의 제출 직후 화면에 이 표가 있는지는 라이브로 확인하지 못했다.
+                def 소유자이름_읽기():
+                    읽기스크립트 = r'''
+                        var clean = function (t) { return (t || "").replace(/\s+/g, " ").trim(); };
+                        var looksLikeName = function (t) { return t !== "" && !/^\d+$/.test(t) && !/소유자|이름|관계|연락처/.test(t); };
+                        var holders = document.querySelectorAll(".t-content-registration");
+                        var ths = document.querySelectorAll(".t-content-registration th");
+                        var diag = {
+                            url: location.href,
+                            title: document.title,
+                            holders: holders.length,
+                            tables: holders.length ? holders[0].querySelectorAll("table").length : 0,
+                            ths: Array.prototype.slice.call(ths, 0, 8).map(function (e) { return clean(e.textContent); }),
+                            body: clean(document.body ? document.body.innerText : "").slice(0, 120)
+                        };
+                        for (var i = 0; i < ths.length; i++) {
+                            var labelText = clean(ths[i].textContent);
+                            if (labelText.indexOf("소유자") === -1 || labelText.indexOf("이름") === -1) continue;
+                            var valueCell = ths[i].nextElementSibling;
+                            var valueText = valueCell ? clean(valueCell.textContent) : "";
+                            if (looksLikeName(valueText)) return { name: valueText, diag: diag };
+                        }
+                        for (var h = 0; h < holders.length; h++) {
+                            var childTables = Array.prototype.filter.call(holders[h].children, function (el) { return el.tagName === "TABLE"; });
+                            if (childTables.length < 2) continue;
+                            var rows = childTables[1].querySelectorAll("tbody tr");
+                            for (var r = 0; r < rows.length; r++) {
+                                if ((rows[r].getAttribute("style") || "").indexOf("display: none") !== -1) continue;
+                                var cell = rows[r].querySelector("td");
+                                var text = cell ? clean(cell.textContent) : "";
+                                if (looksLikeName(text)) return { name: text, diag: diag };
+                            }
+                        }
+                        return { name: "", diag: diag };
+                    '''
+                    마지막진단 = None
+                    # 결과 화면이 막 그려지는 중일 수 있어 최대 5초까지 다시 읽어 본다
+                    for _ in range(5):
+                        try:
+                            결과 = driver.execute_script(읽기스크립트) or {}
+                        except Exception as e:
+                            결과 = {"name": "", "diag": {"script_error": str(e)}}
+                        마지막진단 = 결과.get("diag")
+                        if 결과.get("name"):
+                            return 결과["name"], 마지막진단
+                        time.sleep(1)
+                    return "", 마지막진단
+
                 def 등록된매물번호추출(네이버매물정보):
                     print("등록된매물번호추출(네이버매물정보)")
                     print(f"네이버매물정보:{네이버매물정보}")
@@ -2824,6 +2879,7 @@ class NaverThread(QThread):
                         # 써브매물번호 = ""
                         # KB매물번호 = ""
                         alert_message = ""
+                        소유자이름, 소유자읽기진단 = '', None
                         time.sleep(1)
                         # 테스트요소 = driver.find_element(By.XPATH, "//div[contains(@class, 't-content-registration')]/table[2]/tbody/tr[not(contains(@style, 'display: none'))]/td[1]")
                         # print(테스트요소.get_attribute('outerHTML'))
@@ -2833,7 +2889,7 @@ class NaverThread(QThread):
                             "써브": '//div[@class="t-btn-item" and @title="써브"]//span[@data-v-2e0e3870 and text()]',
                             "네이버": '//div[@class="t-btn-item" and @title="네이버"]//span[@class="v-btn__content"]/span',
                             # "KB부동산": '//div[@class="t-btn-item" and @title="KB부동산"]//span[@class="v-btn__content"]/span',
-                            "소유자이름": "//div[contains(@class, 't-content-registration')]/table[2]/tbody/tr[not(contains(@style, 'display: none'))]/td[1]"
+                            # (소유자 이름은 여기서 읽지 않는다 — 소유자이름_읽기() 참고)
                         }
 
                         try:
@@ -2849,8 +2905,8 @@ class NaverThread(QThread):
                                     # 네이버매물번호, 써브매물번호, KB매물번호를 매물번호 딕셔너리에서 가져옴
                                 네이버매물번호 = 매물번호.get("네이버", "")
                                 써브매물번호 = 매물번호.get("써브", "")
-                                소유자이름 = 매물번호.get("소유자이름", "")
                                 # KB매물번호 = 매물번호.get("KB부동산", "")     
+                            소유자이름, 소유자읽기진단 = 소유자이름_읽기()
                             if 네이버매물번호=='' or 써브매물번호=='':
                                 최상단알림창(f"❌ 추출된 매물번호가 없습니다. \n\n네이버매물번호:{네이버매물번호}\써브매물번호:{써브매물번호}")
                             else:
@@ -2863,7 +2919,15 @@ class NaverThread(QThread):
                         except  Exception as e:
                             최상단알림창(f"❌ 등록된 매물번호 추출 중 오류 발생: {str(e)}")
                         if master_name != '' :
-                            if 소유자이름 in master_name:
+                            if 소유자이름 == '':
+                                # [2026-10-10 수정 — 사용자 요청 "선택연장 '소유자불일치 / 현매물 소유자:찾을 수 없음' 원인 확정"]
+                                # 예전엔 소유자 칸을 못 읽으면 "찾을 수 없음"이라는 글자를 이름 자리에 넣고 그대로 비교해서,
+                                # 소유자가 실제로 다른 게 아닌데도 무조건 "소유자불일치" 알림이 떴다(헛경고). 읽지 못한 건
+                                # "다른 것"이 아니라 "모르는 것"이므로 알림 대신 그때의 화면 상태를 서버 오류로그(진단)에 남겨
+                                # 원인(경로별 결과 화면 차이인지, 로딩 지연인지)을 다음 발생 때 확정할 수 있게 한다.
+                                print(f"소유자 칸을 읽지 못해 불일치 비교 생략: {소유자읽기진단}")
+                                진단_기록(f"소유자 칸을 읽지 못해 불일치 비교를 생략함(새홈 {object_code_new}, 기존소유자 {master_name}) — 화면 상태: {소유자읽기진단}")
+                            elif 소유자이름 in master_name:
                                 print("소유자 존재")
                             else:
                                 최상단알림창(f"소유자불일치\n\n기존소유자들:{master_name}\n현매물 소유자:{소유자이름}")
