@@ -1817,6 +1817,31 @@ def _find_chrome_main_window(driver):
     return max(candidates)[1] if candidates else None
 
 
+def _list_notice_windows(title):
+    """[2026-10-12 신규 — 사용자 신고 "캡차 알림창이 아직도 항상 위로 안 뜸"] 같은 제목의 윈도우 메시지 상자(#32770)를 전부 모은다.
+    각 항목은 (창 번호, 그 창을 만든 프로세스 번호, 보임, 맨위 고정 여부). 알림창 고정이 어느 창에 적용됐는지 로그에 남기려는 진단용이다.
+    숨김 모드 실행에서만 "맨위=False"로 찍히는 원인을 가리기 위해 필요했다(제목만으로 찾으면 다른 프로세스·이전 실행의 같은 제목 창을 집었을 가능성을
+    로그만으로는 구분할 수 없었다)."""
+    import win32con
+    import win32gui
+    import win32process
+
+    found = []
+
+    def _collect(hwnd, _):
+        try:
+            if win32gui.GetClassName(hwnd) == '#32770' and win32gui.GetWindowText(hwnd) == title:
+                owner_pid = win32process.GetWindowThreadProcessId(hwnd)[1]
+                is_topmost = bool(win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE) & win32con.WS_EX_TOPMOST)
+                found.append((hwnd, owner_pid, bool(win32gui.IsWindowVisible(hwnd)), is_topmost))
+        except Exception:
+            pass
+        return True
+
+    win32gui.EnumWindows(_collect, None)
+    return found
+
+
 def _show_always_on_top_notice(text, title):
     """[2026-10-07 신규 — 사용자 요청 "캡차 입력 필요 확인창이 숨겨져서 표시되지 않게 항상 위로 보이게"] 사람이 직접 처리해야 하는
     상황(캡차·부동산 선택·결제 버튼)을 알리는 알림창을 어떤 창에도 가려지지 않게 맨 앞에 띄운다. 확인을 누를 때까지 돌아오지 않는다.
@@ -1830,7 +1855,17 @@ def _show_always_on_top_notice(text, title):
     메시지 상자는 확인을 누를 때까지 이 스레드를 붙잡아 두므로, 창을 붙드는 일은 별도 스레드가 한다. 포그라운드로 가져오는 것은
     처음 한 번만 한다 — 반복하면 담당자가 캡차를 입력하려고 크롬을 누르는 순간마다 포커스를 도로 빼앗는다. 맨 위 고정만 포커스를
     가져가지 않는 방식으로 주기적으로 다시 건다(다른 창이 맨 위를 가로챘을 때를 대비).
-    윈도우 API를 못 쓰는 환경이면 예전 방식(pyautogui.alert)으로 그대로 띄운다 — 이 함수는 편의 기능이지 안전장치가 아니다."""
+    윈도우 API를 못 쓰는 환경이면 예전 방식(pyautogui.alert)으로 그대로 띄운다 — 이 함수는 편의 기능이지 안전장치가 아니다.
+
+    [2026-10-12 변경 — 사용자 신고 "아직도 항상 위로 안 뜸", 로컬도우미 로그로 확인] 로그에 "알림창을 맨 앞에 고정함 — 맨위=False, 포그라운드=False"가
+    찍힌 실행이 있었다(숨김 모드 headless=True 실행 10-10 18:28·10-12 14:34·17:28 — 화면이 보이는 실행은 True). 고정 코드는 돌았는데 효과가 없었던 것이다.
+    원인은 확정하지 못했고(추정: ① 제목만으로 찾아 다른 프로세스·이전 실행의 같은 제목 창을 집었거나 ② 숨김 모드 자식 프로세스의 맨 위 고정 요청을
+    윈도우가 무시), 그래서 두 가지를 바꿨다.
+      · [진단] 같은 제목 창을 전부 찾아 소유 프로세스 번호와 함께 로그에 남기고, 고정 요청의 오류코드·결과를 처음 몇 번 남긴다 — 다음 실패 때 원인이 확정된다.
+      · [동작] ⓐ 이 프로세스가 만든 창만 고정 대상으로 삼는다(다른 프로세스 창 오인 방지). ⓑ 맨 위로 고정한 보이지 않는 창을 메시지 상자의 소유 창(owner)으로
+        준다 — 소유된 창은 소유 창 위에 놓이므로 소유 창이 맨 위면 상자도 맨 위 층에 들어가고, 포그라운드 규칙에 덜 기대게 된다(naver.py 최상단알림창이 쓰는
+        "맨 위 부모" 방식과 같은 발상). ⓒ MB_SYSTEMMODAL을 함께 준다.
+    ⚠️ 이 변경이 숨김 모드에서 실제로 통하는지는 로컬 재현 시험으로 확인했다(시험 방법은 결과 보고 참고) — 사용자 PC에서 한 번 더 확인 필요."""
     import ctypes
     import threading
 
@@ -1844,22 +1879,36 @@ def _show_always_on_top_notice(text, title):
         pyautogui.alert(text, title)
         return
 
+    own_pid = os.getpid()
     stop_pinning = threading.Event()
 
     def _pin_notice_window():
         pinned_once = False
+        attempt = 0
+        reported_windows = False
         deadline = time.time() + 600   # 알림창이 안 닫혀도 감시가 영원히 도는 일이 없게 한다(캡차 대기 한도와 비슷하게)
         while not stop_pinning.is_set() and time.time() < deadline:
             try:
-                hwnd = win32gui.FindWindow('#32770', title)   # 윈도우 메시지 상자의 창 종류 이름
+                windows = _list_notice_windows(title)
+                own_windows = [w for w in windows if w[1] == own_pid]
+                if windows and not reported_windows:
+                    # 제목이 같은 창이 몇 개이고 누가 만든 것인지 — 고정이 엉뚱한 창에 걸리는지 가리는 근거
+                    print(f'[진단] 알림창 후보 {len(windows)}개 — (창,소유PID,보임,맨위)={windows}, 내 PID={own_pid}, 내 창 {len(own_windows)}개', flush=True)
+                    reported_windows = True
+                hwnd = own_windows[0][0] if own_windows else 0
                 if hwnd:
                     if not pinned_once:
                         # 숨겨졌거나 최소화돼 있으면 먼저 보이게 한다
                         win32gui.ShowWindow(hwnd, win32con.SW_RESTORE if win32gui.IsIconic(hwnd) else win32con.SW_SHOW)
                     is_topmost = bool(win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE) & win32con.WS_EX_TOPMOST)
                     if not pinned_once or not is_topmost or not win32gui.IsWindowVisible(hwnd):
+                        attempt += 1
                         win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0,
                                               win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE | win32con.SWP_SHOWWINDOW)
+                        if attempt <= 3:   # 로그가 쌓이지 않게 처음 몇 번만
+                            after_topmost = bool(win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE) & win32con.WS_EX_TOPMOST)
+                            print(f'[진단] 맨위 고정 요청 {attempt}번째 — 요청 전 맨위={is_topmost}, 요청 후 맨위={after_topmost}, '
+                                  f'마지막오류코드={win32api.GetLastError()}', flush=True)
                     if not pinned_once:
                         foreground_window = win32gui.GetForegroundWindow()
                         foreground_thread = win32process.GetWindowThreadProcessId(foreground_window)[0] if foreground_window else 0
@@ -1888,13 +1937,30 @@ def _show_always_on_top_notice(text, title):
                 print(f'[진행] 알림창 고정 중 오류(무시하고 계속): {e}', flush=True)
             stop_pinning.wait(0.3)
 
+    # 맨 위로 고정한 보이지 않는 소유 창 — 메시지 상자가 이 창 위에 놓이게 해 맨 위 층에 들어가게 한다. 만들지 못해도(0) 예전처럼 소유 창 없이 띄운다.
+    owner_hwnd = 0
+    try:
+        owner_hwnd = win32gui.CreateWindowEx(win32con.WS_EX_TOPMOST | win32con.WS_EX_TOOLWINDOW, 'Static', '', win32con.WS_POPUP,
+                                             0, 0, 0, 0, 0, 0, 0, None)
+        win32gui.SetWindowPos(owner_hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0,
+                              win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
+    except Exception as e:
+        print(f'[진단] 알림창 소유 창을 만들지 못함 — 소유 창 없이 띄움: {e}', flush=True)
+        owner_hwnd = 0
+
     pin_thread = threading.Thread(target=_pin_notice_window, daemon=True)
     pin_thread.start()
     try:
-        MB_OK, MB_ICONWARNING, MB_SETFOREGROUND, MB_TOPMOST = 0x0, 0x30, 0x10000, 0x40000
-        ctypes.windll.user32.MessageBoxW(0, text, title, MB_OK | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST)
+        MB_OK, MB_ICONWARNING, MB_SYSTEMMODAL, MB_SETFOREGROUND, MB_TOPMOST = 0x0, 0x30, 0x1000, 0x10000, 0x40000
+        ctypes.windll.user32.MessageBoxW(owner_hwnd or 0, text, title,
+                                         MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL | MB_SETFOREGROUND | MB_TOPMOST)
     finally:
         stop_pinning.set()
+        if owner_hwnd:
+            try:
+                win32gui.DestroyWindow(owner_hwnd)
+            except Exception:
+                pass
 
 
 def _bring_chrome_window_to_foreground(driver):
