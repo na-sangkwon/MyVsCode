@@ -145,6 +145,11 @@ PAYMENT_TITLES = ['결제대상 확인']
 # auto_confirm=False + 창이 보이는 상태에서만 쓰인다. 담당자가 자리를 비울 수도 있어 넉넉히 잡는다.
 HUMAN_CONFIRM_TIMEOUT_SEC = 600
 
+# [2026-10-14 신규 — 사용자 요청 "캡차 대기시간 10분"] 캡차 알림창을 아무도 확인하지 않을 때 기다리는 최대 시간(초).
+# 알림창은 원래 확인을 누를 때까지 무한정 기다려서, 담당자가 못 보면 발급 프로세스가 몇 시간씩 멈춰 있었다
+# (_wait_for_human_to_clear_captcha() 참고). 확인을 누른 뒤의 캡차 입력 대기(5분)는 이와 별개다.
+CAPTCHA_NOTICE_TIMEOUT_SEC = 600
+
 
 IROS_LOOPBACK_ALLOWED_ORIGINS = ('https://www.iros.go.kr', 'https://iros.go.kr')
 
@@ -1842,7 +1847,7 @@ def _list_notice_windows(title):
     return found
 
 
-def _show_always_on_top_notice(text, title):
+def _show_always_on_top_notice(text, title, timeout_seconds=None):
     """[2026-10-07 신규 — 사용자 요청 "캡차 입력 필요 확인창이 숨겨져서 표시되지 않게 항상 위로 보이게"] 사람이 직접 처리해야 하는
     상황(캡차·부동산 선택·결제 버튼)을 알리는 알림창을 어떤 창에도 가려지지 않게 맨 앞에 띄운다. 확인을 누를 때까지 돌아오지 않는다.
 
@@ -1865,7 +1870,13 @@ def _show_always_on_top_notice(text, title):
       · [동작] ⓐ 이 프로세스가 만든 창만 고정 대상으로 삼는다(다른 프로세스 창 오인 방지). ⓑ 맨 위로 고정한 보이지 않는 창을 메시지 상자의 소유 창(owner)으로
         준다 — 소유된 창은 소유 창 위에 놓이므로 소유 창이 맨 위면 상자도 맨 위 층에 들어가고, 포그라운드 규칙에 덜 기대게 된다(naver.py 최상단알림창이 쓰는
         "맨 위 부모" 방식과 같은 발상). ⓒ MB_SYSTEMMODAL을 함께 준다.
-    ⚠️ 이 변경이 숨김 모드에서 실제로 통하는지는 로컬 재현 시험으로 확인했다(시험 방법은 결과 보고 참고) — 사용자 PC에서 한 번 더 확인 필요."""
+    ⚠️ 이 변경이 숨김 모드에서 실제로 통하는지는 로컬 재현 시험으로 확인했다(시험 방법은 결과 보고 참고) — 사용자 PC에서 한 번 더 확인 필요.
+
+    [2026-10-14 추가 — 사용자 요청 "캡차 대기시간 10분"] timeout_seconds를 주면 그 시간이 지나 저절로 닫힌다 — 반환값 True는
+    사람이 확인을 누름, False는 시간이 지나 닫힘. 안 주면 예전처럼 확인을 누를 때까지 기다린다(다른 알림창은 그대로).
+    시간 제한은 MessageBoxTimeoutW로 건다 — 공식 문서에 없는 윈도우 함수지만 XP 이후 user32에 계속 들어 있다(2026-10-14 개발 PC
+    Windows 11에서 존재·동작 확인, 시간초과 판정 방식은 아래 호출부 주석 참고). 검토했다가 버린 방법: 맨위 고정 스레드가 시간이 되면 WM_CLOSE를 보내는 방식 — 사람이 누른 것과
+    시간이 지나 닫힌 것을 반환값으로 구분할 수 없어 별도 표시가 필요하고 스레드 감시 한도(600초)와도 얽힌다."""
     import ctypes
     import threading
 
@@ -1876,8 +1887,11 @@ def _show_always_on_top_notice(text, title):
         import win32process
     except Exception:
         import pyautogui
+        if timeout_seconds:
+            # pymsgbox(pyautogui.alert의 실체)는 시간이 지나 닫히면 'Timeout' 문자열을 돌려준다
+            return pyautogui.alert(text, title, timeout=int(timeout_seconds * 1000)) != 'Timeout'
         pyautogui.alert(text, title)
-        return
+        return True
 
     own_pid = os.getpid()
     stop_pinning = threading.Event()
@@ -1952,8 +1966,18 @@ def _show_always_on_top_notice(text, title):
     pin_thread.start()
     try:
         MB_OK, MB_ICONWARNING, MB_SYSTEMMODAL, MB_SETFOREGROUND, MB_TOPMOST = 0x0, 0x30, 0x1000, 0x10000, 0x40000
-        ctypes.windll.user32.MessageBoxW(owner_hwnd or 0, text, title,
-                                         MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL | MB_SETFOREGROUND | MB_TOPMOST)
+        notice_flags = MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL | MB_SETFOREGROUND | MB_TOPMOST
+        if timeout_seconds:
+            # [실측 2026-10-14, 개발 PC Windows 11] 확인 버튼 하나뿐인 상자는 시간이 지나 닫혀도 MB_TIMEDOUT(32000)이 아니라
+            # 확인을 누른 것과 같은 IDOK(1)를 돌려줬다 — 반환값만으로는 구분이 안 돼서, 제한 시간을 거의 다 채우고
+            # 닫혔는지(걸린 시간)로 함께 판단한다. 마지막 1초 안에 사람이 누른 경우만 시간초과로 오인될 수 있다(무시 가능).
+            MB_TIMEDOUT = 32000
+            started_at = time.time()
+            ret = ctypes.windll.user32.MessageBoxTimeoutW(owner_hwnd or 0, text, title, notice_flags, 0, int(timeout_seconds * 1000))
+            timed_out = ret == MB_TIMEDOUT or (time.time() - started_at) >= timeout_seconds - 1
+            return not timed_out
+        ctypes.windll.user32.MessageBoxW(owner_hwnd or 0, text, title, notice_flags)
+        return True
     finally:
         stop_pinning.set()
         if owner_hwnd:
@@ -2141,15 +2165,28 @@ def _wait_for_human_to_clear_captcha(driver, credentials=None, timeout_seconds=3
     받아서 순서를 강제한다(호출부가 순서를 매번 맞게 지키도록 기대하는 대신)."""
     print('[진행] 로그인화면에 캡차(자동입력 방지문자) 발견 — 담당자 입력 대기', flush=True)
     # [2026-10-07 변경] pyautogui.alert → _show_always_on_top_notice() — 기본 알림창은 다른 창에 가려져 보이지 않는 일이 있었다.
+    # [2026-10-14 추가 — 사용자 요청 "캡차 대기시간 10분"] 알림창은 확인을 누를 때까지 제한 없이 기다렸고, 아래 5분 대기는
+    # 알림창이 닫힌 "뒤"에야 시작돼서 아무도 안 누르면 영원히 멈춰 있었다(10/13 직원 PC 2건이 1시간 넘게 방치됨). 알림창에
+    # CAPTCHA_NOTICE_TIMEOUT_SEC 제한을 둔다. 시간이 지나도 곧바로 실패로 보지 않고 캡차가 아직 있는지 한 번 확인한다 —
+    # 알림창이 가려져 못 봤어도 담당자가 크롬 화면에서 직접 캡차를 풀고 로그인했을 수 있기 때문이다.
+    notice_acknowledged = True   # 알림창을 아예 못 띄운 경우(아래 except)는 예전처럼 5분 대기로 넘어간다
     try:
-        _show_always_on_top_notice(
+        notice_acknowledged = _show_always_on_top_notice(
             '인터넷등기소 로그인에 자동입력 방지문자(캡차)가 나타났습니다.\n\n'
             '확인을 누르면 아이디/비밀번호가 자동 입력되고 캡차칸에 커서가 놓입니다 — 캡차만 입력하고 로그인해주세요.\n'
-            '로그인이 완료되면 자동으로 이어서 진행됩니다.',
+            '로그인이 완료되면 자동으로 이어서 진행됩니다.\n\n'
+            f'{CAPTCHA_NOTICE_TIMEOUT_SEC // 60}분 안에 확인을 누르지 않으면 발급을 중단합니다.',
             '[인터넷등기소] 캡차 입력 필요',
+            timeout_seconds=CAPTCHA_NOTICE_TIMEOUT_SEC,
         )
     except Exception:
         pass
+    if not notice_acknowledged:
+        if not _is_captcha_required(driver):
+            print('[진행] 캡차 알림창은 아무도 누르지 않았지만 캡차 화면이 이미 사라짐 — 로그인 완료로 보고 이어서 진행', flush=True)
+            return True
+        print(f'[진행] 캡차 알림창을 {CAPTCHA_NOTICE_TIMEOUT_SEC // 60}분 동안 아무도 확인하지 않음 — 발급 중단', flush=True)
+        return False
     _bring_chrome_window_to_foreground(driver)
     _prefill_login_page_credentials(driver, credentials)
     deadline = time.time() + timeout_seconds
