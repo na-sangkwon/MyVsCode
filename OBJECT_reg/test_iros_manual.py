@@ -26,7 +26,6 @@ SERVER = 'https://obangtest.cafe24.com'  # 데이터를 가져올 서버(테섭/
 SESSION_COOKIE = ''  # 실제 값은 git에 올리지 않는다 — 로컬에서만 채워 쓸 것(세션 쿠키는 로그인 자격과 같다)
 
 LOOKUP_ONLY = True        # True면 조회만(결제 안 함) — 안전하게 검색 단계만 확인할 때
-HEADLESS = False          # False면 크롬 창이 실제로 보임(디버깅 중엔 보는 게 낫다)
 AUTO_CONFIRM = False      # LOOKUP_ONLY=False일 때만 의미 있음 — False면 결제 버튼을 직접 눌러야 진행
 CLOSE_WHEN_DONE = False   # 끝나고 창을 닫을지
 STOP_BEFORE_VIEW = True   # LOOKUP_ONLY=False일 때, 결제까지만 하고 열람 전에 멈출지(안전장치)
@@ -78,7 +77,6 @@ if __name__ == '__main__':
     print('payload:', json.dumps(payload, ensure_ascii=False, indent=2))
 
     options = {
-        'headless': HEADLESS,
         'auto_confirm': AUTO_CONFIRM,
         'close_when_done': CLOSE_WHEN_DONE,
         'lookup_only': LOOKUP_ONLY,

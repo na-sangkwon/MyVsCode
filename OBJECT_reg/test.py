@@ -552,7 +552,6 @@ class MyApp(QWidget):
         lookup_only, stop_before_view, auto_confirm = self.stopStageCombo.currentData()
         print(f'[진행] 진행 단계 선택 — {self.stopStageCombo.currentText()!r} (lookup_only={lookup_only}, stop_before_view={stop_before_view}, auto_confirm={auto_confirm})')
         options = {
-            'headless': False,       # 이 버튼은 항상 보임모드로 돈다(사용자 확정)
             'auto_confirm': auto_confirm,
             'close_when_done': True,
             'lookup_only': lookup_only,

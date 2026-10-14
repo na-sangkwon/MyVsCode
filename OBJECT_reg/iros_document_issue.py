@@ -94,7 +94,7 @@ from selenium.common.exceptions import (
 USER_CLOSED_WINDOW_MESSAGE = '자동화 창을 완료 전에 직접 닫음'
 
 # [2026-09-08 임시 진단 — 사용자 요청 "진짜 헤드리스로 다시 재현되는지 새 진행로그로 확인해보자"]
-# 기본(False)은 화면 밖 창 방식(아래 issue_real_estate_register의 headless 분기 참고) — 실사용
+# 기본(False)은 일반 크롬 창을 보이는 위치에 띄우는 방식(아래 issue_real_estate_register 참고) — 실사용
 # 동작은 이 값을 건드리지 않는 한 그대로다. True로 바꾸면 그 자리에 --headless=new를 대신 추가해서
 # 진짜 헤드리스로 돌린다. 확인 끝나면 반드시 False로 되돌릴 것 — 진짜 헤드리스는 결제대상 확인
 # 화면에서 등기소 보안프로그램에 막히는 게 이미 실측 확인돼 있다(위 커밋 사유 참고).
@@ -2469,7 +2469,7 @@ def _alert_failure_and_keep_window_open(driver, message):
     driver.execute_script("alert(...)")는 대화상자가 뜨는 즉시 반환된다(모달이 막는 건 페이지의
     JS 실행이지, 이 커맨드 자체가 아니다) — 그래서 알림을 띄운 직후 창을 닫아버리면 사람이 읽기도
     전에 알림이 창과 함께 사라진다. issue_real_estate_register()의 finally에서 이 함수를 부른
-    직후 close_when_done을 강제로 꺼서, "완료 후 창 모두 닫기"가 켜져 있었어도(숨김모드가 아닌 한)
+    직후 close_when_done을 강제로 꺼서, "완료 후 창 모두 닫기"가 켜져 있었어도
     이번 실패 건만은 창이 남아 담당자가 알림을 직접 확인·해제할 수 있게 한다."""
     try:
         driver.execute_script("alert(arguments[0]);", f'[오류] {message}\n\n이 창은 자동으로 닫히지 않습니다 — 확인 후 직접 닫아주세요.')
@@ -2485,22 +2485,24 @@ def issue_real_estate_register(payload, credentials, options=None):
     credentials: {'iros_id','iros_pw','iros_emoney_no','iros_emoney_pw'} — api/get_api_lib.php의
         fn=getirosservicecredentials 로 받아온 값을 그대로 넘기면 된다.
     options: {
-        'headless': bool = True,        # "몰래(창 안 띄우고) 작동"
         'auto_confirm': bool = True,    # "신청확인 자동 진행" — 꺼지면 결제 버튼을 사람이 누르길 기다림
         'close_when_done': bool = True, # "완료 후 사용된 창 모두 닫기"
         'lookup_only': bool = False,    # [2026-09-07 추가 — 사용자 요청] "조회만 진행(결제 안 함)".
             # 켜면 verify_register_target()까지만 하고 반환한다 — 결제 버튼 자체를 누르지 않는다.
-            # 숨김모드(headless=True)는 원래 auto_confirm을 강제로 켜서 결제까지 자동으로 나가는데,
-            # 이 옵션으로 숨김모드에서도 결제 없이 조회만 하는 선택지를 남긴다 — 조회 전용
-            # 진입점이었던 옛 find_register_address()가 하던 일을 이 옵션 하나로 대체했다
-            # (2026-09-19, 위 파일 상단 주석 참고). 화면 표시 여부·창 닫기 여부는 이 함수의 다른
-            # 옵션을 그대로 따른다.
+            # 조회 전용 진입점이었던 옛 find_register_address()가 하던 일을 이 옵션 하나로 대체했다
+            # (2026-09-19, 위 파일 상단 주석 참고). 창 닫기 여부는 이 함수의 다른 옵션을 그대로 따른다.
         'stop_before_view': bool = False,  # [2026-09-08 추가 — 사용자 요청, 실결제 검증용 안전장치]
             # 결제(700원)는 실제로 진행하되, [열람] 버튼은 누르지 않고 멈춘다 — 등기소는 열람 전까지는
             # 결제취소가 가능하므로, 결제 자체가 정상적으로 되는지만 안전하게 확인하고 싶을 때 쓴다.
     }
-    headless=True면 auto_confirm/close_when_done은 항상 True로 강제한다(호출부 문서 참고). lookup_only는
-    이 강제와 무관하게 항상 우선한다 — 결제 자체를 안 하므로 "결제를 자동으로 할지"는 애초에 의미가 없다.
+    [2026-10-14 변경 — 사용자 지적 "옵션 이름이 실제 동작과 다르다"] 예전엔 'headless'(몰래 작동) 옵션이
+    있어서, 켜면 auto_confirm/close_when_done을 True로 강제하고 실패 알림창도 생략했다. 그런데 2026-09-18에
+    캡차를 사람이 풀도록 창을 보이는 위치(80,40)에 두게 바뀐 뒤로는 창이 숨겨지지 않는데도 옵션 이름과
+    기본값(True)만 그대로 남아, 이름("몰래")과 실제 동작(창이 보임)이 어긋나 있었다. 그래서 옵션을 없애고
+    그 옵션이 한꺼번에 묶어 하던 일을 각각 풀었다 — 신청확인·창닫기는 위 두 옵션이 독립적으로 정하고,
+    실패 알림은 이제 누가 시작했든 항상 띄운다(사람이 직접 창을 닫은 경우만 제외). 옛 호출부가 보내는
+    'headless' 키는 그냥 무시된다. lookup_only는 auto_confirm과 무관하게 항상 우선한다 — 결제 자체를
+    안 하므로 "결제를 자동으로 할지"는 애초에 의미가 없다.
 
     @return {'ok': bool, 'file_path': str(로컬 임시경로, NAS 저장은 호출부 책임 — lookup_only면 항상 빈 값),
              'address': str, 'unique_no': str, 'owner_masked': str, 'message': str,
@@ -2508,14 +2510,10 @@ def issue_real_estate_register(payload, credentials, options=None):
                  2026-09-12 추가, local_helper/main.py가 이 값을 보고 오류로그 대신 취소로 기록한다)}
     """
     options = dict(options or {})
-    headless = bool(options.get('headless', True))
     lookup_only = bool(options.get('lookup_only', False))
     stop_before_view = bool(options.get('stop_before_view', False))
     auto_confirm = bool(options.get('auto_confirm', True))
     close_when_done = bool(options.get('close_when_done', True))
-    if headless:
-        auto_confirm = True
-        close_when_done = True
     if lookup_only:
         close_when_done = True  # 조회만 하고 끝나므로 창을 열어둘 이유가 없다
 
@@ -2529,12 +2527,13 @@ def issue_real_estate_register(payload, credentials, options=None):
     # 필요합니다" alert를 띄우며 막힌다(오늘 새로 추가한 진행로그로 직접 확인 — 보임모드로는 같은
     # 매물이 결제까지 성공했었다). 결제 단계에서만 이 alert가 뜨는 패턴으로 보아, 등기소(TouchEn
     # 보안프로그램)가 결제 진입 시점에 "진짜 렌더링 창이 있는지"를 확인하는 것으로 보인다 — 그래서
-    # 창 자체는 진짜로 띄우되(headless 아님), 화면 밖 좌표로 옮겨 직원 모니터에는 보이지 않게 한다.
-    # "몰래(창 안 띄우고) 작동" 옵션이 실사용자에게 약속하는 것(창이 안 보임)은 이 방식으로도 그대로
-    # 지켜진다. [2026-09-19] 조회 전용으로 이 화면을 따로 거치던 find_register_address()는 제거되고
+    # 창 자체는 진짜로 띄우되(headless 아님), 당시엔 화면 밖 좌표로 옮겨 직원 모니터에는 보이지 않게 했다.
+    # [2026-09-18 변경] 캡차를 사람이 풀어야 해서 보이는 위치(80,40)로 바꿨고, [2026-10-14] 그 뒤로 "창이
+    # 안 보인다"는 뜻만 남아 있던 'headless' 옵션 자체를 없앴다(이 함수 docstring 참고).
+    # [2026-09-19] 조회 전용으로 이 화면을 따로 거치던 find_register_address()는 제거되고
     # lookup_only 옵션으로 이 함수에 합쳐졌다 — 창 숨김 방식을 두 곳에서 따로 맞춰야 했던 동기화
     # 부담도 함께 없어졌다.
-    if headless and IROS_TRUE_HEADLESS_FOR_TEST:
+    if IROS_TRUE_HEADLESS_FOR_TEST:
         chrome_options.add_argument('--headless=new')
         # [2026-09-08 임시 진단 — 실측으로 시도했으나 원인이 아닌 것으로 확인됨] 화면밖-창(보임)과
         # 진짜 헤드리스를 로컬에서 직접 비교했을 때 눈에 띄게 다른 값이 두 가지였다: User-Agent에
@@ -2561,11 +2560,11 @@ def issue_real_estate_register(payload, credentials, options=None):
     result = {'ok': False, 'file_path': '', 'address': '', 'unique_no': '', 'owner_masked': '', 'message': '',
               'user_cancelled': False, 'stopped_before_view': False}
     try:
-        print(f'[진행] issue_real_estate_register 시작 — headless={headless}, true_headless_test={IROS_TRUE_HEADLESS_FOR_TEST}, lookup_only={lookup_only}, auto_confirm={auto_confirm}, stop_before_view={stop_before_view}', flush=True)
+        print(f'[진행] issue_real_estate_register 시작 — true_headless_test={IROS_TRUE_HEADLESS_FOR_TEST}, lookup_only={lookup_only}, auto_confirm={auto_confirm}, stop_before_view={stop_before_view}', flush=True)
         driver.set_window_size(1280, 1000)
-        if headless and not IROS_TRUE_HEADLESS_FOR_TEST:
+        if not IROS_TRUE_HEADLESS_FOR_TEST:
             driver.set_window_position(80, 40)  # 사용자 확인이 가능하도록 보이는 위치에서 실행
-        if headless and IROS_TRUE_HEADLESS_FOR_TEST:
+        if IROS_TRUE_HEADLESS_FOR_TEST:
             # --window-size 플래그로는 안 바뀌던 screen.width/height(가짜 800x600)를 CDP로 직접
             # 덮어쓴다 — 보임모드 실측값(1920x1080)에 맞춘다.
             driver.execute_cdp_cmd('Emulation.setDeviceMetricsOverride', {
@@ -2635,7 +2634,7 @@ def issue_real_estate_register(payload, credentials, options=None):
                 _click_with_fallback(driver, pay_btn2)
         else:
             # [2026-09-07 신규 — 사용자 요청] "신청확인 자동 진행"이 꺼져 있으면(창이 실제로 보이는
-            # 상태다 — headless일 땐 위에서 이미 auto_confirm을 강제로 켰다) 결제 버튼을 직접 누르지
+            # 상태다) 결제 버튼을 직접 누르지
             # 않는다. 화면이 진짜로 사람 눈앞에 떠 있으므로, 담당자가 자기 마우스로 직접 눌러도 된다
             # — 그동안 이 스크립트는 결제요청 확인 팝업이 뜨는지만 기다린다(content_iros.js가
             # auto_pay_registry_fee===false일 때 버튼만 남겨두고 사람 클릭을 기다리는 것과 같은 방식).
@@ -2706,10 +2705,13 @@ def issue_real_estate_register(payload, credentials, options=None):
         return result
     finally:
         # [2026-09-13 추가 — 사용자 요청] 실패(result['ok']=False)했는데 사람이 스스로 창을 닫은
-        # 경우(user_cancelled)가 아니고 몰래 작동도 아니면, 사유를 알림창으로 띄우고 이번 실패
+        # 경우(user_cancelled)가 아니면, 사유를 알림창으로 띄우고 이번 실패
         # 건만은 close_when_done 설정과 무관하게 창을 열어둔다 — 담당자가 왜 멈췄는지 그 자리에서
         # 바로 읽을 수 있게 하기 위함(_alert_failure_and_keep_window_open() 참고).
-        if not result['ok'] and not result.get('user_cancelled') and not headless:
+        # [2026-10-14 변경] 예전엔 'headless'(몰래 작동)일 때 이 알림을 건너뛰었다. 그런데 그 상태에서도
+        # 창은 보였고, 캡차 등에서 멈춘 담당자가 이유를 읽을 방법이 없어 1시간 넘게 방치된 사례(10/13)가 있어
+        # 조건에서 뺐다 — 실패하면 항상 사유를 보여준다.
+        if not result['ok'] and not result.get('user_cancelled'):
             _alert_failure_and_keep_window_open(driver, result['message'])
             close_when_done = False
         if close_when_done:
@@ -2743,8 +2745,7 @@ def issue_real_estate_registers_bulk(items, credentials, options=None):
         같은 경계 — 등기소 자동화만 책임지고, "이 결과를 어느 매물 DB에 반영할지"는 호출부 책임).
     @param credentials {'iros_id','iros_pw','iros_emoney_no','iros_emoney_pw'}.
     @param options {
-        'headless': bool = True,        # "몰래(창 안 띄우고) 작동" — issue_real_estate_register()와 동일
-        'close_when_done': bool = True, # headless=True면 항상 True로 강제(단건과 동일한 이유)
+        'close_when_done': bool = True, # "완료 후 사용된 창 모두 닫기" — issue_real_estate_register()와 동일
     }
     @return {'ok': bool, 'message': str, 'user_cancelled': bool,
              'results': [{'ok': bool, 'file_path': str(로컬 임시경로, NAS 저장은 호출부 책임),
@@ -2758,10 +2759,7 @@ def issue_real_estate_registers_bulk(items, credentials, options=None):
         "신청결과 확인" 화면에서 나중에 개별 재열람 가능 — 이미 결제됐으므로 데이터가 사라지지 않음).
     """
     options = dict(options or {})
-    headless = bool(options.get('headless', True))
     close_when_done = bool(options.get('close_when_done', True))
-    if headless:
-        close_when_done = True
 
     if not items:
         return {'ok': False, 'message': '발급할 매물이 없습니다.', 'user_cancelled': False, 'results': []}
@@ -2772,8 +2770,8 @@ def issue_real_estate_registers_bulk(items, credentials, options=None):
     chrome_options = Options()
     chrome_options.add_argument('--disable-blink-features=AutomationControlled')
     # [issue_real_estate_register()와 동일한 이유 — 그 함수 주석 참고] 결제 진입 시점에 등기소가
-    # "진짜 렌더링 창이 있는지"를 확인하는 것으로 보여, 진짜 헤드리스 대신 화면 밖 좌표로 옮긴다.
-    if headless and IROS_TRUE_HEADLESS_FOR_TEST:
+    # "진짜 렌더링 창이 있는지"를 확인하는 것으로 보여, 진짜 헤드리스를 쓰지 않고 일반 창을 띄운다.
+    if IROS_TRUE_HEADLESS_FOR_TEST:
         chrome_options.add_argument('--headless=new')
         chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36')
     chrome_options.add_experimental_option('prefs', {
@@ -2795,11 +2793,11 @@ def issue_real_estate_registers_bulk(items, credentials, options=None):
         return {'ok': False, 'message': message, 'user_cancelled': False, 'results': results}
 
     try:
-        print(f'[진행] issue_real_estate_registers_bulk 시작 — {len(items)}건, headless={headless}', flush=True)
+        print(f'[진행] issue_real_estate_registers_bulk 시작 — {len(items)}건', flush=True)
         driver.set_window_size(1280, 1000)
-        if headless and not IROS_TRUE_HEADLESS_FOR_TEST:
+        if not IROS_TRUE_HEADLESS_FOR_TEST:
             driver.set_window_position(80, 40)  # 사용자 확인이 가능하도록 보이는 위치에서 실행
-        if headless and IROS_TRUE_HEADLESS_FOR_TEST:
+        if IROS_TRUE_HEADLESS_FOR_TEST:
             driver.execute_cdp_cmd('Emulation.setDeviceMetricsOverride', {
                 'width': 1280, 'height': 1000, 'deviceScaleFactor': 1, 'mobile': False,
                 'screenWidth': 1920, 'screenHeight': 1080,
@@ -2939,10 +2937,10 @@ def issue_real_estate_registers_bulk(items, credentials, options=None):
         failure_message = f'자동화 중 오류({type(e).__name__}): {e} | {_diag_snapshot(driver)}'
         return {'ok': False, 'message': failure_message, 'user_cancelled': False, 'results': results}
     finally:
-        # [issue_real_estate_register()와 동일] 실패했는데 사람이 스스로 창을 닫은 경우가 아니고
-        # 몰래 작동도 아니면, 사유를 알림창으로 띄우고 창을 열어둔다 — 담당자가 왜 멈췄는지 그
-        # 자리에서 바로 읽을 수 있게 하기 위함.
-        if failure_message and not headless:
+        # [issue_real_estate_register()와 동일] 실패했는데 사람이 스스로 창을 닫은 경우가 아니면,
+        # 사유를 알림창으로 띄우고 창을 열어둔다 — 담당자가 왜 멈췄는지 그 자리에서 바로 읽을 수
+        # 있게 하기 위함(2026-10-14: 'headless' 옵션 제거로 항상 적용).
+        if failure_message:
             _alert_failure_and_keep_window_open(driver, failure_message)
             close_when_done = False
         if close_when_done:
@@ -3006,7 +3004,7 @@ if __name__ == '__main__':
 
     bulk_result = issue_real_estate_registers_bulk(
         test_properties, iros_credentials,
-        options={'headless': False, 'close_when_done': False},
+        options={'close_when_done': False},
     )
     print('[전체 결과]', {'ok': bulk_result.get('ok'), 'message': bulk_result.get('message')})
 
