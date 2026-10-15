@@ -91,7 +91,12 @@ from selenium.common.exceptions import (
 # [2026-09-12 추가 — 사용자 요청 "셀레니움 경로도 크롬확장처럼 사용자가 창을 닫은 경우를 구분해달라"]
 # chrome_extension/background.js가 EAIS_TAB_ID_KEY용 chrome.tabs.onRemoved에서 쓰는 것과 동일한
 # 문구 — 두 파이프라인의 사용자 화면 메시지·pr_log 기록을 일치시키기 위해 문구를 그대로 맞춘다.
-USER_CLOSED_WINDOW_MESSAGE = '자동화 창을 완료 전에 직접 닫음'
+# [2026-10-15 변경, 사용자 리포트 — 본섭 449655 "등기상 주소를 확인하지 못했습니다" 배너] 이 문구는 사람이 닫았는지
+# 확인하고 쓰는 게 아니라 NoSuchWindowException/InvalidSessionIdException(창·세션이 사라짐)만 보고 쓴다 — 크롬이나
+# 크롬드라이버가 비정상 종료돼도, PC 절전으로 끊겨도 같은 오류가 난다. 그래서 "직접 닫음"으로 단정하지 않는 문구로
+# 바꿨다. 크롬확장(background.js)은 브라우저가 "탭이 닫혔다"고 직접 알려준 경우에만 쓰므로 그쪽 문구는 그대로 둔다
+# (두 문구가 이제 다르다 — 의도한 차이). user_cancelled 판정(아래 사용처)은 문구가 아니라 플래그로 하므로 영향 없다.
+USER_CLOSED_WINDOW_MESSAGE = '자동화 창이 완료 전에 닫힘(직접 닫았거나 크롬이 종료됐을 수 있음)'
 
 # [2026-09-08 임시 진단 — 사용자 요청 "진짜 헤드리스로 다시 재현되는지 새 진행로그로 확인해보자"]
 # 기본(False)은 일반 크롬 창을 보이는 위치에 띄우는 방식(아래 issue_real_estate_register 참고) — 실사용
