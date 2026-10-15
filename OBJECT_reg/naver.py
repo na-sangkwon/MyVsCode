@@ -327,6 +327,10 @@ class NaverThread(QThread):
         # 보고) 채널을 재사용한다. run_naver_extend_headless()가 이 콜백을 채워준다 — 데스크톱
         # (test.exe) 실행처럼 안 채워지면 진단_기록()은 조용히 아무 것도 하지 않는다.
         self.report_error = None
+        # [2026-10-15 추가 — 광고 저장 창구 단일화] 새 네이버 번호를 서버(saveExternalAdRegisterResult)로 저장하는 콜백.
+        # 로컬도우미(local_helper/main.py::run_naver_extend_worker → apply_ad_register_result_via_server)가 채워준다.
+        # 안 채워지면(데스크톱 test.exe) 등록된매물번호추출()이 예전처럼 DB에 직접 저장한다.
+        self.apply_register_result = None
 
     # [2026-09-05 신규 — 사용자 요청] 예상 못 한 예외를 개발자용 오류로그(pr_error_log)에 보고한다.
     # 원래 run()의 catch-all들은 예외를 pyautogui.alert/최상단알림창으로만 알렸는데, headless
@@ -2962,8 +2966,35 @@ class NaverThread(QThread):
                             광고상태 = "광고중"
                         else:
                             광고상태 = "광고종료"
-                        # pyautogui.alert(f"광고상태:{광고상태}")   
-                        if 네이버매물번호 != '찾을 수 없음':  
+                        # pyautogui.alert(f"광고상태:{광고상태}")
+
+                        # [2026-10-15 추가 — 사용자 승낙 "광고 저장 창구 단일화 3단계"] 로컬도우미 실행이면 새 번호를 서버 API로 저장한다
+                        # (core/lib/lib_external_ad.php::saveExternalAdRegisterResult — 크롬확장 등록과 같은 규칙·관리이력 기록). 아래 직접
+                        # UPDATE/INSERT는 같은 규칙을 파이썬으로 따로 들고 있던 것이라 한쪽만 고쳐지는 위험과 이력 누락이 있었다.
+                        # 저장 전 테섭 시뮬레이션으로 두 경로 결과를 비교함(차이는 api/lib/lib_api.php::apiApplyAdRegisterResult 주석 참고).
+                        # 서버 저장이 실패하면 아래 예전 직접 저장으로 그대로 진행한다(전환 초기 안전장치 — 관찰 후 제거 예정).
+                        # 데스크톱(test.exe)은 콜백이 없어 예전과 똑같이 직접 저장한다. 담당자는 유지한다(사용자 결정).
+                        서버저장_완료 = False
+                        if (self.apply_register_result and 네이버매물번호 not in ('', '찾을 수 없음')
+                                and manager_id and object_code_new and 써브매물번호):
+                            저장성공, 저장결과 = self.apply_register_result(
+                                object_code_new=object_code_new, ad_code=네이버매물번호, sub_code=써브매물번호,
+                                admin_id=manager_id, admin_name=admin_name, keep_period_if_active=(광고상태 == "광고중"))
+                            if 저장성공:
+                                서버저장_완료 = True
+                                진단_기록(f"새 네이버 번호를 서버로 저장함(새홈 {object_code_new}, {저장결과.get('action')}, 네이버 {네이버매물번호})")
+                                # 알림 문구는 예전 직접 저장 경로와 같게 맞춘다(헤드리스 실행이면 결과 로그의 "중간 알림"으로 남는다)
+                                if 저장결과.get('action') == 'insert':
+                                    alert_message = f"새 네이버 광고 매물이 추가되었습니다.\n\n부동산써브: {써브매물번호}\n네이버부동산: {네이버매물번호}\n\n작업을 종료합니다."
+                                elif 등록방식 == '단일매물등록':
+                                    alert_message = "업데이트를 완료하였습니다. 1개의 행이 변경되었습니다."
+                                if alert_message:
+                                    print(alert_message)
+                                    최상단알림창(alert_message)
+                            else:
+                                진단_기록(f"서버 저장 실패 — 예전 직접 저장으로 진행(새홈 {object_code_new}): {저장결과}")
+
+                        if not 서버저장_완료 and 네이버매물번호 != '찾을 수 없음':
                             try:
                                 # DictCursor 대신 기본 커서 사용
                                 cursor = conn.cursor()
