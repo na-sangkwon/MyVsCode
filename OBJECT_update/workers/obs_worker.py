@@ -488,6 +488,7 @@ class ObsAutomationWorker:
     # 거래유형 불일치를 DB 기준으로 자동 수정해도 되는 조건(2026-10-07 사용자 결정: "조건부 자동"). 가격과 달리
     # 거래유형은 매물의 성격 자체를 바꾸므로 DB가 최신이라는 근거가 있을 때만 한다 — 사이트의 '수정일'은 갱신이
     # 덮어써서 어느 쪽이 최신인지 사이트로는 알 수 없고(가격 때와 같은 문제), DB 수정일이 최근인 경우만 믿는다.
+    # [2026-10-16] 근거를 "수정일 또는 의뢰확인일 중 최근"으로 넓혔다 — 거래유형_자동수정_허용() 주석 참고.
     _거래유형_자동수정_DB수정_허용일수 = 30
     _폼_거래유형값 = {'월세': 'month_rent', '전세': 'full_rent', '매매': 'sell'}
 
@@ -498,11 +499,21 @@ class ObsAutomationWorker:
         if 사이트행.get('deal') not in self._폼_거래유형값:
             # 전월세처럼 복수 유형을 함께 등록한 매물은 DB(단일 유형)로 덮으면 사이트에만 있는 가격 정보가 사라진다.
             return False, f"사이트 거래유형 '{사이트행.get('deal')}'은(는) 복수 유형일 수 있어 DB 값으로 덮으면 정보가 사라질 수 있음"
-        수정일 = db행.get('object_udate')
-        if isinstance(수정일, datetime.datetime):
-            수정일 = 수정일.date()
-        if not isinstance(수정일, datetime.date) or (오늘 - 수정일).days > self._거래유형_자동수정_DB수정_허용일수:
-            return False, f"DB 수정일({수정일})이 {self._거래유형_자동수정_DB수정_허용일수}일 이내가 아니어서 DB가 최신이라는 근거가 없음"
+        # [2026-10-16 변경, 사용자 승인] "DB가 최신"의 근거를 매물 수정일 하나에서 "수정일과 의뢰확인일 중 최근 날짜"로 넓혔다.
+        # 같은 날 웹에서 매물 수정일의 뜻이 "매물 내용이 실제로 바뀐 시각"으로 좁아졌다(core/lib/lib_request.php::
+        # updateGiveObjectModifiedDate()) — 예전엔 통화 상담기록·의뢰확인만 해도 수정일이 바뀌어 그런 매물도 자동수정 대상이었는데,
+        # 이제 수정일만 보면 "어제 의뢰인과 통화해 그대로 맞다고 확인한 매물"이 빠진다. 반대로 의뢰확인일만 보면 "담당자가 관리메모로
+        # 거래유형을 직접 고친 매물"(의뢰인 접촉이 아니라 의뢰확인일은 안 바뀜)이 빠진다 — 둘은 포함관계가 아니라 둘 다 "사람이 최근에
+        # DB 값을 고쳤거나 확인했다"는 근거라 더 최근 쪽을 쓴다.
+        최근근거일 = None
+        for 값 in (db행.get('object_udate'), db행.get('request_date')):
+            if isinstance(값, datetime.datetime):
+                값 = 값.date()
+            if isinstance(값, datetime.date) and (최근근거일 is None or 값 > 최근근거일):
+                최근근거일 = 값
+        if 최근근거일 is None or (오늘 - 최근근거일).days > self._거래유형_자동수정_DB수정_허용일수:
+            return False, (f"DB 수정일({db행.get('object_udate')})·의뢰확인일({db행.get('request_date')}) 모두 "
+                           f"{self._거래유형_자동수정_DB수정_허용일수}일 이내가 아니어서 DB가 최신이라는 근거가 없음")
         return True, ''
 
     def 거래유형_맞추기(self, 코드, db행):
