@@ -2365,13 +2365,20 @@ def _finish_after_payment_confirm(driver):
     _click_with_fallback(driver, confirm_btn)
     time.sleep(1.5)
 
+    # [2026-10-18 진단 추가] 결제 뒤 "열람 목록을 찾지 못함" 실패(오류로그 #2216·#2221)의 원인 후보 중 하나가 "결제결과 확인 창이 1.5초보다
+    # 늦게 떠서 못 눌렀다"는 것이라, 이 시점에 그 버튼이 어땠는지 진행로그에 남긴다(동작은 그대로).
+    result_btn_state = '없음'
     try:
         result_btn = driver.find_element(By.CSS_SELECTOR, 'input[id$="_btn_cfrm"]')
         if result_btn.is_displayed():
             _click_with_fallback(driver, result_btn)
+            result_btn_state = '보여서 누름'
             time.sleep(1)
+        else:
+            result_btn_state = '있지만 안 보임'
     except NoSuchElementException:
         pass
+    print(f'[진단] 결제 확인 1.5초 뒤 "결제결과 확인" 버튼: {result_btn_state}', flush=True)
     return {'ok': True, 'message': ''}
 
 
@@ -2424,6 +2431,59 @@ def _close_document_viewer_if_present(driver, timeout=5):
     return False
 
 
+# [2026-10-18 신규 — 사용자 요청 "추정만으로 고치지 말고 정확한 원인을 진단할 수 있게"] 결제 뒤 열람 목록이 정해진 시간(15초) 안에
+# 안 보였을 때, 고치지 않고 이만큼 더 지켜보기만 한다 — 목록이 늦게 뜨는 것(대기시간 부족)인지, 다른 창에 가려져 끝내 안 보이는
+# 것인지를 가르기 위함. 지켜보는 동안 아무것도 누르지 않으며 결과는 그대로 실패다(재시도하면 추가 결제 없이 이어서 받는다 —
+# 오류로그 #2221 재시도에서 확인).
+VIEW_LIST_LATE_OBSERVE_SEC = 45
+
+
+def _describe_payment_result_screen_for_diagnosis(driver):
+    # 결제 뒤 열람 목록이 안 보일 때 그 순간의 화면을 설명한다 — _diag_snapshot()의 "본문앞부분"은 상단 메뉴 글자로 채워져
+    # 실제로 무엇이 떠 있었는지 알 수 없었다(#2216·#2221 실측). 화면 제목·두 목록의 상태·떠 있는 창·본문 영역의 버튼 이름을 남긴다.
+    # 각 항목은 서로 독립적으로 실패해도 나머지는 남도록 개별로 감싼다(_diag_snapshot과 같은 원칙).
+    parts = []
+    try:
+        parts.append(f'화면제목={_visible_section_titles(driver)}')
+    except Exception as e:
+        parts.append(f'화면제목=(확인불가:{type(e).__name__})')
+    for label, tbody_id in (('미열람목록', f'{BASE}_grd_nview_nissue_list_body_tbody'), ('재열람목록', f'{BASE}_grd_rview_list_body_tbody')):
+        try:
+            tbody = driver.find_element(By.ID, tbody_id)
+            trs = tbody.find_elements(By.TAG_NAME, 'tr')
+            filled = [tr for tr in trs if 'display: none' not in (tr.get_attribute('style') or '') and tr.text.strip() != '']
+            parts.append(f'{label}=있음(보임={tbody.is_displayed()}, 줄 {len(trs)}개 중 내용있는 줄 {len(filled)}개)')
+        except NoSuchElementException:
+            parts.append(f'{label}=없음')
+        except Exception as e:
+            parts.append(f'{label}=(확인불가:{type(e).__name__})')
+    try:
+        popups = driver.execute_script(
+            "var out=[];"
+            "document.querySelectorAll('[class*=\"w2popup\"],[class*=\"w2window\"],[role=\"dialog\"],[id*=\"popup\"],[id*=\"Popup\"]').forEach(function(e){"
+            "  if(out.length>=5) return; var r=e.getBoundingClientRect(); if(r.width<80||r.height<40) return;"
+            "  var s=getComputedStyle(e); if(s.display==='none'||s.visibility==='hidden') return;"
+            "  var t=(e.innerText||'').replace(/\\s+/g,' ').trim(); if(t) out.push((e.id||String(e.className)).slice(0,40)+': '+t.slice(0,150));"
+            "});"
+            "return out;")
+        parts.append(f'떠있는창={popups}')
+    except Exception as e:
+        parts.append(f'떠있는창=(확인불가:{type(e).__name__})')
+    try:
+        buttons = driver.execute_script(
+            "var root=document.getElementById(arguments[0])||document.body; var out=[];"
+            "root.querySelectorAll('a,button,input[type=button],input[type=submit]').forEach(function(e){"
+            "  var r=e.getBoundingClientRect(); if(r.width===0||r.height===0) return;"
+            "  var t=(e.innerText||e.value||e.title||'').replace(/\\s+/g,' ').trim();"
+            "  if(t && t.length<=20 && out.indexOf(t)<0) out.push(t);"
+            "});"
+            "return out.slice(0,25);", BASE)
+        parts.append(f'본문버튼={buttons}')
+    except Exception as e:
+        parts.append(f'본문버튼=(확인불가:{type(e).__name__})')
+    return ' / '.join(parts)
+
+
 def _view_and_save(driver, payload, download_dir):
     """content_iros.js::viewAndSaveFromListRows() 이식 — 목록에서 이번 물건 줄을 대조해 찾은 뒤
     [열람] → [저장]까지. 첫 줄을 무조건 열람하지 않는다(열람은 되돌릴 수 없다 — 결제취소 불가).
@@ -2432,9 +2492,23 @@ def _view_and_save(driver, payload, download_dir):
     _close_document_viewer_if_present() 주석 참고. 이 함수를 호출하는 어디서든(지금은 일괄발급
     루프뿐이지만 나중에 다른 곳에서도) 안전하도록 함수 자신이 방어한다."""
     _close_document_viewer_if_present(driver)
+    list_wait_started_at = time.time()
     rows = _wait_for_target_list_rows(driver)
     if not rows:
-        return {'ok': False, 'message': f'열람 목록을 찾지 못했습니다. | {_diag_snapshot(driver)}'}
+        # [2026-10-18 진단 추가 — 오류로그 #2216·#2221] 원인을 추정으로 고치지 않고 확정하기 위해, 그 순간의 화면을 남기고 아무것도
+        # 누르지 않은 채 VIEW_LIST_LATE_OBSERVE_SEC만큼 더 지켜본다. 목록이 늦게 나타나면 "대기시간 부족", 끝내 안 나타나면 마지막 화면이
+        # 무엇에 가로막혔는지 알려준다. 결과는 예전과 같이 실패로 돌려준다(동작 변경 없음).
+        screen_at_timeout = _describe_payment_result_screen_for_diagnosis(driver)
+        print(f'[진단] 열람 목록이 {int(time.time() - list_wait_started_at)}초 안에 안 보임 — 그 순간 화면: {screen_at_timeout}', flush=True)
+        late_rows = _wait_for_target_list_rows(driver, timeout=VIEW_LIST_LATE_OBSERVE_SEC)
+        if late_rows:
+            late_note = f'목록이 대기 시작 {int(time.time() - list_wait_started_at)}초 뒤에 나타남 — 기다리는 시간이 짧았던 것'
+        else:
+            late_note = (f'{VIEW_LIST_LATE_OBSERVE_SEC}초 더 지켜봐도 목록이 안 나타남 — 마지막 화면: '
+                         f'{_describe_payment_result_screen_for_diagnosis(driver)}')
+        print(f'[진단] {late_note}', flush=True)
+        return {'ok': False, 'message': (f'열람 목록을 찾지 못했습니다(결제는 완료됨 — 다시 신청하면 추가 결제 없이 이어서 받습니다). '
+                                         f'[진단] 대기 종료 시 화면: {screen_at_timeout} / {late_note} | {_diag_snapshot(driver)}')}
 
     target_row = None
     for tr in rows:
