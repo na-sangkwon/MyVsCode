@@ -66,6 +66,7 @@
 
 import re
 import sys
+import pkgutil  # [2026-10-20] 셀레니움의 보이는지 판정 코드(isDisplayed.js) 읽기용 — _find_first_visible_element_by_text() 참고
 import time
 import os
 import tempfile
@@ -564,6 +565,82 @@ def _diag_snapshot(driver):
     return ' / '.join(parts)
 
 
+# [2026-10-20 신규 — 사용자 요청 "등기부등본 발급 속도 개선", 실측 근거] 화면의 버튼·링크(500여 개)를 웹드라이버로 하나씩
+# "보이니? 글자가 뭐니?" 묻는 순회는 한 번에 0.3~2.8초가 걸렸다(등기소 실화면 실측: 홈 진입 버튼 찾기 0.9~2.8초, 열람 전 "닫기"
+# 확인 2.6초, 검색 버튼 0.33초). 같은 판정을 브라우저 안에서 자바스크립트 한 번으로 하면 4ms 안팎이고, 같은 요소를 찾는 것도
+# 실화면에서 확인했다. "보인다"의 판정은 셀레니움 is_displayed()가 실제로 브라우저에 넣어 돌리는 판정 코드(셀레니움 패키지의
+# isDisplayed.js)를 그대로 가져다 쓴다 — 처음엔 크기·visibility·opacity·overflow 잘림을 직접 흉내 냈는데, 실화면 45종 버튼 전수비교에서
+# 접힌 상단메뉴 "부동산"·"도움말" 링크가 한 건씩 계속 갈려서(흉내로는 끝차이가 남는다) 판정 코드 자체를 공유하는 쪽으로 바꿨다.
+# 글자는 호출부가 원래 쓰던 순서대로 고른다(text_sources: 'text'=화면에 보이는 글자(innerText), 'value', 'title').
+# 판정 코드를 못 불러오거나 자바스크립트가 실패하면 예전처럼 하나씩 묻는 방식으로 돌아간다(느리지만 결과는 같다).
+_FIND_FIRST_VISIBLE_ELEMENT_BY_TEXT_JS = """
+var css = arguments[0], exactText = arguments[1], pattern = arguments[2] ? new RegExp(arguments[2]) : null;
+var root = arguments[3] ? document.getElementById(arguments[3]) : document, sources = arguments[4];
+if (!root) return null;
+var shown = (__SELENIUM_IS_DISPLAYED_ATOM__);
+function textOf(e) {
+  for (var i = 0; i < sources.length; i++) {
+    var v = sources[i] === 'text' ? e.innerText : (sources[i] === 'value' ? (typeof e.value === 'string' ? e.value : '') : e.getAttribute(sources[i]));
+    if (v) return String(v);
+  }
+  return '';
+}
+var els = root.querySelectorAll(css);
+for (var i = 0; i < els.length; i++) {
+  var e = els[i];
+  if (!shown(e)) continue;
+  var t = textOf(e).trim();
+  if ((exactText !== null && t === exactText) || (pattern && pattern.test(t))) return e;
+}
+return null;
+"""
+
+
+_find_first_visible_element_by_text_script = None  # 판정 코드를 끼워 넣은 완성 스크립트(처음 한 번만 만든다), 못 만들면 ''
+
+
+def _find_first_visible_element_by_text(driver, css_selector, exact_text=None, text_pattern=None, root_id=None,
+                                        text_sources=('text', 'value', 'title')):
+    """화면에 보이는 요소 중 글자가 exact_text와 같거나 text_pattern(정규식 문자열 — 자바스크립트·파이썬 공통 문법만 쓸 것)에 맞는 첫
+    요소를 돌려준다(없으면 None). root_id를 주면 그 id 요소 안에서만 찾는다. 위 _FIND_FIRST_VISIBLE_ELEMENT_BY_TEXT_JS 설명 참고."""
+    global _find_first_visible_element_by_text_script
+    if _find_first_visible_element_by_text_script is None:
+        try:
+            # 셀레니움 자신이 is_displayed()용으로 읽는 것과 같은 파일·같은 방법(selenium/webdriver/remote/webelement.py의 _load_js)
+            atom = pkgutil.get_data('selenium.webdriver.remote', 'isDisplayed.js').decode('utf8')
+            _find_first_visible_element_by_text_script = _FIND_FIRST_VISIBLE_ELEMENT_BY_TEXT_JS.replace('__SELENIUM_IS_DISPLAYED_ATOM__', atom)
+        except Exception as e:
+            print(f'[진행] 보이는지 판정 코드를 불러오지 못해 예전 방식(하나씩 확인)으로 버튼을 찾음: {e}', flush=True)
+            _find_first_visible_element_by_text_script = ''
+    if _find_first_visible_element_by_text_script:
+        try:
+            return driver.execute_script(_find_first_visible_element_by_text_script, css_selector, exact_text, text_pattern,
+                                         root_id, list(text_sources))
+        except (StaleElementReferenceException, UnexpectedAlertPresentException, NoSuchWindowException, InvalidSessionIdException):
+            raise  # 호출부가 원래 이 예외들을 처리하던 그대로 둔다(창이 닫힌 경우 = 사용자 취소 판정 포함)
+        except Exception as e:
+            print(f'[진행] 버튼 찾기 자바스크립트 실패({type(e).__name__}) — 예전 방식(하나씩 확인)으로 다시 찾음', flush=True)
+    # 예전 방식 — 위 자바스크립트와 같은 판정을 웹드라이버로 하나씩 묻는다
+    pattern = re.compile(text_pattern) if text_pattern else None
+    if root_id:
+        css_selector = ', '.join(f'#{root_id} {part.strip()}' for part in css_selector.split(','))
+    for el in driver.find_elements(By.CSS_SELECTOR, css_selector):
+        try:
+            if not el.is_displayed():
+                continue
+            text = ''
+            for source in text_sources:
+                text = el.text if source == 'text' else el.get_attribute(source)
+                if text:
+                    break
+            text = (text or '').strip()
+            if (exact_text is not None and text == exact_text) or (pattern and pattern.search(text)):
+                return el
+        except StaleElementReferenceException:
+            continue
+    return None
+
+
 def _find_first_visible(driver, css_selectors):
     for sel in css_selectors:
         try:
@@ -605,15 +682,31 @@ def _visible_section_titles(driver):
     return titles
 
 
+def _wait_for_section_titles_to_change(driver, titles_before_click, max_seconds=1.5, settle_seconds=0.3):
+    """[2026-10-20 신규 — 사용자 요청 "등기부등본 발급 속도 개선"] [다음]을 누른 뒤의 대기. 예전엔 무조건 1.5초를 쉬고 다음 화면을
+    봤다(정상 흐름에서 2번 — 등기기록유형 선택 → 공개여부 확인 → 결제대상 확인). 대신 화면 제목이 클릭 전과 달라지는지(빈 제목 =
+    로딩 중으로 바뀐 것도 포함) 0.2초마다 보다가, 바뀌면 settle_seconds만 더 쉬고 돌아온다 — 새 화면의 버튼이 막 붙는 사이에 누르지
+    않게 하기 위한 여유다. max_seconds(예전 고정값 1.5초) 안에 안 바뀌면 예전과 똑같이 그냥 돌아와서, 호출부 루프가 화면을 다시
+    판별한다 — 그래서 예전보다 늦어지거나 흐름이 달라지는 경우는 없다.
+    @return float 제목이 바뀌기까지 걸린 초(안 바뀌었으면 None) — 진행로그·측정용"""
+    started_at = time.time()
+    while time.time() - started_at < max_seconds:
+        time.sleep(0.2)
+        if _visible_section_titles(driver) != titles_before_click:
+            changed_after = time.time() - started_at
+            time.sleep(settle_seconds)
+            return changed_after
+    return None
+
+
 def _home_entry_button(driver):
     _dismiss_alert_if_present(driver)  # 접속 직후에도 alert가 뜬 사례가 실측됨(2026-09-07)
-    for e in driver.find_elements(By.CSS_SELECTOR, 'a, button'):
-        try:
-            if e.is_displayed() and re.search(r'부동산\s*열람.?발급', e.text.strip()):
-                return e
-        except Exception:
-            continue
-    return None
+    # [2026-10-20 변경 — 속도 개선] 링크·버튼 528개를 하나씩 묻던 순회(0.9~2.8초)를 자바스크립트 1회로 바꿨다 —
+    # 판정(보이는 a/button 중 화면 글자가 "부동산 열람·발급" 패턴)은 그대로다(_find_first_visible_element_by_text 설명 참고).
+    try:
+        return _find_first_visible_element_by_text(driver, 'a, button', text_pattern=r'부동산\s*열람.?발급', text_sources=('text',))
+    except Exception:
+        return None  # 페이지가 막 바뀌는 중 등 — 호출부(wait.until)가 다시 부른다
 
 
 def _next_button(driver):
@@ -914,18 +1007,18 @@ def _select_sido_via_websquare(driver, sel_id, sido_text, _fail):
 
 def _click_search_button(driver, _fail):
     """검색 버튼을 찾아 클릭한다 — 소재지번검색·간편검색 공용(2026-09-14 정리)."""
-    search_btn = None
-    for e in driver.find_elements(By.CSS_SELECTOR, f'#{BASE} input, #{BASE} button, #{BASE} a'):
-        if not e.is_displayed():
-            continue
-        text = (e.get_attribute('value') or e.text or '').strip()
-        if text == '검색':
-            search_btn = e
-            break
+    # [2026-10-20 변경 — 속도 개선] 본문 요소를 하나씩 묻던 순회(0.33초)를 자바스크립트 1회로 바꿨다 — 판정(본문 안 보이는
+    # input/button/a 중 value 또는 화면 글자가 "검색")은 그대로다(_find_first_visible_element_by_text 설명 참고).
+    search_btn = _find_first_visible_element_by_text(driver, 'input, button, a', exact_text='검색', root_id=BASE,
+                                                     text_sources=('value', 'text'))
     if not search_btn:
         return _fail('검색 버튼을 찾지 못했습니다.')
     print('[진행] 검색 버튼 클릭', flush=True)
+    click_started_at = time.time()
     _click_with_fallback(driver, search_btn)
+    # [2026-10-20 측정용 기록 — 사용자 요청 "정확히 개선됐는지 확인"] "[측정]" 줄은 동작을 바꾸지 않는다 — 클릭 자체에 걸린 시간(=등기소가
+    # 클릭을 처리하는 동안 응답이 멈춘 시간)과 우리 코드가 기다린 시간을 갈라 남겨, 한 번 실행으로 예전 코드 대비 단축을 계산하기 위함.
+    print(f'[측정] 검색 클릭 {time.time() - click_started_at:.2f}초(등기소 처리) · 이후 고정 대기 0.5초(변경 없음)', flush=True)
     time.sleep(0.5)
     return None
 
@@ -1252,9 +1345,14 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
         if not _navigate_home(driver):
             return _fail('"보안프로그램 설치" 안내 페이지에서 벗어나지 못했습니다(3회 재시도).')
         print(f'[진행] 홈 접속 완료 — url={driver.current_url}', flush=True)
+        find_started_at = time.time()
         btn = wait.until(lambda d: _home_entry_button(d))
         print('[진행] "부동산 열람·발급" 버튼 찾음, 클릭', flush=True)
+        click_started_at = time.time()
         _click_with_fallback(driver, btn)
+        # [2026-10-20 측정용 기록] _click_search_button()의 "[측정]" 설명 참고 — 버튼 찾기는 예전 방식이면 0.9~2.8초(실측) 걸리던 곳
+        print(f'[측정] 진입 버튼 찾기 {click_started_at - find_started_at:.2f}초(화면 그려질 때까지 포함) · '
+              f'클릭 {time.time() - click_started_at:.2f}초(등기소 처리)', flush=True)
         time.sleep(0.5)
         _guard_not_stuck_on_security_page(driver)  # [2026-09-07] 홈 진입 클릭 뒤에도 튕길 수 있다 — 다음 20초 대기 전에 먼저 확인
         print(f'[진행] 부동산 열람·발급 화면 진입 확인 — url={driver.current_url}', flush=True)
@@ -1495,7 +1593,9 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
         nb = _next_button(driver)
         if not nb:
             return _fail('[다음] 버튼을 찾지 못했습니다(부동산 선택 후).', owner_masked)
+        click_started_at = time.time()
         _click_with_fallback(driver, nb)
+        print(f'[측정] 부동산 선택 [다음] 클릭 {time.time() - click_started_at:.2f}초(등기소 처리) · 이후 고정 대기 0.6초(변경 없음)', flush=True)  # [2026-10-20 측정용]
         time.sleep(0.6)
 
         if _is_selection_required_popup_visible(driver):
@@ -1547,17 +1647,33 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
     # 12회×2.5초(최악 30초) — 이 한도 안에서 "로딩 중 대기"와 "[다음] 화면 넘김"을 함께 소화한다.
     # 보안프로그램 설치페이지로 튕긴 경우는 _guard_not_stuck_on_security_page()가 먼저 끊으므로
     # 이 한도를 다 쓰는 일은 정말로 화면이 안 바뀔 때뿐이다.
-    for _ in range(12):
+    # [2026-10-20 변경 — 속도 개선] 고정 대기(로딩 중 1.5초·[다음] 뒤 1.5초)를 줄이면서 횟수(12회)로 세던 한도를 시간(18초)으로
+    # 바꿨다 — 확인 간격이 짧아져도 등기소가 느린 순간을 견디는 최대 시간은 예전과 같게 유지하기 위함. 위 주석의 "최악 30초"가
+    # 아니라 18초인 이유: 예전 루프는 매 바퀴 1.5초씩 12바퀴라 실제로는 약 18초 만에 끝났다(시뮬레이션 실측 19.7초) — 30초로
+    # 잡으면 화면이 정말 안 넘어갈 때 실패를 알리는 시점이 예전보다 늦어진다. 진행로그는 제목이 바뀔 때만 남긴다(같은 줄 반복 방지).
+    titles_deadline = time.time() + 18
+    printed_titles = None
+    was_loading = False
+    while time.time() < titles_deadline:
         _guard_not_stuck_on_security_page(driver)
         titles = _visible_section_titles(driver)
-        print(f'[진행] 현재 화면 제목={titles}', flush=True)
+        if titles != printed_titles:
+            print(f'[진행] 현재 화면 제목={titles}', flush=True)
+            printed_titles = titles
         # [2026-09-08 변경 — 실측으로 원인 확인] 제목이 하나도 안 잡히는 건 "모르는 화면"이 아니라 대개
         # 아직 로딩 중인 상태다(WebSquare가 화면 내용을 갈아끼우는 사이 h4가 없거나 "처리 중입니다"
         # 레이어). 예전엔 1.5초 한 번 더 보고 곧바로 "예상하지 못한 화면"으로 실패시켰는데, 같은 매물이
         # 다른 시각엔 같은 지점을 통과했으므로 등기소 응답이 느린 순간을 실패로 오판한 것(994214,
         # 2026-09-08 17:18 진행로그) — 비어 있으면 [다음]을 누르지 않고 이 루프 안에서 다시 기다린다.
         if not titles:
-            time.sleep(1.5)
+            time.sleep(0.3)  # [2026-10-20] 1.5초 → 0.3초 간격으로 다시 본다(최대 대기는 위 30초 그대로)
+            was_loading = True
+            continue
+        if was_loading:
+            # [2026-10-20] 로딩(빈 제목)이 끝나 제목이 막 나타난 순간이면, [다음]을 누르기 전에 한 번 더 쉬었다가 다시 본다 —
+            # _wait_for_section_titles_to_change()의 settle_seconds와 같은 이유(새 화면 버튼이 막 붙는 사이에 누르지 않게).
+            was_loading = False
+            time.sleep(0.3)
             continue
         last_titles = titles
         if any(k in t for t in titles for k in PAYMENT_TITLES):
@@ -1568,21 +1684,35 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
         nb3 = _next_button(driver)
         if not nb3:
             return _fail(f'[다음] 버튼을 찾지 못했습니다 — {titles}', owner_masked)
+        click_started_at = time.time()
         _click_with_fallback(driver, nb3)
-        time.sleep(1.5)
+        click_seconds = time.time() - click_started_at
+        wait_started_at = time.time()
+        changed_after = _wait_for_section_titles_to_change(driver, titles)  # [2026-10-20] 예전 고정 1.5초 대기 — 함수 설명 참고
+        # [2026-10-20 측정용 기록] 예전 코드는 클릭 뒤 무조건 1.5초를 기다렸다 — 이번에 실제로 기다린 시간과 나란히 남긴다
+        print(f'[측정] {titles} [다음] 클릭 {click_seconds:.2f}초(등기소 처리) · 제목 변화 '
+              f'{"없음(1.5초 기다림)" if changed_after is None else f"{changed_after:.2f}초 뒤"} · '
+              f'이번 대기 {time.time() - wait_started_at:.2f}초(예전 고정 1.5초)', flush=True)
 
     if reached != 'payment':
         return _fail(f'결제대상 확인 화면에 도달하지 못했습니다(마지막으로 본 화면 제목={last_titles}).', owner_masked)
     print('[진행] 결제대상 확인 화면 도달', flush=True)
-    time.sleep(0.5)
 
     # [2026-10-07 수정 — 오류로그 #2111/#2112] 화면 제목이 먼저 바뀐 뒤 표가 그려지는 데 시간이 걸리는 PC에서
     # 0.5초 대기 후 곧바로 찾으면 NoSuchElementException이 그대로 터져 "자동화 중 오류"로 보고됐다(같은 파일의
     # 결제대상목록 조회 두 곳은 이미 이 예외를 잡아 정상 실패로 처리한다). 최대 10초까지 표가 나타나길 기다리고,
     # 그래도 없으면 같은 방식으로 정상 실패 처리한다. 왜 이 두 번에서만 늦었는지(PC 속도/등기소 지연)는 확인 못 함.
+    # [2026-10-20 변경 — 속도 개선] 고정 0.5초를 빼고, 표 자체가 아니라 "표에 내용 있는 줄이 보일 때"까지 기다린다(최대 10초 그대로) —
+    # 위 사례처럼 표가 늦게 그려지는 경우 표 틀만 먼저 생기고 줄이 아직 없는 순간에 읽어 "일치하는 줄 없음"으로 끝나지 않게 하기 위함.
+    def _pay_tbody_with_filled_row(d):
+        tbody = d.find_element(By.ID, f'{BASE}_grd_bpay_obj_list_body_tbody')
+        for tr in tbody.find_elements(By.TAG_NAME, 'tr'):
+            if 'display: none' not in (tr.get_attribute('style') or '') and tr.text.strip() != '':
+                return tbody
+        return False
     try:
-        pay_tbody = WebDriverWait(driver, 10).until(
-            lambda d: d.find_element(By.ID, f'{BASE}_grd_bpay_obj_list_body_tbody'))
+        pay_tbody = WebDriverWait(driver, 10, poll_frequency=0.25,
+                                  ignored_exceptions=(NoSuchElementException, StaleElementReferenceException)).until(_pay_tbody_with_filled_row)
     except TimeoutException:
         return _fail('결제대상 확인 화면의 결제대상 표를 10초 안에 찾지 못했습니다.', owner_masked)
     pay_rows = [tr for tr in pay_tbody.find_elements(By.TAG_NAME, 'tr')
@@ -2199,7 +2329,7 @@ def _wait_for_human_to_clear_captcha(driver, credentials=None, timeout_seconds=3
         if not _is_captcha_required(driver):
             print('[진행] 캡차 화면이 사라짐 — 로그인 완료로 보고 이어서 진행', flush=True)
             return True
-        time.sleep(1)
+        time.sleep(0.25)  # [2026-10-20 변경 — 속도 개선] 1초 → 0.25초(캡차칸 확인 1회 9ms 실측 — 자주 봐도 부담 없음)
     print('[진행] 캡차 입력 대기시간을 초과함', flush=True)
     return False
 
@@ -2284,7 +2414,7 @@ def _route_after_payment_click(driver, credentials, wait_seconds=15):
                 break
         except NoSuchElementException:
             pass
-        time.sleep(0.5)
+        time.sleep(0.25)  # [2026-10-20 변경 — 속도 개선] 0.5초 → 0.25초(판별 조건은 그대로)
 
     if screen == 'login':
         login_result = _fill_login_popup_if_present(driver, credentials)
@@ -2348,6 +2478,7 @@ def _prepare_payment_screen(driver, credentials):
 def _finish_after_payment_confirm(driver):
     """content_iros.js::finishAfterPaymentConfirm() 이식 — 결제요청 확인 팝업 [확인] → 결제결과
     확인(있으면) 까지."""
+    confirm_wait_started_at = time.time()  # [2026-10-20 측정용]
     deadline = time.time() + 15
     confirm_btn = None
     while time.time() < deadline:
@@ -2359,26 +2490,37 @@ def _finish_after_payment_confirm(driver):
                 break
         except NoSuchElementException:
             pass
-        time.sleep(0.5)
+        time.sleep(0.25)  # [2026-10-20 변경 — 속도 개선] 0.5초 → 0.25초(찾는 조건은 그대로)
     if not confirm_btn:
         return {'ok': False, 'message': f'결제요청 확인 팝업의 [확인] 버튼을 찾지 못했습니다. | {_diag_snapshot(driver)}'}
+    confirm_seen_seconds = time.time() - confirm_wait_started_at
+    click_started_at = time.time()
     _click_with_fallback(driver, confirm_btn)
-    time.sleep(1.5)
+    # [2026-10-20 측정용 기록] 확인 간격(예전 0.5초 → 0.25초)의 효과와 클릭 자체(등기소 결제 처리)에 걸린 시간을 남긴다
+    print(f'[측정] 결제요청 확인 팝업 {confirm_seen_seconds:.2f}초 만에 감지(확인 간격 0.25초, 예전 0.5초) · '
+          f'[확인] 클릭 {time.time() - click_started_at:.2f}초(등기소 처리)', flush=True)
 
     # [2026-10-18 진단 추가] 결제 뒤 "열람 목록을 찾지 못함" 실패(오류로그 #2216·#2221)의 원인 후보 중 하나가 "결제결과 확인 창이 1.5초보다
     # 늦게 떠서 못 눌렀다"는 것이라, 이 시점에 그 버튼이 어땠는지 진행로그에 남긴다(동작은 그대로).
+    # [2026-10-20 변경 — 속도 개선] 예전엔 무조건 1.5초 기다린 뒤 한 번만 봤다 — 같은 1.5초 동안 0.25초마다 보다가 버튼이 보이는 즉시 누른다.
+    # 끝까지 안 보이면 예전과 똑같이 1.5초 뒤 상태(없음/있지만 안 보임)를 남기고 넘어간다(지금보다 늦어지는 경우는 없다).
     result_btn_state = '없음'
-    try:
-        result_btn = driver.find_element(By.CSS_SELECTOR, 'input[id$="_btn_cfrm"]')
-        if result_btn.is_displayed():
-            _click_with_fallback(driver, result_btn)
-            result_btn_state = '보여서 누름'
-            time.sleep(1)
-        else:
+    result_wait_started_at = time.time()
+    while True:
+        try:
+            result_btn = driver.find_element(By.CSS_SELECTOR, 'input[id$="_btn_cfrm"]')
+            if result_btn.is_displayed():
+                _click_with_fallback(driver, result_btn)
+                result_btn_state = f'{time.time() - result_wait_started_at:.1f}초에 보여서 누름'
+                time.sleep(1)
+                break
             result_btn_state = '있지만 안 보임'
-    except NoSuchElementException:
-        pass
-    print(f'[진단] 결제 확인 1.5초 뒤 "결제결과 확인" 버튼: {result_btn_state}', flush=True)
+        except NoSuchElementException:
+            result_btn_state = '없음'
+        if time.time() - result_wait_started_at >= 1.5:
+            break
+        time.sleep(0.25)
+    print(f'[진단] 결제 확인 뒤 최대 1.5초 동안 "결제결과 확인" 버튼: {result_btn_state}', flush=True)
     return {'ok': True, 'message': ''}
 
 
@@ -2398,7 +2540,7 @@ def _wait_for_target_list_rows(driver, timeout=15):
                     if 'display: none' not in (tr.get_attribute('style') or '') and tr.text.strip() != '']
             if rows:
                 return rows
-        time.sleep(1)
+        time.sleep(0.25)  # [2026-10-20 변경 — 속도 개선] 1초 → 0.25초(확인하는 조건은 그대로, 목록이 뜬 뒤 알아채는 지연만 준다)
     return []
 
 
@@ -2413,17 +2555,13 @@ def _close_document_viewer_if_present(driver, timeout=5):
     @return bool 닫았거나 애초에 없었으면 True, 시간 안에 못 닫았으면 False"""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        close_btn = None
-        for el in driver.find_elements(By.CSS_SELECTOR, 'a, button, input'):
-            try:
-                if not el.is_displayed():
-                    continue
-                text = (el.text or el.get_attribute('value') or el.get_attribute('title') or '').strip()
-                if text == '닫기':
-                    close_btn = el
-                    break
-            except StaleElementReferenceException:
-                continue
+        # [2026-10-20 변경 — 속도 개선] 화면 전체 544개 요소를 하나씩 묻던 순회(실측 2.6초 — 단건 발급은 열람 직전 매번 이 순회를
+        # 한 바퀴 다 돌고 "없음"으로 끝났다)를 자바스크립트 1회로 바꿨다. 판정(보이는 a/button/input 중 화면 글자·value·title이
+        # "닫기")은 그대로다(_find_first_visible_element_by_text 설명 참고).
+        try:
+            close_btn = _find_first_visible_element_by_text(driver, 'a, button, input', exact_text='닫기')
+        except StaleElementReferenceException:
+            close_btn = None
         if not close_btn:
             return True  # 이미 닫혀있음(또는 애초에 열린 적 없음)
         _click_with_fallback(driver, close_btn)
@@ -2491,9 +2629,14 @@ def _view_and_save(driver, payload, download_dir):
     [2026-09-28 추가] 시작하자마자 이전 문서의 미리보기 팝업이 남아있으면 먼저 닫는다 — 위
     _close_document_viewer_if_present() 주석 참고. 이 함수를 호출하는 어디서든(지금은 일괄발급
     루프뿐이지만 나중에 다른 곳에서도) 안전하도록 함수 자신이 방어한다."""
+    close_check_started_at = time.time()  # [2026-10-20 측정용]
     _close_document_viewer_if_present(driver)
+    close_check_seconds = time.time() - close_check_started_at
     list_wait_started_at = time.time()
     rows = _wait_for_target_list_rows(driver)
+    # [2026-10-20 측정용 기록] "닫기" 확인은 예전 방식(하나씩 묻기)이면 실화면 실측 약 2초 걸리던 곳, 목록 확인 간격은 예전 1초 → 0.25초
+    print(f'[측정] 열람 전 "닫기" 확인 {close_check_seconds:.2f}초(예전 방식 실측 약 2초) · '
+          f'열람 목록 {time.time() - list_wait_started_at:.2f}초 만에 감지(확인 간격 0.25초, 예전 1초)', flush=True)
     if not rows:
         # [2026-10-18 진단 추가 — 오류로그 #2216·#2221] 원인을 추정으로 고치지 않고 확정하기 위해, 그 순간의 화면을 남기고 아무것도
         # 누르지 않은 채 VIEW_LIST_LATE_OBSERVE_SEC만큼 더 지켜본다. 목록이 늦게 나타나면 "대기시간 부족", 끝내 안 나타나면 마지막 화면이
@@ -2533,16 +2676,24 @@ def _view_and_save(driver, payload, download_dir):
                 break
     if not view_btn:
         return {'ok': False, 'message': f'목록에서 [열람] 버튼을 찾지 못했습니다. | {_diag_snapshot(driver)}'}
+    click_started_at = time.time()
     _click_with_fallback(driver, view_btn)
+    print(f'[측정] [열람] 클릭 {time.time() - click_started_at:.2f}초(등기소 처리) · 이후 고정 대기 1초(변경 없음)', flush=True)  # [2026-10-20 측정용]
     time.sleep(1)
 
     try:
         save_btn = driver.find_element(By.CSS_SELECTOR, 'input[id$="_btn_download"]')
     except NoSuchElementException:
         return {'ok': False, 'message': f'저장 버튼을 찾지 못했습니다 — 열람까지는 진행됐습니다(결제취소 불가 상태). | {_diag_snapshot(driver)}'}
+    click_started_at = time.time()
     _click_with_fallback(driver, save_btn)
+    save_click_seconds = time.time() - click_started_at
 
+    download_wait_started_at = time.time()
     downloaded = _wait_for_download(download_dir, timeout=60)
+    # [2026-10-20 측정용 기록] 다운로드 완료 판정은 예전 "1초 간격·두 번 같은 크기" → "0.25초 간격·0.5초 이상 같은 크기"
+    print(f'[측정] [저장] 클릭 {save_click_seconds:.2f}초 · 다운로드 완료 판정까지 {time.time() - download_wait_started_at:.2f}초'
+          f'(예전 방식은 파일이 생긴 뒤 약 1~2초 더 걸림)', flush=True)
     if not downloaded:
         return {'ok': False, 'message': f'다운로드가 완료되지 않았습니다(60초 대기) — 열람까지는 진행됐습니다. | {_diag_snapshot(driver)}'}
     return {'ok': True, 'file_path': downloaded, 'message': ''}
@@ -2551,17 +2702,22 @@ def _view_and_save(driver, payload, download_dir):
 def _wait_for_download(download_dir, timeout=60):
     """download_dir에 새 파일이 완전히 받아질 때까지 기다린다. 크롬은 받는 동안 .crdownload
     확장자를 붙이므로 그게 사라지고 크기가 두 번 연속 같을 때 완료로 본다."""
+    # [2026-10-20 변경 — 속도 개선] 1초 간격으로 "크기가 두 번 연속 같음"을 보던 것을 0.25초 간격으로 보되, 크기가 0.5초 이상
+    # 그대로일 때 완료로 본다 — 간격만 줄이면 "같은 크기"를 판정하는 시간 폭이 1초에서 0.25초로 좁아져 덜 보수적이 되므로, 최소 0.5초는
+    # 지켜본다. 파일이 다 받아진 뒤 알아채기까지의 지연은 약 2초에서 0.5~0.75초로 준다(시뮬레이션: 1.0초에 완료된 파일을 예전 3.0초 → 1.5초에 알아챔).
     deadline = time.time() + timeout
-    last_size = {}
+    size_unchanged_since = {}  # 파일명 → (크기, 그 크기를 처음 본 시각)
     while time.time() < deadline:
         names = [n for n in os.listdir(download_dir) if not n.endswith('.crdownload') and not n.startswith('.')]
         if names:
             path = os.path.join(download_dir, names[0])
             size = os.path.getsize(path)
-            if last_size.get(names[0]) == size and size > 0:
+            seen = size_unchanged_since.get(names[0])
+            if seen is None or seen[0] != size:
+                size_unchanged_since[names[0]] = (size, time.time())
+            elif size > 0 and time.time() - seen[1] >= 0.5:
                 return path
-            last_size[names[0]] = size
-        time.sleep(1)
+        time.sleep(0.25)
     return None
 
 
@@ -2706,11 +2862,20 @@ def issue_real_estate_register(payload, credentials, options=None):
         # 뿐인 버튼, content_iros.js::proceedToPaymentScreen() 주석 참고).
         print('[진행] [결제] 버튼(첫 번째) 클릭 — 아직 청구되지 않음', flush=True)
         pay_btn = driver.find_element(By.ID, f'{BASE}_btn_bpay')
+        click_started_at = time.time()
         _click_with_fallback(driver, pay_btn)
-        time.sleep(1)
+        pay_click_seconds = time.time() - click_started_at
+        # [2026-10-20 변경 — 속도 개선] 1초 → 0.3초. 바로 아래 _route_after_payment_click()이 다음 화면(결제 준비 탭·로그인 팝업·
+        # 중복결제 안내)이 "보이는지"를 0.25초마다 최대 15초 확인하므로 고정 대기가 길 필요가 없다 — 그 세 화면 요소는 클릭 전
+        # 결제대상 확인 화면에는 보이지 않으므로 일찍 확인해도 잘못 판별하지 않는다.
+        time.sleep(0.3)
 
+        route_started_at = time.time()
         routed = _route_after_payment_click(driver, credentials)
         print(f'[진행] 결제 클릭 후 라우팅 결과 = {routed}', flush=True)
+        # [2026-10-20 측정용 기록] 예전엔 클릭 뒤 고정 1초 + 0.5초 간격 확인이었다
+        print(f'[측정] [결제](첫 번째) 클릭 {pay_click_seconds:.2f}초(등기소 처리) · 고정 대기 0.3초(예전 1초) · '
+              f'다음 화면 판별 {time.time() - route_started_at:.2f}초(확인 간격 0.25초, 예전 0.5초 — 로그인 팝업 처리 포함 시 그 시간도 포함)', flush=True)
         if routed == 'duplicate-handled':
             if stop_before_view:
                 result['ok'] = True
@@ -2726,11 +2891,13 @@ def issue_real_estate_register(payload, credentials, options=None):
             result['message'] = f'결제 화면 진입 중 예상하지 못한 화면이 나타났습니다. | {_diag_snapshot(driver)}'
             return result
 
+        prep_started_at = time.time()  # [2026-10-20 측정용]
         prep = _prepare_payment_screen(driver, credentials)
         if not prep.get('ready'):
             result['message'] = f'{prep.get("message", "결제 준비를 마치지 못했습니다.")} | {_diag_snapshot(driver)}'
             return result
         print('[진행] 결제수단(선불전자지급수단) 정보 입력 완료', flush=True)
+        print(f'[측정] 결제수단 탭·동의·번호 입력 {time.time() - prep_started_at:.2f}초(고정 대기 1.2초 포함, 변경 없음)', flush=True)
 
         if auto_confirm:
             print('[진행] [결제] 버튼(두 번째, 실제 결제) 클릭 — 진짜 마우스 클릭 시도', flush=True)
@@ -2743,11 +2910,13 @@ def issue_real_estate_register(payload, credentials, options=None):
             # 있을 가능성이 있어, 이 클릭만큼은 셀레니움 표준 click()(진짜 마우스 이벤트)으로
             # 시도한다. 다른 버튼과 달리 이 버튼은 화면에 가려질 일이 없어 표준 click()으로도
             # 문제없이 눌릴 것으로 본다 — 혹시 실패하면(가려짐 등) 기존 방식으로 한 번 더 시도한다.
+            click_started_at = time.time()
             try:
                 pay_btn2.click()
             except Exception as e:
                 print(f'[진행] 표준 click() 실패({type(e).__name__}) — execute_script 방식으로 재시도', flush=True)
                 _click_with_fallback(driver, pay_btn2)
+            print(f'[측정] [결제](두 번째, 실제 결제) 클릭 {time.time() - click_started_at:.2f}초(등기소 처리, 재시도 포함)', flush=True)  # [2026-10-20 측정용]
         else:
             # [2026-09-07 신규 — 사용자 요청] "신청확인 자동 진행"이 꺼져 있으면(창이 실제로 보이는
             # 상태다) 결제 버튼을 직접 누르지
