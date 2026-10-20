@@ -2122,6 +2122,84 @@ def _show_always_on_top_notice(text, title, timeout_seconds=None):
                 pass
 
 
+# ────────────────────────────────────────────────────────────────────────
+# [2026-10-20 신규 — 사용자 요청 "등기소 창 이어 쓰기"] 낱건 발급이 끝난 등기소 크롬을 닫지 않고 숨겨 두었다가 다음 발급에 다시
+# 꺼내 쓴다(로그인·캡차를 건너뛰기 위함 — 일괄발급 기록 3건에서 같은 창이면 두 번째 매물부터 캡차 없이 이어지는 것을 확인).
+# 보관(대기·만료·다음 요청 받기)은 local_helper/main.py::_keep_iros_browser_until_next_issue()가 하고, 여기는 창을 숨기고 꺼내는 일만 한다.
+# 최소화·화면 밖 이동은 작업표시줄에 버튼이 남아(사용자 지적 "보이지도 않는데 표시돼 있으면 불편") 창 자체를 숨긴다(SW_HIDE) — 숨긴
+# 창은 작업표시줄·Alt+Tab에 나오지 않는다. 메인 창만 숨기면 등기소가 따로 띄운 공지 팝업 창이 작업표시줄에 남는 것을 실측으로 확인해서
+# (2026-10-20, "시스템 점검 및 변경 관련 서비스 중단안내" 창), 그 크롬에 속한 보이는 창을 전부 숨긴다.
+# ────────────────────────────────────────────────────────────────────────
+
+def _visible_top_windows_of_iros_browser(driver):
+    """셀레니움이 띄운 크롬(chromedriver와 그 자식 프로세스들)에 속한, 지금 보이는 최상위 창 목록 [(넓이, hwnd, 제목), ...]."""
+    import psutil
+    import win32gui
+    import win32process
+    driver_pid = driver.service.process.pid
+    target_pids = {driver_pid}
+    try:
+        for child in psutil.Process(driver_pid).children(recursive=True):
+            target_pids.add(child.pid)
+    except Exception:
+        pass
+    found = []
+
+    def _enum_handler(hwnd, _):
+        if win32gui.IsWindowVisible(hwnd) and win32process.GetWindowThreadProcessId(hwnd)[1] in target_pids:
+            left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+            found.append(((right - left) * (bottom - top), hwnd, win32gui.GetWindowText(hwnd)))
+        return True  # 끝까지 순회 — _find_chrome_main_window()의 EnumWindows 예외 주석과 같은 이유
+
+    win32gui.EnumWindows(_enum_handler, None)
+    return found
+
+
+def _hide_all_windows_of_iros_browser(driver):
+    """그 크롬의 보이는 창을 전부 숨긴다. 처음 숨길 때 메인 창(제목 있는 가장 큰 창)과 그 탭을 기억해 두어 _show_iros_browser_main_window()가
+    다시 꺼낼 수 있게 한다(숨긴 창은 _find_chrome_main_window()의 "보이는 창" 검색에 안 잡히기 때문).
+    보관 중 등기소가 새 창을 띄워도 보관 루프가 이 함수를 반복 호출해 다시 숨긴다. @return 이번에 숨긴 창 수"""
+    import win32gui
+    import win32con
+    windows = _visible_top_windows_of_iros_browser(driver)
+    if not getattr(driver, '_obang_iros_main_hwnd', None):
+        titled = [w for w in windows if w[2]]
+        if titled:
+            driver._obang_iros_main_hwnd = max(titled)[1]
+            try:
+                driver._obang_iros_main_handle = driver.current_window_handle
+            except Exception:
+                driver._obang_iros_main_handle = None
+    for _, hwnd, _ in windows:
+        win32gui.ShowWindow(hwnd, win32con.SW_HIDE)
+    return len(windows)
+
+
+def _show_iros_browser_main_window(driver):
+    """숨겨 둔 크롬의 메인 창만 다시 보이게 하고(공지 팝업 창들은 숨긴 채로 둔다) 처음 발급 때와 같은 위치·크기로 놓는다 — 결제 단계의
+    보안프로그램 확인은 실제로 보이는 창이 있어야 통과하므로(이 파일 상단 headless 주석 참고) 발급을 이어 가기 전에 반드시 부른다.
+    @return bool 메인 창을 다시 보이게 했으면 True"""
+    import win32gui
+    import win32con
+    hwnd = getattr(driver, '_obang_iros_main_hwnd', None)
+    if not hwnd or not win32gui.IsWindow(hwnd):
+        return False
+    win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+    main_handle = getattr(driver, '_obang_iros_main_handle', None)
+    if main_handle:
+        try:
+            driver.switch_to.window(main_handle)  # 숨겨 둔 사이 등기소가 새 창을 띄웠어도 원래 탭으로 돌아온다
+        except Exception:
+            pass
+    try:
+        driver.set_window_size(1280, 1000)
+        driver.set_window_position(80, 40)
+    except Exception:
+        pass
+    _bring_chrome_window_to_foreground(driver)
+    return True
+
+
 def _bring_chrome_window_to_foreground(driver):
     """[2026-09-29 추가 — 사용자 리포트 "캡차 확인을 눌러도 바로 타이핑이 안 되고, 화면을 직접
     클릭해야만 입력된다"] pyautogui.alert()는 셀레니움 크롬 창과 무관한 OS 레벨 별도 창이라, 사람이
@@ -2788,6 +2866,12 @@ def issue_real_estate_register(payload, credentials, options=None):
         'stop_before_view': bool = False,  # [2026-09-08 추가 — 사용자 요청, 실결제 검증용 안전장치]
             # 결제(700원)는 실제로 진행하되, [열람] 버튼은 누르지 않고 멈춘다 — 등기소는 열람 전까지는
             # 결제취소가 가능하므로, 결제 자체가 정상적으로 되는지만 안전하게 확인하고 싶을 때 쓴다.
+        'kept_driver': WebDriver = None,  # [2026-10-20 추가 — "등기소 창 이어 쓰기"] 직전 발급에서 숨겨 보관해 둔 크롬. 주면 새로
+            # 띄우지 않고 그 창을 다시 꺼내 같은 흐름을 그대로 탄다 — 로그인이 살아 있으면 캡차 단계만 자연히 건너뛰고, 만료됐으면
+            # 지금처럼 캡차 화면이 나온다. 다운로드 폴더는 크롬을 띄울 때 정해진 폴더를 비우고 그대로 쓴다(아래 본문 주석 참고).
+        'keep_browser_after_success': bool = False,  # [2026-10-20 추가] 성공했고 close_when_done이면 닫는 대신 창을 전부 숨기고
+            # result['kept_driver']로 돌려준다(보관은 호출부 책임). 실패·사용자 취소·stop_before_view는 지금과 똑같이 처리한다 —
+            # 실패는 사유를 읽도록 창을 열어 두고, stop_before_view는 결제 후 화면을 사람이 보는 시험용이라 보관하지 않는다.
     }
     [2026-10-14 변경 — 사용자 지적 "옵션 이름이 실제 동작과 다르다"] 예전엔 'headless'(몰래 작동) 옵션이
     있어서, 켜면 auto_confirm/close_when_done을 True로 강제하고 실패 알림창도 생략했다. 그런데 2026-09-18에
@@ -2843,8 +2927,47 @@ def issue_real_estate_register(payload, credentials, options=None):
         'download.prompt_for_download': False,
         'download.directory_upgrade': True,
         'plugins.always_open_pdf_externally': True,  # PDF 뷰어로 열지 않고 그대로 다운로드
+        # [2026-10-20 추가 — "등기소 창 이어 쓰기"] 같은 창으로 두 번째 등기부를 받을 때 크롬의 "이 사이트가 여러 파일을 다운로드하려고
+        # 합니다" 확인에 막히지 않게 미리 허용한다(실측: 스크립트로 연달아 내려받으면 두 번째가 저장되지 않았다). 실제 [저장] 클릭은 사람 클릭과
+        # 같은 입력이라 막히지 않을 가능성이 높지만(일괄발급이 한 창에서 2건을 연달아 받은 기록 있음), 보관 창은 여러 발급을 거치므로 확실히 해 둔다.
+        'profile.default_content_setting_values.automatic_downloads': 1,
     })
-    driver = _launch_chrome(chrome_options)
+    # [2026-10-20 추가 — "등기소 창 이어 쓰기"] 보관해 둔 크롬이 있으면 그 창을 다시 꺼내 쓴다(위 options 'kept_driver' 설명 참고).
+    # 다운로드 폴더는 크롬을 띄울 때 정한 첫 발급의 폴더로 고정돼 있다 — 그 폴더(driver._obang_iros_download_dir)를 비우고 그대로 쓴다.
+    # 지난 발급 파일은 이미 NAS로 옮겨져(handle_move_file) 남아 있지 않은 게 정상이고, 혹시 남은 게 있어도 비워야 _wait_for_download()가
+    # 이번 파일만 본다. 처음엔 CDP Browser.setDownloadBehavior로 새 폴더를 지정했는데, 그러면 크롬이 스스로 내려받는 확장 꾸러미(CRX,
+    # "downloads.htm")까지 그 폴더로 들어와 등기부 파일로 착각할 위험이 실측으로 확인돼(2026-10-20) 버렸다.
+    # 꺼내지 못하면(창이 사라짐 등) 보관 크롬은 닫고 지금처럼 새로 띄운다(이어 쓰기는 실패해도 예전 방식으로 돌아갈 뿐 발급을 막지 않는다).
+    kept_driver = options.get('kept_driver')
+    keep_browser_after_success = bool(options.get('keep_browser_after_success', False))
+    driver = None
+    reused_kept_browser = False
+    if kept_driver is not None:
+        try:
+            kept_download_dir = getattr(kept_driver, '_obang_iros_download_dir', '')
+            if not kept_download_dir or not os.path.isdir(kept_download_dir):
+                raise RuntimeError('보관 창의 다운로드 폴더를 모름')
+            for leftover_name in os.listdir(kept_download_dir):
+                leftover_path = os.path.join(kept_download_dir, leftover_name)
+                if os.path.isfile(leftover_path):
+                    os.remove(leftover_path)
+            if _show_iros_browser_main_window(kept_driver):
+                download_dir = kept_download_dir
+                driver = kept_driver
+                reused_kept_browser = True
+                print('[진행] 보관 중인 등기소 창을 다시 꺼내 이어서 발급 — 크롬 기동·로그인 생략(로그인이 만료됐으면 캡차 화면이 나옴)', flush=True)
+            else:
+                print('[진행] 보관 중인 등기소 창의 메인 창을 찾지 못해 새 창으로 시작', flush=True)
+        except Exception as e:
+            print(f'[진행] 보관 중인 등기소 창을 쓰지 못해 새 창으로 시작: {type(e).__name__}: {e}', flush=True)
+        if driver is None:
+            try:
+                kept_driver.quit()
+            except Exception:
+                pass
+    if driver is None:
+        driver = _launch_chrome(chrome_options)
+        driver._obang_iros_download_dir = download_dir  # [2026-10-20] 이 크롬을 보관했다가 이어 쓸 때 같은 폴더를 비우고 쓰기 위함(위 설명 참고)
     # [2026-09-13 추가 — 사용자 리포트로 발견된 버그 수정] stop_before_view=True로 멈춘 경우
     # ok=True인데도 file_path가 항상 빈 값이다(원래 설계 — 결제만 하고 열람·다운로드는 일부러
     # 안 함). 그런데 호출부(local_helper/main.py)가 이 둘을 구분하지 않고 ok=True면 무조건 파일을
@@ -2854,9 +2977,10 @@ def issue_real_estate_register(payload, credentials, options=None):
     result = {'ok': False, 'file_path': '', 'address': '', 'unique_no': '', 'owner_masked': '', 'message': '',
               'user_cancelled': False, 'stopped_before_view': False}
     try:
-        print(f'[진행] issue_real_estate_register 시작 — true_headless_test={IROS_TRUE_HEADLESS_FOR_TEST}, lookup_only={lookup_only}, auto_confirm={auto_confirm}, stop_before_view={stop_before_view}', flush=True)
-        driver.set_window_size(1280, 1000)
-        if not IROS_TRUE_HEADLESS_FOR_TEST:
+        print(f'[진행] issue_real_estate_register 시작 — true_headless_test={IROS_TRUE_HEADLESS_FOR_TEST}, lookup_only={lookup_only}, auto_confirm={auto_confirm}, stop_before_view={stop_before_view}, 보관창이어쓰기={reused_kept_browser}', flush=True)
+        if not reused_kept_browser:  # 이어 쓰는 창은 _show_iros_browser_main_window()가 이미 같은 위치·크기로 놓았다
+            driver.set_window_size(1280, 1000)
+        if not IROS_TRUE_HEADLESS_FOR_TEST and not reused_kept_browser:
             driver.set_window_position(80, 40)  # 사용자 확인이 가능하도록 보이는 위치에서 실행
         if IROS_TRUE_HEADLESS_FOR_TEST:
             # --window-size 플래그로는 안 바뀌던 screen.width/height(가짜 800x600)를 CDP로 직접
@@ -3022,12 +3146,25 @@ def issue_real_estate_register(payload, credentials, options=None):
             _alert_failure_and_keep_window_open(driver, result['message'])
             close_when_done = False
         if close_when_done:
+            # [2026-10-20 추가 — "등기소 창 이어 쓰기"] 성공했고 호출부가 보관을 원하면 닫지 않고 창을 전부 숨겨 돌려준다(위 options
+            # 'keep_browser_after_success' 설명 참고). 숨기다 실패하면 보관하지 않고 예전처럼 닫는다.
+            # 여기서 result에 넣는 값은 try 안의 return result와 같은 객체라 호출부에 그대로 전달된다.
+            kept_for_next_issue = False
+            if keep_browser_after_success and result['ok'] and not result.get('stopped_before_view'):
+                try:
+                    hidden_count = _hide_all_windows_of_iros_browser(driver)
+                    result['kept_driver'] = driver
+                    kept_for_next_issue = True
+                    print(f'[진행] 성공 — 창 {hidden_count}개를 숨겨 다음 발급을 위해 보관(닫지 않음)', flush=True)
+                except Exception as e:
+                    print(f'[진행] 창을 숨기지 못해 보관하지 않고 닫음: {type(e).__name__}: {e}', flush=True)
             # [2026-09-12 추가] 사용자가 이미 창을 닫은 상태면 quit()도 예외를 낼 수 있다 — 위에서
             # 막 만든 result가 이 예외로 덮여 함수 자체가 크래시하지 않도록 보호한다.
-            try:
-                driver.quit()
-            except Exception:
-                pass
+            if not kept_for_next_issue:
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
         # close_when_done=False면 창을 열어둔다 — 담당자가 화면을 보고 남은 절차를 직접 마칠 수 있게.
 
 
