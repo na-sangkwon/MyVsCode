@@ -2502,8 +2502,12 @@ def _finish_after_payment_confirm(driver):
 
     # [2026-10-18 진단 추가] 결제 뒤 "열람 목록을 찾지 못함" 실패(오류로그 #2216·#2221)의 원인 후보 중 하나가 "결제결과 확인 창이 1.5초보다
     # 늦게 떠서 못 눌렀다"는 것이라, 이 시점에 그 버튼이 어땠는지 진행로그에 남긴다(동작은 그대로).
-    # [2026-10-20 변경 — 속도 개선] 예전엔 무조건 1.5초 기다린 뒤 한 번만 봤다 — 같은 1.5초 동안 0.25초마다 보다가 버튼이 보이는 즉시 누른다.
-    # 끝까지 안 보이면 예전과 똑같이 1.5초 뒤 상태(없음/있지만 안 보임)를 남기고 넘어간다(지금보다 늦어지는 경우는 없다).
+    # [2026-10-20 원인 확정·수정 — 사용자 요청] 위 후보가 실제 원인이었다: 2026-10-20 17:10 실패(170177) 진단 기록에 "1.5초 뒤 결과 버튼: 없음"
+    # 다음, 60초 내내 "결제결과확인(요청하신 결제에 대한 승인이 완료되었습니다)" 창이 열린 채 열람 목록이 끝내 안 나타났다 — 이 창은 [확인]을
+    # 눌러야 목록이 나오는데, 1.5초 시점에 한 번만 보고 지나가서 늦게 뜬 창을 아무도 누르지 않았다(같은 날 정상 건은 1.7초에 떴다).
+    # 그래서 "결과 버튼이 보이면 누르고 끝 / 열람 목록이 먼저 보이면(결과 창 없이 바로 목록이 나온 경우) 그냥 끝"을 최대 10초까지 기다린다 —
+    # 둘 중 먼저 오는 쪽에서 바로 끝나므로 평소에는 느려지지 않는다. 10초 안에 둘 다 안 오면 예전처럼 그대로 넘어가고, 열람 단계의 목록
+    # 대기·진단(_view_and_save)이 이어서 처리한다.
     result_btn_state = '없음'
     result_wait_started_at = time.time()
     while True:
@@ -2517,11 +2521,37 @@ def _finish_after_payment_confirm(driver):
             result_btn_state = '있지만 안 보임'
         except NoSuchElementException:
             result_btn_state = '없음'
-        if time.time() - result_wait_started_at >= 1.5:
+        if _visible_target_list_rows(driver):
+            result_btn_state += f' — 그 사이 {time.time() - result_wait_started_at:.1f}초에 열람 목록이 먼저 보여 그대로 진행'
+            break
+        if time.time() - result_wait_started_at >= RESULT_POPUP_OR_VIEW_LIST_WAIT_SEC:
+            result_btn_state += f' — {RESULT_POPUP_OR_VIEW_LIST_WAIT_SEC}초 동안 결과 버튼·열람 목록 둘 다 안 보임'
             break
         time.sleep(0.25)
-    print(f'[진단] 결제 확인 뒤 최대 1.5초 동안 "결제결과 확인" 버튼: {result_btn_state}', flush=True)
+    print(f'[진단] 결제 확인 뒤 "결제결과 확인" 버튼: {result_btn_state}', flush=True)
     return {'ok': True, 'message': ''}
+
+
+# [2026-10-20] 결제 확인 뒤 "결제결과 확인 창" 또는 "열람 목록" 중 하나가 나타나길 기다리는 최대 시간 — _finish_after_payment_confirm() 설명 참고.
+# 실측: 정상 건 1.7초, 실패 건(170177)은 1.5초 이후 언젠가(정확한 시점은 미확인). 그보다 늦는 경우를 대비해 여유를 크게 잡았다.
+RESULT_POPUP_OR_VIEW_LIST_WAIT_SEC = 10
+
+
+def _visible_target_list_rows(driver):
+    """"미열람"/"재열람" 목록에 지금 보이는 내용 있는 줄들(없으면 빈 목록) — 한 번만 확인한다. 아래 _wait_for_target_list_rows()가
+    이걸 반복하고, _finish_after_payment_confirm()이 결과 창 대기 중 "목록이 이미 나왔는지" 확인하는 데도 쓴다(2026-10-20 분리)."""
+    for tbody_id in (f'{BASE}_grd_nview_nissue_list_body_tbody', f'{BASE}_grd_rview_list_body_tbody'):
+        try:
+            tbody = driver.find_element(By.ID, tbody_id)
+        except NoSuchElementException:
+            continue
+        if not tbody.is_displayed():
+            continue
+        rows = [tr for tr in tbody.find_elements(By.TAG_NAME, 'tr')
+                if 'display: none' not in (tr.get_attribute('style') or '') and tr.text.strip() != '']
+        if rows:
+            return rows
+    return []
 
 
 def _wait_for_target_list_rows(driver, timeout=15):
@@ -2529,17 +2559,9 @@ def _wait_for_target_list_rows(driver, timeout=15):
     h4 제목이 없어 제목 판별이 아니라 행 유무로만 알아본다."""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        for tbody_id in (f'{BASE}_grd_nview_nissue_list_body_tbody', f'{BASE}_grd_rview_list_body_tbody'):
-            try:
-                tbody = driver.find_element(By.ID, tbody_id)
-            except NoSuchElementException:
-                continue
-            if not tbody.is_displayed():
-                continue
-            rows = [tr for tr in tbody.find_elements(By.TAG_NAME, 'tr')
-                    if 'display: none' not in (tr.get_attribute('style') or '') and tr.text.strip() != '']
-            if rows:
-                return rows
+        rows = _visible_target_list_rows(driver)
+        if rows:
+            return rows
         time.sleep(0.25)  # [2026-10-20 변경 — 속도 개선] 1초 → 0.25초(확인하는 조건은 그대로, 목록이 뜬 뒤 알아채는 지연만 준다)
     return []
 
