@@ -2979,11 +2979,18 @@ class NaverThread(QThread):
                         # 저장 전 테섭 시뮬레이션으로 두 경로 결과를 비교함(차이는 api/lib/lib_api.php::apiApplyAdRegisterResult 주석 참고).
                         # 서버 저장이 실패하면 아래 예전 직접 저장으로 그대로 진행한다(전환 초기 안전장치 — 관찰 후 제거 예정).
                         # 데스크톱(test.exe)은 콜백이 없어 예전과 똑같이 직접 저장한다. 담당자는 유지한다(사용자 결정).
+                        # [2026-10-20 수정 — 사용자 승낙(A1) "써브 번호를 못 읽으면 메모의 정상 번호가 덮어써짐"] 써브 번호를 화면에서 못 읽으면
+                        # "찾을 수 없음"이라는 글자가 들어온다. 예전엔 그 글자를 그대로 메모에 넣어 "써브:123456789"가 "써브:찾을 수 없음"으로
+                        # 바뀌었다. 숫자로 읽힌 경우만 써브 번호로 인정하고, 못 읽었으면 메모의 써브 부분은 건드리지 않는다(네이버 번호 저장은 그대로).
+                        써브번호_확보 = bool(re.fullmatch(r'\d+', str(써브매물번호 or '').strip()))
+                        if not 써브번호_확보:
+                            진단_기록(f"써브 매물번호를 읽지 못해 메모의 써브 번호는 그대로 둠(새홈 {object_code_new}, 읽은 값 '{써브매물번호}')")
+
                         서버저장_완료 = False
                         if (self.apply_register_result and 네이버매물번호 not in ('', '찾을 수 없음')
-                                and manager_id and object_code_new and 써브매물번호):
+                                and manager_id and object_code_new):
                             저장성공, 저장결과 = self.apply_register_result(
-                                object_code_new=object_code_new, ad_code=네이버매물번호, sub_code=써브매물번호,
+                                object_code_new=object_code_new, ad_code=네이버매물번호, sub_code=(써브매물번호 if 써브번호_확보 else ''),
                                 admin_id=manager_id, admin_name=admin_name, keep_period_if_active=(광고상태 == "광고중"))
                             if 저장성공:
                                 서버저장_완료 = True
@@ -3033,7 +3040,10 @@ class NaverThread(QThread):
                                     # ad_memo 값 처리
                                     existing_ad_memo = existing_record.get('ad_memo', '')  # 기존 ad_memo 값 가져오기
                                     new_ad_memo_part = f"써브:{써브매물번호}"
-                                    if existing_ad_memo:
+                                    if not 써브번호_확보:
+                                        # 써브 번호를 못 읽었으면 메모를 건드리지 않는다(위 써브번호_확보 주석 참고)
+                                        new_ad_memo = existing_ad_memo or ''
+                                    elif existing_ad_memo:
                                         # "써브:숫자9자리" 패턴이 이미 있는지 정규표현식으로 확인
                                         if re.search(r'써브:\d{9}', existing_ad_memo):
                                             # 기존 써브 매물번호를 새 값으로 교체
@@ -3131,7 +3141,7 @@ class NaverThread(QThread):
                                     """
 
                                     # ad_memo 구성
-                                    ad_memo = f"{admin_name} 등록, 써브:{써브매물번호}"
+                                    ad_memo = f"{admin_name} 등록, 써브:{써브매물번호}" if 써브번호_확보 else f"{admin_name} 등록"
                                     # ad_memo = f"써브:{써브매물번호}, KB부동산:{KB매물번호}"
                                     print(f"ad_memo 업데이트 값: {ad_memo}")
 
