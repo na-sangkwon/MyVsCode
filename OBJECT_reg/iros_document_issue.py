@@ -2727,6 +2727,9 @@ def _finish_after_payment_confirm(driver):
 # 실측: 정상 건 1.7초, 실패 건(170177)은 1.5초 이후 언젠가(정확한 시점은 미확인). 그보다 늦는 경우를 대비해 여유를 크게 잡았다.
 RESULT_POPUP_OR_VIEW_LIST_WAIT_SEC = 10
 
+# [2026-10-24] [열람] 클릭 뒤 저장 버튼이 나타나길 기다리는 최대 시간(안전장치). 실측 ~2초 — _view_and_save() 설명 참고.
+VIEW_SAVE_BUTTON_WAIT_SEC = 20
+
 
 def _visible_target_list_rows(driver):
     """"미열람"/"재열람" 목록에 지금 보이는 내용 있는 줄들(없으면 빈 목록) — 한 번만 확인한다. 아래 _wait_for_target_list_rows()가
@@ -2894,21 +2897,19 @@ def _view_and_save(driver, payload, download_dir):
     click_started_at = time.time()
     _click_with_fallback(driver, view_btn)
     click_seconds = time.time() - click_started_at
-    # [2026-10-24 측정용 — 동작 변화 없음, 총 1초 그대로] 열람은 되돌릴 수 없는 단계라 고정 1초를 신호 대기로 바꾸기 전에, 저장 버튼이 [열람] 클릭 뒤 몇 초에
-    # 처음 보이는지 실제 값을 먼저 모은다(버튼이 보여도 문서 내용이 준비됐는지는 별개 — 이 측정으로는 알 수 없고 그래서 바로 바꾸지 않는다).
-    after_view_click = time.time()
-    save_button_first_seen = None
-    while time.time() - after_view_click < 1.0:
-        if save_button_first_seen is None and _find_visible_or_none(driver, By.CSS_SELECTOR, 'input[id$="_btn_download"]') is not None:
-            save_button_first_seen = time.time() - after_view_click
-        time.sleep(0.05)
-    print(f'[측정] [열람] 클릭 {click_seconds:.2f}초(등기소 처리) · 저장 버튼이 처음 보인 시점 '
-          f'{"1초 안에 안 보임" if save_button_first_seen is None else f"{save_button_first_seen:.2f}초 뒤"} · 이후 고정 대기 1초 유지', flush=True)
+    # [2026-10-24 수정 — 760841 실패] 결제·열람까지 끝났는데 [열람] 뒤 고정 1초만 기다리고 저장 버튼을 찾아, 버튼이 1초 안에 안 뜬 날 "저장 버튼을
+    # 찾지 못했습니다"로 멈췄다(실측: 저장 버튼은 [열람] 클릭 뒤 약 2초에 뜬다 — 682343에서 고정 1초가 통과한 것은 브라우저가 바빠 확인 명령이 막혀 있던
+    # 우연이었다). "저장 버튼이 보일 때까지" 기다린다. 버튼이 보이는 것은 예전 코드가 find_element로 찾던 것(DOM에 있음)보다 엄격한 조건이다.
+    # 안 뜨면 최대 VIEW_SAVE_BUTTON_WAIT_SEC 뒤 아래에서 예전과 같은 실패(이때도 결제는 된 상태 — 다시 신청하면 추가 결제 없이 이어서 받는다).
+    save_button_ready, save_wait_seconds = _wait_until_ready(
+        driver, lambda: _find_visible_or_none(driver, By.CSS_SELECTOR, 'input[id$="_btn_download"]') is not None,
+        VIEW_SAVE_BUTTON_WAIT_SEC, label='[열람] 뒤 저장 버튼')
+    print(f'[측정] [열람] 클릭 {click_seconds:.2f}초(등기소 처리) · 저장 버튼이 보이기까지 {save_wait_seconds:.2f}초(예전 고정 1초)', flush=True)
 
     try:
         save_btn = driver.find_element(By.CSS_SELECTOR, 'input[id$="_btn_download"]')
     except NoSuchElementException:
-        return {'ok': False, 'message': f'저장 버튼을 찾지 못했습니다 — 열람까지는 진행됐습니다(결제취소 불가 상태). | {_diag_snapshot(driver)}'}
+        return {'ok': False, 'message': f'저장 버튼을 {save_wait_seconds:.0f}초 기다렸지만 나타나지 않았습니다 — 열람까지는 진행됐습니다(결제취소 불가 상태, 다시 신청하면 추가 결제 없이 이어서 받습니다). | {_diag_snapshot(driver)}'}
     click_started_at = time.time()
     _click_with_fallback(driver, save_btn)
     save_click_seconds = time.time() - click_started_at
