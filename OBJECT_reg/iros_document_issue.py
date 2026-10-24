@@ -645,6 +645,29 @@ def _find_first_visible_element_by_text(driver, css_selector, exact_text=None, t
     return None
 
 
+# [2026-10-24 신규 — 사용자 지적 "임의로 시간을 줄이거나 늘리지 말고 다음 단계 준비가 될 때까지 대기하게 하는 게 근본 수정" / 682343 실패]
+# 폴링 루프("준비될 때까지 확인")가 "요소 찾기 → 보이는지 묻기" 두 단계인데, 그 사이에 등기소가 화면을 다시 그리면 찾은 요소가 낡은 참조가
+# 되어 StaleElementReferenceException으로 자동화 전체가 죽었다(682343: 로그인 버튼을 누른 순간 캡차 칸 확인 중 사망, 10/20 확인 간격을
+# 0.25초로 줄인 뒤 걸릴 확률이 커졌지만 간격과 무관하게 원래 있던 결함). 낡은 참조는 오류가 아니라 "화면이 바뀌는 중 = 아직 준비 안 됨"
+# 신호이므로, 새 화면에서 다시 찾아보고(StaleElement일 때만 즉시 재시도 — 시간을 기다리지 않는다), 그래도 안 되면 None(=준비 안 됨)으로
+# 돌려준다. 호출부의 폴링 루프가 최대 대기 안에서 계속 다시 본다. 시간 값은 호출부의 "최대 대기"(안전장치)만 남는다.
+STALE_REFIND_ATTEMPTS = 5   # 한 번 확인하는 동안 화면이 이만큼 연달아 다시 그려지는 일은 없다고 본다 — 넘으면 이번 확인은 "아직 준비 안 됨"
+
+
+def _find_visible_or_none(driver, by, selector):
+    """find_element + is_displayed를 한 묶음으로. 보이는 요소를 돌려주고, 없음·숨겨짐·찾는 사이 화면이 다시 그려져 낡은 참조가 됨은
+    모두 None(= 아직 준비 안 됨). 알림창(UnexpectedAlertPresentException)·창 닫힘(NoSuchWindow 등)은 호출부가 원래 처리하던 대로 그대로 던진다."""
+    for _ in range(STALE_REFIND_ATTEMPTS):
+        try:
+            element = driver.find_element(by, selector)
+            return element if element.is_displayed() else None
+        except NoSuchElementException:
+            return None
+        except StaleElementReferenceException:
+            continue  # 찾은 직후 화면이 다시 그려짐 — 새 화면에서 다시 찾는다
+    return None
+
+
 def _find_first_visible(driver, css_selectors):
     for sel in css_selectors:
         try:
@@ -715,11 +738,7 @@ def _home_entry_button(driver):
 
 def _next_button(driver):
     _dismiss_alert_if_present(driver)
-    try:
-        el = driver.find_element(By.ID, f'{BASE}_btn_next')
-        return el if el.is_displayed() else None
-    except NoSuchElementException:
-        return None
+    return _find_visible_or_none(driver, By.ID, f'{BASE}_btn_next')  # [2026-10-24] 화면이 다시 그려져도 죽지 않게 — _find_visible_or_none 설명 참고
 
 
 def _visible_result_rows(driver):
@@ -1799,8 +1818,11 @@ def _is_duplicate_payment_popup_visible(driver):
     if any('중복결제 확인' in t for t in _visible_section_titles(driver)):
         return True
     for el in driver.find_elements(By.CSS_SELECTOR, '[id$="_header_title"]'):
-        if el.is_displayed() and '중복결제 확인' in el.text:
-            return True
+        try:
+            if el.is_displayed() and '중복결제 확인' in el.text:
+                return True
+        except StaleElementReferenceException:
+            continue  # [2026-10-24] 나열한 뒤 화면이 다시 그려져 낡은 항목 — 아직 아님으로 보고 다음 확인 때 다시 본다
     return False
 
 
@@ -1833,11 +1855,19 @@ def _is_captcha_required(driver):
     반복 테스트 중 재현). 캡차는 사람이 직접 읽고 입력해야 하는 값이라 자동으로 풀 수 없다(정책상
     시도하지 않음) — 이 함수는 캡차가 나타났는지만 판별해서 사람에게 알리고 기다리는 용도로만 쓴다.
     선택자는 실제 로그인화면 HTML로 확인한 값(2026-09-18, 사용자 제공)."""
-    try:
-        answer_input = driver.find_element(By.CSS_SELECTOR, 'input[id$="_answer___input"]')
-    except NoSuchElementException:
-        return False
-    return answer_input.is_displayed()
+    # [2026-10-24 수정 — 682343] 로그인 버튼을 누르면 등기소가 로그인 화면을 통째로 지워, 칸을 찾은 직후 is_displayed()를 묻는 사이에 낡은
+    # 참조가 되어 StaleElementReferenceException으로 죽었다. 새 화면에서 다시 찾아본다(StaleElement일 때만 즉시 재시도). 칸이 정말 없으면
+    # 캡차가 끝난 것(False)이고, 재시도 한도까지 계속 다시 그려지면 화면 전환이 아직 안 끝난 것이라 "아직 캡차 화면"(True)으로 본다 —
+    # 캡차가 끝났다고 잘못 판단해 다음 단계로 넘어가는 것보다, 호출부의 대기 루프가 한 번 더 확인하는 쪽이 안전하다.
+    for _ in range(STALE_REFIND_ATTEMPTS):
+        try:
+            answer_input = driver.find_element(By.CSS_SELECTOR, 'input[id$="_answer___input"]')
+            return answer_input.is_displayed()
+        except NoSuchElementException:
+            return False
+        except StaleElementReferenceException:
+            continue
+    return True
 
 
 def _wait_until_page_has_focus(driver, timeout_seconds=3.0):
@@ -2482,20 +2512,13 @@ def _route_after_payment_click(driver, credentials, wait_seconds=15):
         if _is_duplicate_payment_popup_visible(driver):
             screen = 'duplicate'
             break
-        try:
-            pay_tab = driver.find_element(By.ID, f'{BASE}_tac_bpay_mthd_tab_tab_pp_tabHTML')
-            if pay_tab.is_displayed():
-                screen = 'payment-prep'
-                break
-        except NoSuchElementException:
-            pass
-        try:
-            login_popup = driver.find_element(By.CSS_SELECTOR, 'input[id$="popup_user_id_g___input"]')
-            if login_popup.is_displayed():
-                screen = 'login'
-                break
-        except NoSuchElementException:
-            pass
+        # [2026-10-24] 결제 클릭 뒤 화면이 바뀌는 중에 요소 참조가 낡아져도 죽지 않게 — _find_visible_or_none 설명 참고(없음·숨겨짐·낡음 = 아직 아님)
+        if _find_visible_or_none(driver, By.ID, f'{BASE}_tac_bpay_mthd_tab_tab_pp_tabHTML') is not None:
+            screen = 'payment-prep'
+            break
+        if _find_visible_or_none(driver, By.CSS_SELECTOR, 'input[id$="popup_user_id_g___input"]') is not None:
+            screen = 'login'
+            break
         time.sleep(0.25)  # [2026-10-20 변경 — 속도 개선] 0.5초 → 0.25초(판별 조건은 그대로)
 
     if screen == 'login':
@@ -2565,13 +2588,10 @@ def _finish_after_payment_confirm(driver):
     confirm_btn = None
     while time.time() < deadline:
         _dismiss_alert_if_present(driver)  # 다른 폴링 루프와 같은 이유 — 대기 중 alert가 떠도 다음 바퀴에서 걷힌다
-        try:
-            el = driver.find_element(By.CSS_SELECTOR, 'a[id$="_wframe_btn_confirm2"]')
-            if el.is_displayed():
-                confirm_btn = el
-                break
-        except NoSuchElementException:
-            pass
+        el = _find_visible_or_none(driver, By.CSS_SELECTOR, 'a[id$="_wframe_btn_confirm2"]')  # [2026-10-24] 낡은 참조도 "아직 아님" — 설명은 _find_visible_or_none
+        if el is not None:
+            confirm_btn = el
+            break
         time.sleep(0.25)  # [2026-10-20 변경 — 속도 개선] 0.5초 → 0.25초(찾는 조건은 그대로)
     if not confirm_btn:
         return {'ok': False, 'message': f'결제요청 확인 팝업의 [확인] 버튼을 찾지 못했습니다. | {_diag_snapshot(driver)}'}
@@ -2593,16 +2613,13 @@ def _finish_after_payment_confirm(driver):
     result_btn_state = '없음'
     result_wait_started_at = time.time()
     while True:
-        try:
-            result_btn = driver.find_element(By.CSS_SELECTOR, 'input[id$="_btn_cfrm"]')
-            if result_btn.is_displayed():
-                _click_with_fallback(driver, result_btn)
-                result_btn_state = f'{time.time() - result_wait_started_at:.1f}초에 보여서 누름'
-                time.sleep(1)
-                break
-            result_btn_state = '있지만 안 보임'
-        except NoSuchElementException:
-            result_btn_state = '없음'
+        result_btn = _find_visible_or_none(driver, By.CSS_SELECTOR, 'input[id$="_btn_cfrm"]')  # [2026-10-24] 낡은 참조도 "아직 아님"
+        if result_btn is not None:
+            _click_with_fallback(driver, result_btn)
+            result_btn_state = f'{time.time() - result_wait_started_at:.1f}초에 보여서 누름'
+            time.sleep(1)
+            break
+        result_btn_state = '없거나 안 보임'
         if _visible_target_list_rows(driver):
             result_btn_state += f' — 그 사이 {time.time() - result_wait_started_at:.1f}초에 열람 목록이 먼저 보여 그대로 진행'
             break
@@ -2623,14 +2640,16 @@ def _visible_target_list_rows(driver):
     """"미열람"/"재열람" 목록에 지금 보이는 내용 있는 줄들(없으면 빈 목록) — 한 번만 확인한다. 아래 _wait_for_target_list_rows()가
     이걸 반복하고, _finish_after_payment_confirm()이 결과 창 대기 중 "목록이 이미 나왔는지" 확인하는 데도 쓴다(2026-10-20 분리)."""
     for tbody_id in (f'{BASE}_grd_nview_nissue_list_body_tbody', f'{BASE}_grd_rview_list_body_tbody'):
+        # [2026-10-24] 표를 찾은 뒤 줄을 읽는 사이 화면이 다시 그려져 낡은 참조가 되면 오류가 아니라 "아직 목록 없음"으로 본다 —
+        # 호출부(_wait_for_target_list_rows 등)가 다시 확인한다. 목록이 다 그려진 뒤에야 줄이 잡히므로 반쯤 그려진 목록을 쓰는 일도 없다.
         try:
             tbody = driver.find_element(By.ID, tbody_id)
-        except NoSuchElementException:
+            if not tbody.is_displayed():
+                continue
+            rows = [tr for tr in tbody.find_elements(By.TAG_NAME, 'tr')
+                    if 'display: none' not in (tr.get_attribute('style') or '') and tr.text.strip() != '']
+        except (NoSuchElementException, StaleElementReferenceException):
             continue
-        if not tbody.is_displayed():
-            continue
-        rows = [tr for tr in tbody.find_elements(By.TAG_NAME, 'tr')
-                if 'display: none' not in (tr.get_attribute('style') or '') and tr.text.strip() != '']
         if rows:
             return rows
     return []
