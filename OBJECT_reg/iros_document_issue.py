@@ -2730,6 +2730,28 @@ RESULT_POPUP_OR_VIEW_LIST_WAIT_SEC = 10
 # [2026-10-24] [열람] 클릭 뒤 저장 버튼이 나타나길 기다리는 최대 시간(안전장치). 실측 ~2초 — _view_and_save() 설명 참고.
 VIEW_SAVE_BUTTON_WAIT_SEC = 20
 
+# [2026-10-24 신규 — 760841/10594 실패, 사용자 결정 "A: 자동으로 [확인]"] 등기신청이 접수돼 처리 중인 부동산은 [열람]을 누르면 등기소가 이 확인창을 띄운다:
+# "등기신청사건이 접수되어, 등기기록상에 변경이 있을 예정입니다. 지금 열람·발급하시는 등기사항증명서의 내용은, 변경 사항이 반영되지 않은 것이므로 불이익이 있으실
+# 수 있습니다. 열람·발급을 원하지 않으면 취소 버튼을 선택하시기 바랍니다."([취소][확인]). [확인]을 눌러야 열람이 이어지는데 코드가 이 창을 몰라 저장 버튼만 기다리다
+# 실패했다(실제 등기소에서 열람 클릭 뒤 25초 넘게 이 창이 떠 있는 것을 확인). 앞 단계의 같은 사유 안내("등기신청사건 처리여부 확인" 화면)는 이미 자동으로 통과시키고
+# 있고 결제도 끝난 문서라, 여기서도 [확인]으로 이어 가되 변경 반영 전 내용임을 진행로그에 경고로 남긴다 — [취소]하면 돈만 쓰고 파일이 없다.
+PENDING_FILING_NOTICE_MARKER = '등기신청사건이 접수되어'
+
+
+def _find_pending_filing_notice_confirm_button(driver):
+    """"등기신청사건 접수" 확인창이 떠 있으면 그 창 안의 [확인] 버튼을, 없으면 None. 창 안에서만 찾는다 — 화면의 다른 "확인" 글자 버튼을 잘못 누르지 않게.
+    안내문 글자로 이 창을 가려내므로 다른 안내창은 건드리지 않는다(처음 보는 안내창은 호출부가 실패 메시지에 글을 남긴다)."""
+    for box in driver.find_elements(By.CSS_SELECTOR, '[id*="message_popup"]'):
+        try:
+            if not box.is_displayed() or PENDING_FILING_NOTICE_MARKER not in (box.text or ''):
+                continue
+            for button in box.find_elements(By.CSS_SELECTOR, 'a, button, input'):
+                if button.is_displayed() and (button.text or button.get_attribute('value') or '').strip() == '확인':
+                    return button
+        except StaleElementReferenceException:
+            continue  # 확인하는 사이 창이 다시 그려짐 — 아직 아님으로 보고 다음 확인 때 다시 본다
+    return None
+
 
 def _visible_target_list_rows(driver):
     """"미열람"/"재열람" 목록에 지금 보이는 내용 있는 줄들(없으면 빈 목록) — 한 번만 확인한다. 아래 _wait_for_target_list_rows()가
@@ -2901,15 +2923,42 @@ def _view_and_save(driver, payload, download_dir):
     # 찾지 못했습니다"로 멈췄다(실측: 저장 버튼은 [열람] 클릭 뒤 약 2초에 뜬다 — 682343에서 고정 1초가 통과한 것은 브라우저가 바빠 확인 명령이 막혀 있던
     # 우연이었다). "저장 버튼이 보일 때까지" 기다린다. 버튼이 보이는 것은 예전 코드가 find_element로 찾던 것(DOM에 있음)보다 엄격한 조건이다.
     # 안 뜨면 최대 VIEW_SAVE_BUTTON_WAIT_SEC 뒤 아래에서 예전과 같은 실패(이때도 결제는 된 상태 — 다시 신청하면 추가 결제 없이 이어서 받는다).
-    save_button_ready, save_wait_seconds = _wait_until_ready(
-        driver, lambda: _find_visible_or_none(driver, By.CSS_SELECTOR, 'input[id$="_btn_download"]') is not None,
-        VIEW_SAVE_BUTTON_WAIT_SEC, label='[열람] 뒤 저장 버튼')
-    print(f'[측정] [열람] 클릭 {click_seconds:.2f}초(등기소 처리) · 저장 버튼이 보이기까지 {save_wait_seconds:.2f}초(예전 고정 1초)', flush=True)
+    # [2026-10-24 추가 — 760841/10594] 저장 버튼 대신 "등기신청사건 접수" 확인창이 먼저 뜰 수 있다 — 위 PENDING_FILING_NOTICE_MARKER 설명 참고. 둘 중 먼저 오는 쪽에 반응한다.
+    first_signal = {}
+
+    def _save_button_or_pending_filing_notice_ready():
+        if _find_visible_or_none(driver, By.CSS_SELECTOR, 'input[id$="_btn_download"]') is not None:
+            first_signal['what'] = 'save'
+            return True
+        notice_confirm_button = _find_pending_filing_notice_confirm_button(driver)
+        if notice_confirm_button is not None:
+            first_signal['what'] = 'notice'
+            first_signal['button'] = notice_confirm_button
+            return True
+        return False
+
+    _, save_wait_seconds = _wait_until_ready(
+        driver, _save_button_or_pending_filing_notice_ready, VIEW_SAVE_BUTTON_WAIT_SEC, label='[열람] 뒤 저장 버튼', report_timeout=False)
+    notice_seen = first_signal.get('what') == 'notice'
+    if notice_seen:
+        print('[진행] [경고] 등기신청사건이 접수된 부동산 — 이 등기부는 접수된 변경이 반영되기 전 내용입니다. 안내창의 [확인]을 눌러 열람을 이어 갑니다.', flush=True)
+        _click_with_fallback(driver, first_signal['button'])
+        _, after_notice_seconds = _wait_until_ready(
+            driver, lambda: _find_visible_or_none(driver, By.CSS_SELECTOR, 'input[id$="_btn_download"]') is not None,
+            VIEW_SAVE_BUTTON_WAIT_SEC, label='안내창 [확인] 뒤 저장 버튼', report_timeout=False)
+        save_wait_seconds += after_notice_seconds
+    print(f'[측정] [열람] 클릭 {click_seconds:.2f}초(등기소 처리) · 저장 버튼이 보이기까지 {save_wait_seconds:.2f}초'
+          f'{"(등기신청사건 안내창 확인 포함)" if notice_seen else ""}(예전 고정 1초)', flush=True)
 
     try:
         save_btn = driver.find_element(By.CSS_SELECTOR, 'input[id$="_btn_download"]')
     except NoSuchElementException:
-        return {'ok': False, 'message': f'저장 버튼을 {save_wait_seconds:.0f}초 기다렸지만 나타나지 않았습니다 — 열람까지는 진행됐습니다(결제취소 불가 상태, 다시 신청하면 추가 결제 없이 이어서 받습니다). | {_diag_snapshot(driver)}'}
+        # 저장 버튼이 끝내 안 뜨면 그때 화면에 떠 있던 창의 글을 남긴다 — 이번 실패는 상단 메뉴 글자만 남아 원인(안내창)을 알 수 없어 현장 재현까지 필요했다.
+        try:
+            screen_description = _describe_payment_result_screen_for_diagnosis(driver)
+        except Exception:
+            screen_description = '(화면 설명 실패)'
+        return {'ok': False, 'message': f'저장 버튼을 {save_wait_seconds:.0f}초 기다렸지만 나타나지 않았습니다 — 열람까지는 진행됐습니다(결제취소 불가 상태, 다시 신청하면 추가 결제 없이 이어서 받습니다). [화면] {screen_description} | {_diag_snapshot(driver)}'}
     click_started_at = time.time()
     _click_with_fallback(driver, save_btn)
     save_click_seconds = time.time() - click_started_at
@@ -2921,7 +2970,7 @@ def _view_and_save(driver, payload, download_dir):
           f'(예전 방식은 파일이 생긴 뒤 약 1~2초 더 걸림)', flush=True)
     if not downloaded:
         return {'ok': False, 'message': f'다운로드가 완료되지 않았습니다(60초 대기) — 열람까지는 진행됐습니다. | {_diag_snapshot(driver)}'}
-    return {'ok': True, 'file_path': downloaded, 'message': ''}
+    return {'ok': True, 'file_path': downloaded, 'message': '', 'pending_filing_notice': notice_seen}
 
 
 def _wait_for_download(download_dir, timeout=60):
