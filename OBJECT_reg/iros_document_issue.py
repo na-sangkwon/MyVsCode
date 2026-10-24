@@ -668,6 +668,60 @@ def _find_visible_or_none(driver, by, selector):
     return None
 
 
+# [2026-10-24 신규 — 사용자 지시 "임의로 시간을 줄이거나 늘리지 말고 다음 단계 준비가 될 때까지 대기"] 고정 대기(time.sleep) 대신 "준비 신호가 참이
+# 될 때까지" 기다린다. 신호가 참이 되는 즉시 돌아오고, max_seconds는 신호가 끝내 안 올 때의 안전장치일 뿐이다(그때는 예전처럼 그냥 계속 진행하고
+# 진행로그에 남긴다 — 신호 선택이 틀렸는지 로그로 알아볼 수 있게). 확인 중 화면이 다시 그려져 요소가 사라지거나 낡아지는 것(NoSuchElement·
+# StaleElement)은 "아직 준비 안 됨"이고, 알림창이 떠 있으면 걷어낸 뒤 다시 확인한다.
+def _wait_until_ready(driver, condition, max_seconds, label='', poll_seconds=0.1, report_timeout=True):
+    """@return (준비됐는가, 걸린 초)"""
+    started_at = time.time()
+    while True:
+        try:
+            if condition():
+                return True, time.time() - started_at
+        except (NoSuchElementException, StaleElementReferenceException):
+            pass
+        except UnexpectedAlertPresentException:
+            try:
+                _dismiss_alert_if_present(driver)
+            except Exception:
+                pass
+        if time.time() - started_at >= max_seconds:
+            break
+        time.sleep(poll_seconds)
+    if report_timeout:
+        print(f'[진행] 준비 신호 없이 최대 대기({max_seconds}초)가 지나 계속 진행 — {label}', flush=True)
+    return False, time.time() - started_at
+
+
+
+# WebSquare 컴포넌트가 가진 "값"(화면 글자가 아니라 사이트 내부 모델의 값)이 기대값과 같은지. 입력칸에 글자를 쳐도 사이트가 그 값을 내부에 확정하기
+# 전에는 검색 버튼이 옛 값을 쓸 수 있어서, 예전엔 입력 뒤 0.3~0.6초를 고정으로 쉬었다 — 그 확정 여부를 직접 물어본다.
+# 'ok' 같음 / 'diff' 다름(아직 확정 전이거나 사이트가 값을 다듬어 저장) / 'nocomp' 컴포넌트를 못 찾음(이 방법으로는 판단 불가).
+_WEBSQUARE_VALUE_STATE_JS = """
+var c = window.$p && window.$p.getComponentById(arguments[0]);
+if (!c || typeof c.getValue !== 'function') return 'nocomp';
+return String(c.getValue()) === String(arguments[1]) ? 'ok' : 'diff';
+"""
+
+
+def _wait_for_typed_value_committed(driver, element, expected, label, fallback_sleep, max_seconds=1.5):
+    """입력칸에 친 값이 사이트 내부에 확정될 때까지 기다린다. 확정 여부를 물어볼 수 없는 칸이면(nocomp) 예전처럼 fallback_sleep만큼 쉰다.
+    @return bool 확정을 확인했으면 True"""
+    try:
+        element_id = element.get_attribute('id') or ''
+    except Exception:
+        element_id = ''
+    comp_id = re.sub(r'___input$', '', element_id)
+    first_state = driver.execute_script(_WEBSQUARE_VALUE_STATE_JS, comp_id, expected) if comp_id else 'nocomp'
+    if first_state == 'nocomp':
+        time.sleep(fallback_sleep)
+        return False
+    ready, _ = _wait_until_ready(driver, lambda: driver.execute_script(_WEBSQUARE_VALUE_STATE_JS, comp_id, expected) == 'ok', max_seconds,
+                                 label=f'{label} 값 확정')
+    return ready
+
+
 def _find_first_visible(driver, css_selectors):
     for sel in css_selectors:
         try:
@@ -970,7 +1024,8 @@ def _pick_kind_cls_radio(driver, radio_id_fragment, property_category, _fail):
     # execute_script는 최후의 수단으로만 써서, 반복 호출해도 기계적인 강제 클릭이 새로 늘어나지 않는다.
     for _ in range(2):
         _click_with_fallback(driver, label)
-        time.sleep(0.3)
+        # [2026-10-24] 고정 0.3초 대신 "선택 상태가 될 때까지"(최대 1초) — 이 확인이 원래 이 대기의 목적이었다
+        _wait_until_ready(driver, r.is_selected, 1.0, label=f'부동산구분 "{property_category}" 라디오 선택', report_timeout=False)
         if r.is_selected():
             break
     if not r.is_selected():
@@ -998,18 +1053,20 @@ def _select_sido_via_websquare(driver, sel_id, sido_text, _fail):
     WebSquare가 자기 내부 상태로 다시 감싸고 있어서, 그 프레임워크의 setValue() API를 거쳐야 실제로
     반영된다(드롭다운 "선택"이라 키보드보안 프로그램 검사 대상이 아니라 이 방식이 안전하다)."""
     _dismiss_alert_if_present(driver)
-    sido_el = driver.find_element(By.ID, sel_id)
     candidates = [sido_text] + SIDO_NAME_ALIASES.get(sido_text, [])
-    sido_value = None
-    matched_text = None
-    for candidate in candidates:
-        for opt in sido_el.find_elements(By.TAG_NAME, 'option'):
-            if opt.text.strip() == candidate:
-                sido_value = opt.get_attribute('value')
-                matched_text = candidate
-                break
-        if sido_value is not None:
-            break
+
+    def _find_option():
+        sido_el = driver.find_element(By.ID, sel_id)
+        for candidate in candidates:
+            for opt in sido_el.find_elements(By.TAG_NAME, 'option'):
+                if opt.text.strip() == candidate:
+                    return opt.get_attribute('value'), candidate
+        return None, None
+
+    # [2026-10-24] 시군구 목록은 시/도를 고른 뒤 사이트가 불러오는 의존 목록이라, 필요한 이 시점에 우리 값이 목록에 들어올 때까지 기다린다
+    # (예전엔 시/도 선택 직후 고정 0.6초를 쉬어서 이 목록이 늦으면 "옵션을 찾지 못했습니다"로 실패했다). 최대 5초 안에 안 오면 아래에서 예전처럼 실패.
+    _wait_until_ready(driver, lambda: _find_option()[0] is not None, 5.0, label=f'"{sido_text}" 옵션 목록 로딩', report_timeout=False)
+    sido_value, matched_text = _find_option()
     if sido_value is None:
         return _fail(f'시/도 "{sido_text}" 옵션을 찾지 못했습니다 (별칭 후보 {candidates}도 없음).')
     if matched_text != sido_text:
@@ -1024,7 +1081,13 @@ def _select_sido_via_websquare(driver, sel_id, sido_text, _fail):
         comp_id, sido_value,
     )
     print(f'[진행] 시/도 "{sido_text}" 선택 완료 (setValue 성공={ok})', flush=True)
-    time.sleep(0.6)
+    # [2026-10-24] 고정 0.6초 대신 "선택한 값이 사이트 내부에 반영될 때까지"(최대 1.5초). 반영된 값은 위 setValue와 같은 컴포넌트에서 읽는다.
+    # 컴포넌트를 못 찾으면(ok가 False) 확인할 수 없으니 예전처럼 0.6초 쉰다.
+    if ok:
+        _wait_until_ready(driver, lambda: driver.execute_script(_WEBSQUARE_VALUE_STATE_JS, comp_id, sido_value) == 'ok', 1.5,
+                          label=f'시/도 "{sido_text}" 값 반영')
+    else:
+        time.sleep(0.6)
     return None
 
 
@@ -1121,7 +1184,9 @@ def _search_via_location_search(driver, wait, payload, property_category, loc, _
     tab = wait.until(_find_loc_srch_tab)
     print('[진행] 소재지번검색 탭 찾음, 클릭', flush=True)
     _click_with_fallback(driver, tab)
-    time.sleep(0.5)
+    # [2026-10-24] 고정 0.5초 대신 "소재지번검색 탭의 부동산구분 라디오가 나타날 때까지"(최대 3초) — 바로 아래 _pick_kind_cls_radio()가 필요로 하는 바로 그것
+    _wait_until_ready(driver, lambda: bool(driver.find_elements(By.CSS_SELECTOR, f'#{BASE} input[type="radio"][id*="rad_loc_kind_cls"]')), 3.0,
+                      label='소재지번검색 탭 전환')
     _guard_not_stuck_on_security_page(driver)
     print('[진행] 소재지번검색 탭 진입 확인', flush=True)
 
@@ -1141,10 +1206,11 @@ def _search_via_location_search(driver, wait, payload, property_category, loc, _
     if not jibun_el:
         return _fail('지번 입력칸을 찾지 못했습니다.')
 
+    # [2026-10-24] 입력 뒤 고정 0.3초 대신 "입력값이 사이트 내부에 확정될 때까지" — _wait_for_typed_value_committed 설명 참고
     _type_into_field(driver, dongli_el, loc['dong_or_li'])
-    time.sleep(0.3)
+    _wait_for_typed_value_committed(driver, dongli_el, loc['dong_or_li'], '동/리', fallback_sleep=0.3)
     _type_into_field(driver, jibun_el, loc['jibun'])
-    time.sleep(0.3)
+    _wait_for_typed_value_committed(driver, jibun_el, loc['jibun'], '지번', fallback_sleep=0.3)
     print(f'[진행] 동/리·지번 입력 완료 — {loc["dong_or_li"]} {loc["jibun"]}', flush=True)
 
     if property_category == '집합건물' and (loc.get('building_dong_no') or loc.get('room_no')):
@@ -1168,7 +1234,7 @@ def _search_via_location_search(driver, wait, payload, property_category, loc, _
             # 으로 걸러진다).
             for _ in range(2):
                 _click_with_fallback(driver, mode_label)
-                time.sleep(0.5)
+                _wait_until_ready(driver, mode_radio.is_selected, 1.0, label='동/호수 입력모드 라디오 선택', report_timeout=False)  # [2026-10-24] 고정 0.5초 → 선택 상태 신호
                 if mode_radio.is_selected():
                     break
             if not mode_radio.is_selected():
@@ -1177,11 +1243,12 @@ def _search_via_location_search(driver, wait, payload, property_category, loc, _
             dong_el = _find_first_visible(driver, [f'#{BASE}_sbx_loc_buld_no_buld___input'])
             if dong_el:
                 _type_into_field(driver, dong_el, loc['building_dong_no'])
+                _wait_for_typed_value_committed(driver, dong_el, loc['building_dong_no'], '동', fallback_sleep=0.3)  # [2026-10-24] 고정 0.6초 → 값 확정 신호
         if loc.get('room_no'):
             room_el = _find_first_visible(driver, [f'#{BASE}_sbx_loc_buld_no_room___input'])
             if room_el:
                 _type_into_field(driver, room_el, loc['room_no'])
-        time.sleep(0.6)
+                _wait_for_typed_value_committed(driver, room_el, loc['room_no'], '호', fallback_sleep=0.3)
         print(f'[진행] 동/호수 입력 완료 — 동={loc.get("building_dong_no")}, 호={loc.get("room_no")}', flush=True)
 
     return _click_search_button(driver, _fail)
@@ -1211,7 +1278,9 @@ def _search_via_road_address(driver, wait, payload, property_category, road_loc,
     # 구분 라디오가 나타났는지)로 검증하고, 안 됐으면 안내창을 한 번 더 닫고 재클릭한다.
     for attempt in range(3):
         _click_with_fallback(driver, tab)
-        time.sleep(0.5)
+        # [2026-10-24] 고정 0.5초 대신 "도로명주소검색 탭의 부동산구분 라디오가 나타날 때까지"(최대 1초) — 아래 확인과 같은 신호. 안 나타나면 아래 재시도가 이어받는다
+        _wait_until_ready(driver, lambda: bool(driver.find_elements(By.CSS_SELECTOR, f'#{BASE} input[type="radio"][id*="rad_rd_kind_cls"]')), 1.0,
+                          label='도로명주소검색 탭 전환', report_timeout=False)
         _guard_not_stuck_on_security_page(driver)
         if driver.find_elements(By.CSS_SELECTOR, f'#{BASE} input[type="radio"][id*="rad_rd_kind_cls"]'):
             break
@@ -1239,10 +1308,11 @@ def _search_via_road_address(driver, wait, payload, property_category, road_loc,
     road_no_el = _find_first_visible(driver, [f'#{BASE}_sbx_rd_buld_no___input'])
     if not road_name_el or not road_no_el:
         return _fail('도로명·건물번호 입력칸을 찾지 못했습니다.')
+    # [2026-10-24] 입력 뒤 고정 0.3초 대신 "입력값이 사이트 내부에 확정될 때까지" — _wait_for_typed_value_committed 설명 참고
     _type_into_field(driver, road_name_el, road_loc.get('road_name', ''))
-    time.sleep(0.3)
+    _wait_for_typed_value_committed(driver, road_name_el, road_loc.get('road_name', ''), '도로명', fallback_sleep=0.3)
     _type_into_field(driver, road_no_el, road_loc.get('road_building_no', ''))
-    time.sleep(0.3)
+    _wait_for_typed_value_committed(driver, road_no_el, road_loc.get('road_building_no', ''), '건물번호', fallback_sleep=0.3)
     print(f'[진행] 도로명·건물번호 입력 완료 — {road_loc.get("road_name")} {road_loc.get("road_building_no")}', flush=True)
 
     # 입력선택(동+호/동/호) 라디오 — 소재지번검색의 rad_loc_dong_room_sel과 같은 순서 관례
@@ -1260,7 +1330,7 @@ def _search_via_road_address(driver, wait, payload, property_category, road_loc,
         if mode_label is not None and mode_radio is not None:
             for _ in range(2):
                 _click_with_fallback(driver, mode_label)
-                time.sleep(0.5)
+                _wait_until_ready(driver, mode_radio.is_selected, 1.0, label='입력선택(동/호) 라디오 선택', report_timeout=False)  # [2026-10-24] 고정 0.5초 → 선택 상태 신호
                 if mode_radio.is_selected():
                     break
             if not mode_radio.is_selected():
@@ -1269,11 +1339,12 @@ def _search_via_road_address(driver, wait, payload, property_category, road_loc,
             dong_el = _find_first_visible(driver, [f'#{BASE}_sbx_rd_buld_no_buld___input'])
             if dong_el:
                 _type_into_field(driver, dong_el, road_loc['building_dong_no'])
+                _wait_for_typed_value_committed(driver, dong_el, road_loc['building_dong_no'], '동', fallback_sleep=0.3)  # [2026-10-24] 고정 0.6초 → 값 확정 신호
         if road_loc.get('room_no'):
             room_el = _find_first_visible(driver, [f'#{BASE}_sbx_rd_buld_no_room___input'])
             if room_el:
                 _type_into_field(driver, room_el, road_loc['room_no'])
-        time.sleep(0.6)
+                _wait_for_typed_value_committed(driver, room_el, road_loc['room_no'], '호', fallback_sleep=0.3)
         print(f'[진행] 동/호수 입력 완료 — 동={road_loc.get("building_dong_no")}, 호={road_loc.get("room_no")}', flush=True)
 
     return _click_search_button(driver, _fail)
@@ -1376,7 +1447,10 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
         # [2026-10-20 측정용 기록] _click_search_button()의 "[측정]" 설명 참고 — 버튼 찾기는 예전 방식이면 0.9~2.8초(실측) 걸리던 곳
         print(f'[측정] 진입 버튼 찾기 {click_started_at - find_started_at:.2f}초(화면 그려질 때까지 포함) · '
               f'클릭 {time.time() - click_started_at:.2f}초(등기소 처리)', flush=True)
-        time.sleep(0.5)
+        # [2026-10-24] 고정 0.5초 대신 "로그인(캡차) 화면 또는 검색 탭이 나타날 때까지"(최대 3초) — 바로 아래에서 확인하는 두 가지 화면
+        _wait_until_ready(driver, lambda: _is_captcha_required(driver) or bool(_find_first_visible(driver, [
+            f'#{BASE}_tac_rlrg_appl_tab_tab_smpl_srch_tabHTML', f'#{BASE}_tac_rlrg_appl_tab_tab_loc_srch_tabHTML',
+            f'#{BASE}_tac_rlrg_appl_tab_tab_rd_srch_tabHTML'])), 3.0, label='부동산 열람·발급 진입 화면')
         _guard_not_stuck_on_security_page(driver)  # [2026-09-07] 홈 진입 클릭 뒤에도 튕길 수 있다 — 다음 20초 대기 전에 먼저 확인
         print(f'[진행] 부동산 열람·발급 화면 진입 확인 — url={driver.current_url}', flush=True)
         _dismiss_cart_payment_reminder_popup_if_present(driver)
@@ -1401,7 +1475,7 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
                     break
                 print(f'[진행] 캡차 이후 안내 화면 통과 시도 — {titles}', flush=True)
                 _click_with_fallback(driver, nb)
-                time.sleep(1.2)
+                _wait_for_section_titles_to_change(driver, titles, max_seconds=2.5)  # [2026-10-24] 고정 1.2초 → 화면 제목이 바뀔 때까지(최대 2.5초)
             if _find_first_visible(driver, [
                 f'#{BASE}_tac_rlrg_appl_tab_tab_smpl_srch_tabHTML',
                 f'#{BASE}_tac_rlrg_appl_tab_tab_loc_srch_tabHTML',
@@ -1420,8 +1494,8 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
     if not rows:
         # 검색 직후 5초 대기로 결과가 아직 안 그려졌을 가능성에 대비해 한 번만 더 기다렸다가 재확인한다.
         # (2026-09-08에 겪은 "0건"의 실제 원인은 시/도 미선택이었지만, 대기 한 번 더는 비용이 없어 남겨둔다.)
-        print('[진행] 검색결과 0건 — 3초 더 기다린 뒤 재확인', flush=True)
-        time.sleep(3)
+        print('[진행] 검색결과 0건 — 3초까지 더 기다리며 재확인', flush=True)
+        _wait_until_ready(driver, lambda: bool(_visible_result_rows(driver)), 3.0, label='검색결과 표', report_timeout=False)  # [2026-10-24] 고정 3초 → 줄이 나타나는 즉시(최대 3초)
         rows = _visible_result_rows(driver)
 
     # [2026-10-04 추가 — 사용자 리포트 + 로컬 재현, 매물 716318] 도로명주소검색이 0건인데 사실은 등기가
@@ -1458,7 +1532,7 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
                 return fail
             rows = _visible_result_rows(driver)
             if not rows:
-                time.sleep(3)
+                _wait_until_ready(driver, lambda: bool(_visible_result_rows(driver)), 3.0, label='검색결과 표', report_timeout=False)  # [2026-10-24] 고정 3초 → 줄이 나타나는 즉시(최대 3초)
                 rows = _visible_result_rows(driver)
             if rows:
                 print(f'[진행] {label}으로 {len(rows)}건 찾음', flush=True)
@@ -1618,8 +1692,13 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
             return _fail('[다음] 버튼을 찾지 못했습니다(부동산 선택 후).', owner_masked)
         click_started_at = time.time()
         _click_with_fallback(driver, nb)
-        print(f'[측정] 부동산 선택 [다음] 클릭 {time.time() - click_started_at:.2f}초(등기소 처리) · 이후 고정 대기 0.6초(변경 없음)', flush=True)  # [2026-10-20 측정용]
-        time.sleep(0.6)
+        click_seconds = time.time() - click_started_at
+        # [2026-10-24] 고정 0.6초 대신 "'부동산을 선택하시기 바랍니다' 안내창이 뜨거나, 다음 화면(등기기록유형 선택)이 나타날 때까지"(최대 2초) —
+        # 바로 아래에서 확인하는 두 가지 결과. 안내창이 뜨는지가 이 대기의 목적이다(선택이 안 됐을 때만 뜬다).
+        _, ready_seconds = _wait_until_ready(driver, lambda: _is_selection_required_popup_visible(driver)
+                                             or bool(driver.find_elements(By.ID, f'{BASE}_sel_cpab_kncd_input_0')), 2.0,
+                                             label='부동산 선택 [다음] 이후 화면')
+        print(f'[측정] 부동산 선택 [다음] 클릭 {click_seconds:.2f}초(등기소 처리) · 다음 화면/안내창 신호까지 {ready_seconds:.2f}초(예전 고정 0.6초)', flush=True)  # [2026-10-20 측정용]
 
         if _is_selection_required_popup_visible(driver):
             # 예상과 반대로 선택이 안 돼 있었던 경우(또는 반대로 이미 선택된 걸 눌러 꺼버린 경우) —
@@ -1663,6 +1742,9 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
         print(f'[진행] 등기기록유형 "{wanted}" 선택 완료', flush=True)
     except Exception:
         pass  # 기본값 그대로 진행 — 조회에는 영향 없다
+    # [2026-10-24 일부러 고정 대기로 유지] 위 select 선택이 사이트에 반영되기 전에 [다음]을 누르면 **다른 종류의 등기부(현재유효사항 ↔ 말소사항포함
+    # 등)를 결제**하게 된다 — 돈이 나가는 문서 종류를 정하는 값이라, 반영 여부를 확실히 알 수 있는 신호를 실제 화면에서 확인하기 전에는
+    # 고정 대기를 신호 대기로 바꾸지 않는다(신호 후보: 컴포넌트 값 확인 — 검증되면 바꿀 것).
     time.sleep(0.6)
 
     reached = None
@@ -1777,7 +1859,8 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
             checkbox = tr.find_element(By.CSS_SELECTOR, 'td[data-col_id="chk_sel"] input[type="checkbox"]')
             if not checkbox.is_selected():
                 _click_with_fallback(driver, tr.find_element(By.CSS_SELECTOR, 'td[data-col_id="chk_sel"] label'))
-                time.sleep(0.8)
+                # [2026-10-24] 고정 0.8초 대신 "체크 상태가 될 때까지"(최대 2초) — 결제는 체크된 줄 전부에 나가므로 체크 반영 여부가 이 대기의 본래 목적이다
+                _wait_until_ready(driver, checkbox.is_selected, 2.0, label='결제대상 줄 체크')
         except NoSuchElementException:
             pass
         # [2026-10-04 추가] 결제는 "체크된 줄 전부"에 나가므로, 장바구니에 남아있던 다른 줄(이전 테스트·신청의
@@ -1790,7 +1873,7 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
                 other_checkbox = other.find_element(By.CSS_SELECTOR, 'td[data-col_id="chk_sel"] input[type="checkbox"]')
                 if other_checkbox.is_selected():
                     _click_with_fallback(driver, other.find_element(By.CSS_SELECTOR, 'td[data-col_id="chk_sel"] label'))
-                    time.sleep(0.5)
+                    _wait_until_ready(driver, lambda: not other_checkbox.is_selected(), 2.0, label='다른 결제대상 줄 체크 해제')  # [2026-10-24] 고정 0.5초 → 해제 상태 신호
                     print('[진행] 대상이 아닌 다른 결제대상 줄이 체크돼 있어 해제함', flush=True)
             except NoSuchElementException:
                 continue
@@ -2545,7 +2628,9 @@ def _prepare_payment_screen(driver, credentials):
         tab = driver.find_element(By.ID, f'{BASE}_tac_bpay_mthd_tab_tab_pp_tabHTML')
         if tab.is_displayed():
             _click_with_fallback(driver, tab)
-            time.sleep(0.2)
+            # [2026-10-24] 고정 0.2초 대신 "이용동의 항목이 나타날 때까지"(최대 3초) — 바로 아래에서 찾는 그 항목
+            _wait_until_ready(driver, lambda: bool(driver.find_elements(By.CSS_SELECTOR, f'#{BASE}_chk_whl_agree input[type="checkbox"]')), 3.0,
+                              label='결제수단 탭의 이용동의 항목')
     except NoSuchElementException:
         return {'ready': False, 'message': '결제수단(선불전자지급수단) 탭을 찾지 못했습니다.'}
 
@@ -2554,7 +2639,7 @@ def _prepare_payment_screen(driver, credentials):
         agree_input = driver.find_element(By.CSS_SELECTOR, f'#{BASE}_chk_whl_agree input[type="checkbox"]')
         if not agree_input.is_selected():
             _click_with_fallback(driver, agree_label)
-            time.sleep(0.6)
+            _wait_until_ready(driver, agree_input.is_selected, 2.0, label='이용동의 체크')  # [2026-10-24] 고정 0.6초 → 체크 상태 신호
     except NoSuchElementException:
         return {'ready': False, 'message': '이용동의 항목을 찾지 못했습니다.'}
 
@@ -2617,7 +2702,14 @@ def _finish_after_payment_confirm(driver):
         if result_btn is not None:
             _click_with_fallback(driver, result_btn)
             result_btn_state = f'{time.time() - result_wait_started_at:.1f}초에 보여서 누름'
-            time.sleep(1)
+            # [2026-10-24 측정용 — 동작 변화 없음, 총 1초 그대로] 결과 창 [확인] 뒤 열람 목록이 처음 보이는 시점을 잰다(고정 1초를 줄일 수 있는지 판단 자료)
+            after_result_click = time.time()
+            list_first_seen = None
+            while time.time() - after_result_click < 1.0:
+                if list_first_seen is None and _visible_target_list_rows(driver):
+                    list_first_seen = time.time() - after_result_click
+                time.sleep(0.05)
+            result_btn_state += f' · 열람 목록이 처음 보인 시점 {"1초 안에 안 보임" if list_first_seen is None else f"{list_first_seen:.2f}초 뒤"}'
             break
         result_btn_state = '없거나 안 보임'
         if _visible_target_list_rows(driver):
@@ -2801,8 +2893,17 @@ def _view_and_save(driver, payload, download_dir):
         return {'ok': False, 'message': f'목록에서 [열람] 버튼을 찾지 못했습니다. | {_diag_snapshot(driver)}'}
     click_started_at = time.time()
     _click_with_fallback(driver, view_btn)
-    print(f'[측정] [열람] 클릭 {time.time() - click_started_at:.2f}초(등기소 처리) · 이후 고정 대기 1초(변경 없음)', flush=True)  # [2026-10-20 측정용]
-    time.sleep(1)
+    click_seconds = time.time() - click_started_at
+    # [2026-10-24 측정용 — 동작 변화 없음, 총 1초 그대로] 열람은 되돌릴 수 없는 단계라 고정 1초를 신호 대기로 바꾸기 전에, 저장 버튼이 [열람] 클릭 뒤 몇 초에
+    # 처음 보이는지 실제 값을 먼저 모은다(버튼이 보여도 문서 내용이 준비됐는지는 별개 — 이 측정으로는 알 수 없고 그래서 바로 바꾸지 않는다).
+    after_view_click = time.time()
+    save_button_first_seen = None
+    while time.time() - after_view_click < 1.0:
+        if save_button_first_seen is None and _find_visible_or_none(driver, By.CSS_SELECTOR, 'input[id$="_btn_download"]') is not None:
+            save_button_first_seen = time.time() - after_view_click
+        time.sleep(0.05)
+    print(f'[측정] [열람] 클릭 {click_seconds:.2f}초(등기소 처리) · 저장 버튼이 처음 보인 시점 '
+          f'{"1초 안에 안 보임" if save_button_first_seen is None else f"{save_button_first_seen:.2f}초 뒤"} · 이후 고정 대기 1초 유지', flush=True)
 
     try:
         save_btn = driver.find_element(By.CSS_SELECTOR, 'input[id$="_btn_download"]')
