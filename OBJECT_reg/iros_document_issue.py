@@ -99,6 +99,10 @@ from selenium.common.exceptions import (
 # (두 문구가 이제 다르다 — 의도한 차이). user_cancelled 판정(아래 사용처)은 문구가 아니라 플래그로 하므로 영향 없다.
 USER_CLOSED_WINDOW_MESSAGE = '자동화 창이 완료 전에 닫힘(직접 닫았거나 크롬이 종료됐을 수 있음)'
 
+# ⚠️ 동기화 경고(2026-10-23): 아래처럼 "캡차 입력 대기시간을 초과"가 들어간 실패 문구('로그인화면 캡차 입력 대기시간을 초과했습니다.' 등 3곳)는
+# 서버(core/lib/lib_document_issue.php::isDocumentIssueFailureFromUnansweredCaptcha)가 이 문구로 "아무도 캡차를 처리하지 않은 중단"을 알아보고
+# 오류로그에서 뺀다 — 이 문구를 바꾸면 그 함수도 맞춰야 한다(안 그러면 캡차 미응답이 다시 오류로그에 쌓인다).
+
 # [2026-09-08 임시 진단 — 사용자 요청 "진짜 헤드리스로 다시 재현되는지 새 진행로그로 확인해보자"]
 # 기본(False)은 일반 크롬 창을 보이는 위치에 띄우는 방식(아래 issue_real_estate_register 참고) — 실사용
 # 동작은 이 값을 건드리지 않는 한 그대로다. True로 바꾸면 그 자리에 --headless=new를 대신 추가해서
