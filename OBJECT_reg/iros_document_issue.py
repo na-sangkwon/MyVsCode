@@ -232,6 +232,7 @@ def _click_with_fallback(driver, el):
     게 확인됐다 — 클릭을 시도하기 **전에** 이 안내창부터 치운다(이미 화면을 가리고 있는 요소라
     alert처럼 클릭 후 처리로는 늦다 — 클릭 자체가 가로막힌다)."""
     _dismiss_cart_payment_reminder_popup_if_present(driver)
+    _dismiss_simple_search_unavailable_popup_if_present(driver)  # [2026-11-01] 637695 — 이 안내창이 소재지번검색 탭 클릭을 가렸다
     try:
         driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", el)
     except Exception:
@@ -270,6 +271,7 @@ def _type_into_field(driver, el, value):
     _click_with_fallback() 주석과 같은 이유로 ElementClickInterceptedException이 난다 — 클릭
     전에 먼저 안내창부터 치운다."""
     _dismiss_cart_payment_reminder_popup_if_present(driver)
+    _dismiss_simple_search_unavailable_popup_if_present(driver)  # [2026-11-01] 637695 — _click_with_fallback()과 같은 이유
     el.click()
     el.send_keys(Keys.CONTROL, 'a')
     el.send_keys(Keys.DELETE)
@@ -1013,7 +1015,14 @@ def _pick_kind_cls_radio(driver, radio_id_fragment, property_category, _fail):
                 target = (r, label, label_text)
                 break
     if target is None:
-        return _fail(f'부동산구분 "{property_category}" 항목을 찾지 못했습니다 — 실제 화면에 있던 항목: {seen_labels}')
+        screen_note = ''
+        if not seen_labels:
+            # [2026-11-01] 항목이 하나도 없다 = 탭이 안 바뀌었거나 안내창이 가린 상태 — 상단 메뉴 글자만 남던 이전 실패 메시지로는 원인을 알 수 없어(637695) 그 순간 떠 있는 창의 글을 남긴다
+            try:
+                screen_note = f' [화면] {_describe_payment_result_screen_for_diagnosis(driver)}'
+            except Exception:
+                screen_note = ''
+        return _fail(f'부동산구분 "{property_category}" 항목을 찾지 못했습니다 — 실제 화면에 있던 항목: {seen_labels}{screen_note}')
 
     r, label, label_text = target
     # [2026-09-19 추가 — 실사용 재현으로 확인] 아래 클릭이 예외 없이 끝나도 실제로 라디오가 선택됐는지
@@ -1537,6 +1546,7 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
             if rows:
                 print(f'[진행] {label}으로 {len(rows)}건 찾음', flush=True)
                 break
+            _dismiss_simple_search_unavailable_popup_if_present(driver)  # [2026-11-01] 간편검색 장애 안내창이면 여기서 닫는다(다음 검색방법 클릭이 가려지지 않게)
             print(f'[진행] {label}도 0건', flush=True)
     print(f'[진행] 검색결과 {len(rows)}건 확인', flush=True)
     matched = [tr for tr in rows if _row_category_text(tr) == property_category]
@@ -2738,19 +2748,65 @@ VIEW_SAVE_BUTTON_WAIT_SEC = 20
 PENDING_FILING_NOTICE_MARKER = '등기신청사건이 접수되어'
 
 
-def _find_pending_filing_notice_confirm_button(driver):
-    """"등기신청사건 접수" 확인창이 떠 있으면 그 창 안의 [확인] 버튼을, 없으면 None. 창 안에서만 찾는다 — 화면의 다른 "확인" 글자 버튼을 잘못 누르지 않게.
-    안내문 글자로 이 창을 가려내므로 다른 안내창은 건드리지 않는다(처음 보는 안내창은 호출부가 실패 메시지에 글을 남긴다)."""
-    for box in driver.find_elements(By.CSS_SELECTOR, '[id*="message_popup"]'):
-        try:
-            if not box.is_displayed() or PENDING_FILING_NOTICE_MARKER not in (box.text or ''):
+def _find_notice_popup_confirm_button(driver, marker):
+    """안내문에 marker 글자가 든, 지금 보이는 안내창(id에 message_popup) 안의 [확인] 버튼을, 없으면 None. 창 안에서만 찾는다 — 화면의 다른 "확인" 글자
+    버튼을 잘못 누르지 않게. 안내문 글자로 그 창만 가려내므로 다른 안내창은 건드리지 않는다."""
+    # 확인하는 사이 화면이 다시 그려져 낡은 참조가 나오면 이번 확인을 "없음"으로 끝내지 않고 새 화면에서 처음부터 다시 본다(_find_visible_or_none과 같은 원칙) —
+    # 그냥 건너뛰면 안내창이 떠 있는데도 못 보고 지나가 클릭이 가려진다.
+    for _ in range(STALE_REFIND_ATTEMPTS):
+        saw_stale = False
+        for box in driver.find_elements(By.CSS_SELECTOR, '[id*="message_popup"]'):
+            try:
+                if not box.is_displayed() or marker not in (box.text or ''):
+                    continue
+                for button in box.find_elements(By.CSS_SELECTOR, 'a, button, input'):
+                    if button.is_displayed() and (button.text or button.get_attribute('value') or '').strip() == '확인':
+                        return button
+            except StaleElementReferenceException:
+                saw_stale = True
                 continue
-            for button in box.find_elements(By.CSS_SELECTOR, 'a, button, input'):
-                if button.is_displayed() and (button.text or button.get_attribute('value') or '').strip() == '확인':
-                    return button
-        except StaleElementReferenceException:
-            continue  # 확인하는 사이 창이 다시 그려짐 — 아직 아님으로 보고 다음 확인 때 다시 본다
+        if not saw_stale:
+            return None
     return None
+
+
+def _find_pending_filing_notice_confirm_button(driver):
+    """"등기신청사건 접수" 확인창의 [확인] 버튼(없으면 None) — 위 PENDING_FILING_NOTICE_MARKER 설명 참고."""
+    return _find_notice_popup_confirm_button(driver, PENDING_FILING_NOTICE_MARKER)
+
+
+# [2026-11-01 신규 — 637695 외부광고관리 "발급 후 등록" 실패, 사용자 승낙] 간편검색이 불안정할 때 등기소가 띄우는 안내창:
+# "현재 간편검색 서비스가 원활하지 않습니다. 잠시 후 이용하시거나 '소재지번검색' 등 다른 검색방법을 이용하시기 바랍니다. [확인]". [확인]만 있는 알림인데 코드가 닫지
+# 않아, 도로명 검색 0건 → 간편검색 → 소재지번검색으로 넘어가는 경로에서 이 창이 소재지번검색 탭 클릭을 가렸다(el.click이 "가려져서 막힘", 다음 시도는 "성공"처럼
+# 끝나도 탭이 안 바뀜 → 부동산구분 라디오 0개 → "항목을 찾지 못했습니다 — 화면 항목: []"로 실패). 같은 경로가 간편검색 상태에 따라 성공(21:02 테스트페이지)과
+# 실패(13:33·21:15 광고관리)로 갈렸다 — 경로의 코드는 같고 그 시각 등기소 상태만 달랐다. 이 창이 떴다는 것은 간편검색의 "0건"이 실제 0건이 아니라 서비스 오류라는
+# 뜻이기도 하다(그래서 다음 검색방법으로 넘어가는 지금 흐름이 맞다).
+SIMPLE_SEARCH_UNAVAILABLE_NOTICE_MARKER = '간편검색 서비스가 원활하지 않습니다'
+
+
+def _dismiss_simple_search_unavailable_popup_if_present(driver):
+    """간편검색 장애 안내창이 떠 있으면 [확인]으로 닫고 True, 없으면 False. _click_with_fallback()·_type_into_field()가 클릭 직전에 부르므로(재귀가 되지 않게)
+    여기서는 _click_with_fallback()을 쓰지 않고 직접 누른다.
+    @return bool 안내창이 있어서 닫았으면 True"""
+    try:
+        button = _find_notice_popup_confirm_button(driver, SIMPLE_SEARCH_UNAVAILABLE_NOTICE_MARKER)
+    except UnexpectedAlertPresentException:
+        _dismiss_alert_if_present(driver)
+        return False
+    if button is None:
+        return False
+    print('[진행] "간편검색 서비스가 원활하지 않습니다" 안내창 발견 — [확인]으로 닫음 (이 안내가 뜨면 간편검색의 "0건"은 실제 0건이 아니라 서비스 오류)', flush=True)
+    try:
+        button.click()
+    except Exception:
+        try:
+            driver.execute_script('arguments[0].click();', button)
+        except Exception:
+            print('[진행] 간편검색 장애 안내창의 [확인]을 누르지 못함 — 그대로 진행', flush=True)
+            return False
+    _wait_until_ready(driver, lambda: _find_notice_popup_confirm_button(driver, SIMPLE_SEARCH_UNAVAILABLE_NOTICE_MARKER) is None, 2.0,
+                      label='간편검색 장애 안내창 닫힘')
+    return True
 
 
 def _visible_target_list_rows(driver):
