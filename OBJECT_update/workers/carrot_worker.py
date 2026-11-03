@@ -30,6 +30,8 @@ from util.property_utils import (
     드롭다운_선택검속_및_신규업데이트판정,
     로그저장,
     텍스트기준_버튼_클릭,
+    삭제_허용_판정,
+    삭제_기록_남기기,
     최상단_예아니오_창,
     당근_끌어올리기_마스터_통합엔진,
     당근_사진필수팝업_감지시_게시글수정_탈출,
@@ -97,6 +99,8 @@ class CarrotAutomationWorker:
         self.끌어올리기_성공_개수 = 0
         self.수정업데이트_성공_개수 = 0
         self.비공개완료_성공_개수 = 0
+        # [2026-11-03 신규] 프로중개인에서 삭제된 매물을 당근에서도 삭제한 건수 — 삭제_프로세스_총괄() 참고.
+        self.삭제완료_성공_개수 = 0
         self.건너뜀_개수 = 0
         self.숨김해제_성공_개수 = 0
         # [처리결과 가시화] 판정 로직 밖에서 예상 못한 예외(타임아웃/DOM 변경 등)가 나면, 그
@@ -1165,6 +1169,112 @@ class CarrotAutomationWorker:
                 self.오류_개수 += 1
                 print(f"   [❌ 처리 실패 - {당근매물번호}] 비공개 처리 중 예상치 못한 예외로 이 매물을 건너뜁니다: {예외}")
 
+    def 사이트에서_삭제(self, 매물_행_객체, 당근매물번호):
+        """
+        당근 매물 하나를 사이트에서 삭제하는 동작만 한다(삭제 허용 판정은 호출부가 먼저 한다 — util/property_utils.py 머리말).
+        점 세 개(...) 메뉴의 "삭제"(글자가 아니라 그 항목을 감싼 menuitem div를 클릭 — 비공개 클릭과 같은 이유, 위 비공개_완료처리_실행
+        주석 참고)를 누르고, 뜨는 확인창에서 "삭제" 버튼을 누른다. 확인창이 예상한 모양이 아니면 아무것도 누르지 않고 실패로 돌려
+        지우는 쪽으로 추측하지 않는다(확인창 구조는 처음 실제 삭제 때 확인된다).
+        :return: (성공적으로 눌렀는지, 사유)
+        """
+        try:
+            더보기_버튼 = 매물_행_객체.find_element(By.XPATH, ".//button[@aria-haspopup='menu']")
+            try:
+                더보기_버튼.click()
+            except Exception:
+                self.브라우저.execute_script("arguments[0].click();", 더보기_버튼)
+            time.sleep(0.6)
+            삭제_메뉴 = WebDriverWait(self.브라우저, 3).until(
+                EC.element_to_be_clickable((By.XPATH, "//div[@role='menuitem'][normalize-space(.)='삭제']"))
+            )
+            try:
+                삭제_메뉴.click()
+            except Exception:
+                self.브라우저.execute_script("arguments[0].click();", 삭제_메뉴)
+            확인창 = WebDriverWait(self.브라우저, 4).until(
+                EC.visibility_of_element_located((By.XPATH, "//*[@role='alertdialog' or @role='dialog']"))
+            )
+            확인창_문구 = (확인창.text or '').replace('\n', ' ')[:120]
+            확인_버튼목록 = 확인창.find_elements(By.XPATH, ".//button[normalize-space(.)='삭제']")
+            if len(확인_버튼목록) != 1:
+                # 예상한 확인창이 아니다 — 취소 쪽(닫기)으로만 빠져나오고 아무것도 지우지 않는다.
+                try:
+                    self.브라우저.find_element(By.TAG_NAME, 'body').send_keys(Keys.ESCAPE)
+                except Exception:
+                    pass
+                return False, f"삭제 확인창에서 '삭제' 버튼을 하나로 특정하지 못함(문구: {확인창_문구})"
+            try:
+                확인_버튼목록[0].click()
+            except Exception:
+                self.브라우저.execute_script("arguments[0].click();", 확인_버튼목록[0])
+            time.sleep(1.5)
+            return True, 확인창_문구
+        except Exception as 오류:
+            return False, f"{type(오류).__name__}: {str(오류)[:150]}"
+
+    def 삭제_프로세스_총괄(self):
+        """
+        [2026-11-03 사용자 결정] 프로중개인에서 삭제된 매물을 당근에서도 삭제한다(복구는 고려하지 않음 — 원본은 프로중개인에 있다).
+        대상은 auto.py::obang_data가 모은 '삭제매물' 중 당근 광고번호가 있는 것. 삭제는 되돌릴 수 없어서 매물마다 삭제 허용
+        조건 4가지(util/property_utils.py 머리말)를 통과한 것만 지운다 — 당근 검색 결과가 정확히 1건일 때만(여러 건이면 어느 것인지
+        모호해 보류), 그 카드의 주소(호실 포함)가 DB 주소와 같고, 그 광고번호를 쓰는 활성 매물이 DB에 없어야 한다.
+        삭제 뒤에는 다시 검색해 사라졌는지 확인한다.
+        """
+        대상목록 = []
+        for 항목 in (self.데이터.get('삭제매물') or []):
+            for 당근코드 in (항목.get('당근코드목록') or []):
+                if str(당근코드).strip():
+                    대상목록.append((str(당근코드).strip(), 항목))
+        if not 대상목록:
+            return
+        print(f"\n=== 당근 삭제 매물 정리 시작 ({len(대상목록)}건) ===")
+        for 순번, (당근매물번호, 항목) in enumerate(대상목록, 1):
+            새홈번호 = str(항목['object_code_new'])
+            try:
+                if self.진행상황_알림함수:
+                    self.진행상황_알림함수(순번 - 1, len(대상목록), f"🗑️ 당근 삭제 매물 정리 중... ({순번}/{len(대상목록)}번째)", mode='indeterminate')
+                당근매물번호_검색창_입력(self.브라우저, 당근매물번호)
+                찾은개수 = self.검색결과_목록개수_확인(당근매물번호)
+                if 찾은개수 == 0:
+                    print(f"   [⏭️ 삭제 건너뜀 - {당근매물번호}] 당근에 이미 없음 — 삭제 목적은 달성된 상태입니다")
+                    self.건너뜀_개수 += 1
+                    continue
+                if 찾은개수 != 1:
+                    사유 = f"검색 결과가 {찾은개수}건이라 어느 매물인지 특정할 수 없음"
+                    print(f"   [⏸️ 삭제 보류 - {당근매물번호}] {사유}")
+                    삭제_기록_남기기('당근', 당근매물번호, 새홈번호, '', '', '삭제보류', 사유)
+                    self.건너뜀_개수 += 1
+                    continue
+                매물_행 = self.브라우저.find_element(By.CSS_SELECTOR, "div.flex.w-full.cursor-pointer.items-center.border-b")
+                행_문구 = (매물_행.text or '').replace('\n', ' ')
+                # 카드 전체 문구를 사이트 주소로 넘긴다 — 판정 함수가 그 안에서 첫 동·지번과 호실을 읽는다.
+                # DB 연결 수단은 auto.py::obang_data가 기존 연결에서 만들어 넘긴다(새 코드에 접속정보를 적지 않기 위함).
+                허용, 사유 = 삭제_허용_판정(self.데이터.get('DB연결'), '당근', 당근매물번호, 새홈번호, 항목.get('주소'), 행_문구)
+                if not 허용:
+                    print(f"   [⏸️ 삭제 보류 - {당근매물번호}] {사유}")
+                    삭제_기록_남기기('당근', 당근매물번호, 새홈번호, 행_문구[:150], '', '삭제보류', 사유)
+                    self.건너뜀_개수 += 1
+                    continue
+                삭제_기록_남기기('당근', 당근매물번호, 새홈번호, 행_문구[:150], '', '삭제전')
+                눌림, 눌림사유 = self.사이트에서_삭제(매물_행, 당근매물번호)
+                if not 눌림:
+                    self.오류_개수 += 1
+                    print(f"   [❌ 삭제 처리 실패 - {당근매물번호}] {눌림사유}")
+                    삭제_기록_남기기('당근', 당근매물번호, 새홈번호, 행_문구[:150], '', '삭제실패', 눌림사유)
+                    continue
+                당근매물번호_검색창_입력(self.브라우저, 당근매물번호)
+                if self.검색결과_목록개수_확인(당근매물번호) == 0:
+                    self.삭제완료_성공_개수 += 1
+                    print(f"   [✅ 삭제 완료 - {당근매물번호}] {행_문구[:80]}")
+                    삭제_기록_남기기('당근', 당근매물번호, 새홈번호, 행_문구[:150], '', '삭제완료', 눌림사유)
+                else:
+                    self.오류_개수 += 1
+                    print(f"   [❌ 삭제 미반영 - {당근매물번호}] 삭제 확인창을 눌렀지만 삭제 뒤에도 검색됩니다")
+                    삭제_기록_남기기('당근', 당근매물번호, 새홈번호, 행_문구[:150], '', '삭제실패', '삭제 뒤에도 검색됨')
+            except Exception as 예외:
+                self.오류_개수 += 1
+                print(f"   [❌ 삭제 처리 실패 - {당근매물번호}] 예상치 못한 예외: {예외}")
+
     def run(self):
         """ 당근 일꾼 엔진 구동 제어 허브 """
         print("\n==================================================")
@@ -1181,7 +1291,9 @@ class CarrotAutomationWorker:
         if self.모드 in ['all', 'close_only']:
             print("\n[🔎 디버그] 2단계: 당근 거래완료 매물 비공개 일괄 처리 가동")
             self.거래완료_비공개_프로세스_총괄()
-            
+            # 프로중개인에서 삭제된 매물은 비공개가 아니라 삭제한다(2026-11-03 사용자 결정).
+            self.삭제_프로세스_총괄()
+
         print("\n[🔎 디버그] 당근부동산 일꾼 할당 작업 최종 마감 완료.")
 
         # [처리결과 무결성 검증] 이번에 실제로 순회한 매물 수와, 성공/비공개완료/건너뜀/실패로
@@ -1190,9 +1302,12 @@ class CarrotAutomationWorker:
         # 숨김해제_성공_개수는 최종완료_개수로 이미 집계된 같은 매물의 부가 지표일 뿐이라 제외한다.
         총대상 = 0
         if self.모드 in ['all', 'update_only']: 총대상 += len(self.데이터.get('당근_업데이트목록', []))
-        if self.모드 in ['all', 'close_only']: 총대상 += len(self.데이터.get('당근_거래완료목록', []))
-        집계합계 = self.최종완료_개수 + self.비공개완료_성공_개수 + self.건너뜀_개수 + self.오류_개수
+        if self.모드 in ['all', 'close_only']:
+            총대상 += len(self.데이터.get('당근_거래완료목록', []))
+            총대상 += sum(len([c for c in (x.get('당근코드목록') or []) if str(c).strip()]) for x in (self.데이터.get('삭제매물') or []))
+        집계합계 = self.최종완료_개수 + self.비공개완료_성공_개수 + self.삭제완료_성공_개수 + self.건너뜀_개수 + self.오류_개수
         if 집계합계 != 총대상:
             print(f"   [🚨 집계 불일치 경고] 당근 총 대상 {총대상}건 vs 집계 합계 {집계합계}건 — 어딘가에서 매물이 결과 집계 없이 누락되고 있을 수 있습니다. 코드 점검이 필요합니다.")
 
-        return self.최종완료_개수, self.끌어올리기_성공_개수, self.수정업데이트_성공_개수, self.비공개완료_성공_개수, self.건너뜀_개수, self.숨김해제_성공_개수, self.오류_개수
+        return (self.최종완료_개수, self.끌어올리기_성공_개수, self.수정업데이트_성공_개수, self.비공개완료_성공_개수, self.건너뜀_개수,
+                self.숨김해제_성공_개수, self.오류_개수, self.삭제완료_성공_개수)

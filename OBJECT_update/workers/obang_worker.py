@@ -1,4 +1,6 @@
 import os
+import re
+import sys
 import time
 import datetime
 import random
@@ -15,6 +17,10 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, UnexpectedAlertPresentException, StaleElementReferenceException
+
+# 삭제 매물 처리의 공용 판정(동일 매물 증명·번호 단독 소유·직전 재확인·기록)은 당근·오부사와 같은 함수를 쓴다.
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+from util.property_utils import 삭제_허용_판정, 삭제_기록_남기기
 
 # core/config.php의 $CFG['local_helper']['service_token'], OBJECT_reg/test.py·test_iros_manual.py의
 # 같은 이름 상수와 반드시 같은 값이어야 한다(하나를 바꾸면 전부 같이 바꿀 것).
@@ -80,6 +86,8 @@ class ObangAutomationWorker:
         # 안 남던 건수 — 단독 테스트로 이미 완료된 매물 1건만 넣었는데 결과가 통째로 사라져서
         # "왜 하나도 표시가 안 되냐"는 질문이 나온 게 계기.
         self.not_found_count = 0
+        # [2026-11-03 신규] 프로중개인에서 삭제된 매물을 오방에서도 삭제한 건수 — process_deletions() 참고.
+        self.delete_ok = 0
 
     def _경고_또는_로그(self, message):
         """ 수동 모드는 기존처럼 알림창으로 사람에게 묻고, 무인 모드는 로그로만 남기고 계속 진행한다. """
@@ -674,6 +682,116 @@ class ObangAutomationWorker:
         if 목적달성_목록:
             print(f"   [⏭️ 거래완료 대상 건너뜀] 오방코드 {목적달성_목록} — 검색화면(공개 매물만 표시)에 없음. 이미 비공개이거나 오방에 없어 거래완료 목적은 달성된 상태입니다.")
 
+    def _오방_검색(self, 오방코드, timeout=5):
+        """ 매물번호로 검색해 그 번호의 행이 목록 첫 줄에 나타나면 True, 끝까지 안 나타나면(없음) False. """
+        창 = self.driver.find_element(By.CSS_SELECTOR, "#search_id")
+        창.clear()
+        창.send_keys(오방코드)
+        time.sleep(0.2)
+        창.send_keys(Keys.ENTER)
+        try:
+            WebDriverWait(self.driver, timeout).until(
+                lambda d: (els := d.find_elements(By.CSS_SELECTOR, "#search-items tr strong")) and els[0].text.strip() == 오방코드
+            )
+            return True
+        except TimeoutException:
+            return False
+
+    def 사이트에서_삭제(self, 오방코드):
+        """
+        오방 매물 하나를 사이트에서 삭제하는 동작만 한다(삭제 허용 판정은 호출부가 먼저 한다 — util/property_utils.py 머리말).
+        화면의 [관리 → 삭제]가 부르는 delete_product()를 그대로 부른다. 그 함수는 확인창(confirm) 뒤 삭제 주소로 이동하는데,
+        자동화에서는 사람이 확인창을 누를 수 없어 true를 돌려주도록 바꿔 둔다.
+        ⚠ 같은 화면에 있는 real_delete_all()(영구 전체 삭제)은 어떤 경우에도 부르지 않는다.
+        :return: 사이트가 띄운 알림창 문구들(없으면 빈 문자열)
+        """
+        오래된_검색창 = self.driver.find_element(By.ID, "search_id")
+        self.driver.execute_script("window.confirm = function(){ return true; }; delete_product(arguments[0]);", 오방코드)
+        알림문구들 = []
+        종료시각 = time.time() + 12
+        while time.time() < 종료시각:
+            try:
+                if EC.staleness_of(오래된_검색창)(self.driver):
+                    break   # 삭제 주소로 이동해 이전 화면이 사라짐
+            except UnexpectedAlertPresentException:
+                알림 = self.driver.switch_to.alert
+                알림문구들.append(알림.text)
+                알림.accept()
+            time.sleep(0.3)
+        try:
+            WebDriverWait(self.driver, 2).until(EC.alert_is_present())
+            알림 = self.driver.switch_to.alert
+            알림문구들.append(알림.text)
+            알림.accept()
+        except TimeoutException:
+            pass
+        try:
+            WebDriverWait(self.driver, 10).until(EC.presence_of_element_located((By.ID, "search_id")))
+        except TimeoutException:
+            self._검색화면으로_복귀()
+        return ' / '.join(알림문구들)
+
+    def process_deletions(self):
+        """
+        [2026-11-03 사용자 결정] 프로중개인에서 삭제된 매물을 오방에서도 삭제한다(복구는 고려하지 않음 — 원본은 프로중개인에 있다).
+        대상은 auto.py::obang_data가 모은 '삭제매물'(의뢰·매물이 모두 삭제되고 삭제 시각이 설정 기간 안인 것) 중 오방코드가 있는 것.
+        삭제는 되돌릴 수 없어서 매물마다 삭제 허용 조건 4가지(util/property_utils.py 머리말)를 통과한 것만 지운다:
+        오방은 행에 [새홈번호]가 함께 표시되므로 주소 일치에 더해 그 번호가 DB 새홈번호와 같은지도 본다.
+        삭제 뒤에는 다시 검색해 사라졌는지 확인한다. 삭제 권한이 없어 거부되면(알림문구에 '권한') 실패가 아니라 건너뜀으로
+        세고 사유를 로그에 남긴다(자동화 공용 계정의 삭제 권한은 아직 확인 못 함 — 사이트 안내: 관리자와 등록 직원만 삭제 가능).
+        """
+        삭제목록 = [x for x in (self.data.get('삭제매물') or []) if str(x.get('오방코드') or '').strip()]
+        if not 삭제목록:
+            return
+        print(f"\n=== 오방 삭제 매물 정리 시작 ({len(삭제목록)}건) ===")
+        self._검색화면으로_복귀()
+        # 검색 화면이 '공개 매물만' 필터 상태일 수 있다(process_closures가 건다) — 삭제 대상은 비공개 매물도 찾아야 해서 비운다.
+        self.driver.execute_script("var h=document.querySelector('#only_public'); if(h) h.value='';")
+        for 순번, 항목 in enumerate(삭제목록, 1):
+            오방코드, 새홈번호 = str(항목['오방코드']).strip(), str(항목['object_code_new'])
+            if self.progress_callback:
+                self.progress_callback(순번, len(삭제목록), f"🗑️ 오방 삭제 매물 정리 중... ({순번}/{len(삭제목록)}번째)")
+            try:
+                if not self._오방_검색(오방코드):
+                    print(f"   [⏭️ 삭제 건너뜀 - 오방 {오방코드}] 오방에 이미 없음 — 삭제 목적은 달성된 상태입니다")
+                    self.skip_count += 1
+                    continue
+                칸 = self.driver.find_element(By.CSS_SELECTOR, f"#tr_{오방코드} td:nth-of-type(9)")
+                사이트주소 = ''
+                주소칸 = 칸.find_elements(By.CSS_SELECTOR, ".help-block")
+                if 주소칸:
+                    사이트주소 = 주소칸[0].text.strip()
+                표시새홈 = re.search(r'\[새홈(\d+)\]', 칸.text)
+                if 표시새홈 and 표시새홈.group(1) != 새홈번호:
+                    사유 = f"오방 행의 새홈번호({표시새홈.group(1)})가 DB 새홈번호({새홈번호})와 다름"
+                    허용 = False
+                else:
+                    # DB 연결 수단은 auto.py::obang_data가 기존 연결에서 만들어 넘긴다(새 코드에 접속정보를 적지 않기 위함).
+                    허용, 사유 = 삭제_허용_판정(self.data.get('DB연결'), '오방', 오방코드, 새홈번호, 항목.get('주소'), 사이트주소)
+                if not 허용:
+                    print(f"   [⏸️ 삭제 보류 - 오방 {오방코드}] {사유}")
+                    삭제_기록_남기기('오방', 오방코드, 새홈번호, 사이트주소, '', '삭제보류', 사유)
+                    self.skip_count += 1
+                    continue
+                삭제_기록_남기기('오방', 오방코드, 새홈번호, 사이트주소, '', '삭제전')
+                알림문구 = self.사이트에서_삭제(오방코드)
+                if not self._오방_검색(오방코드, timeout=4):
+                    self.delete_ok += 1
+                    print(f"   [✅ 삭제 완료 - 오방 {오방코드}] {사이트주소}")
+                    삭제_기록_남기기('오방', 오방코드, 새홈번호, 사이트주소, '', '삭제완료', 알림문구)
+                elif '권한' in 알림문구:
+                    print(f"   [⏸️ 삭제 보류 - 오방 {오방코드}] 삭제 권한이 없어 거부됨: {알림문구}")
+                    삭제_기록_남기기('오방', 오방코드, 새홈번호, 사이트주소, '', '삭제보류', f"권한 없음: {알림문구}")
+                    self.skip_count += 1
+                else:
+                    self.error_count += 1
+                    print(f"   [❌ 삭제 미반영 - 오방 {오방코드}] 삭제 뒤에도 검색됩니다(알림: {알림문구 or '없음'})")
+                    삭제_기록_남기기('오방', 오방코드, 새홈번호, 사이트주소, '', '삭제실패', 알림문구 or '삭제 뒤에도 검색됨')
+            except Exception as 오류:
+                self.error_count += 1
+                print(f"   [❌ 삭제 처리 실패 - 오방 {오방코드}] {type(오류).__name__}: {str(오류)[:200]}")
+                self._검색화면으로_복귀()
+
     def login_and_navigate(self):
         self.driver.implicitly_wait(10)
         # URL 열기
@@ -750,7 +868,9 @@ class ObangAutomationWorker:
     def run(self):
         self.login_and_navigate()
         if self.mode in ['all', 'update_only']: self.process_updates()
-        if self.mode in ['all', 'close_only']: self.process_closures()
+        if self.mode in ['all', 'close_only']:
+            self.process_deletions()   # 삭제 매물은 비공개 필터를 거는 process_closures 앞에서 처리한다
+            self.process_closures()
 
         # [처리결과 무결성 검증] 이번에 실제로 순회한 매물 수와, 성공/비공개/건너뜀/실패/미등록으로
         # 집계된 합계는 항상 정확히 같아야 한다(사용자 지침: "각 사이트마다 카운트된 것들의 합은
@@ -760,9 +880,12 @@ class ObangAutomationWorker:
         # 그 자체로 별도 매물을 가리키지 않으므로 합계 검증에서는 제외한다.
         총대상 = 0
         if self.mode in ['all', 'update_only']: 총대상 += len(self.data.get('업데이트매물', []))
-        if self.mode in ['all', 'close_only']: 총대상 += len(self.data.get('거래완료매물', []))
-        집계합계 = self.update_ok + self.end_ok + self.skip_count + self.error_count + self.not_found_count
+        if self.mode in ['all', 'close_only']:
+            총대상 += len(self.data.get('거래완료매물', []))
+            총대상 += len([x for x in (self.data.get('삭제매물') or []) if str(x.get('오방코드') or '').strip()])
+        집계합계 = self.update_ok + self.end_ok + self.delete_ok + self.skip_count + self.error_count + self.not_found_count
         if 집계합계 != 총대상:
             print(f"   [🚨 집계 불일치 경고] 오방 총 대상 {총대상}건 vs 집계 합계 {집계합계}건 — 어딘가에서 매물이 결과 집계 없이 누락되고 있을 수 있습니다. 코드 점검이 필요합니다.")
 
-        return self.complete_count, self.restart_ok, self.update_ok, self.end_ok, self.skip_count, self.error_count, self.not_found_count
+        return (self.complete_count, self.restart_ok, self.update_ok, self.end_ok, self.skip_count, self.error_count,
+                self.not_found_count, self.delete_ok)

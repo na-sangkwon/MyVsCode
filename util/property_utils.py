@@ -1,6 +1,7 @@
 # fileName: util/property_utils.py
 import os
 import re
+import json
 import traceback
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -60,6 +61,143 @@ def 로그저장(log_target, log_item, log_value, admin_id):
     finally:
         if conn:
             conn.close()
+
+# =====================================================================================================
+# 삭제 매물 처리 공용 판정 (오방·당근·오부사 공통) — 2026-11-03 신규, 사용자 승낙
+#
+# 프로중개인에서 삭제한 매물은 각 사이트에서도 삭제한다(복구는 고려하지 않음 — 원본은 프로중개인에 있다).
+# 삭제는 되돌릴 수 없으므로 "총 몇 건까지"라는 총량 상한이 아니라, 지우는 매물마다 아래 4가지 증거를 갖춘
+# 경우에만 실행한다(사용자 지적: 총량 상한은 사후 땜질이라 근본 기준이 아니다):
+#   ① 대상 사실  — DB에서 의뢰 삭제(request_del='Y')와 매물 삭제(object_del='Y')가 모두 기록돼 있고, 삭제 시각이
+#                   설정 기간 안(수동 전체 스캔은 기간 제한 없음)                          → 삭제대상_후보_조회
+#   ② 동일 매물 증명 — 사이트 매물 주소가 DB 매물 주소와 일치(동·지번, 양쪽에 호실이 있으면 호실까지)  → 삭제용_주소_일치_판정
+#   ③ 번호 단독 소유 — 그 사이트 번호(오방코드·당근 광고번호·오부사 번호)를 가진 활성 매물이 DB에 없다  → 삭제_직전_재확인
+#   ④ 직전 재확인 → 삭제 → 사후 검증 → 기록 — 삭제 직전에 ①③을 DB에서 다시 확인하고, 삭제 후 사이트에서
+#                   사라졌는지 확인하며, 지운 매물 정보를 pr_log에 남긴다(복구용이 아니라 추적용)     → 삭제_기록_남기기
+# 사이트별 실제 삭제 동작과 사후 검증은 각 워커(obang_worker.py / carrot_worker.py / obs_worker.py)가 한다.
+# ⚠ 오부사의 주소 확인(obs_worker.py::주소_일치_여부)과 같은 동·지번 판정을 따로 들고 있다 — 동·지번 해석
+#   규칙(_삭제_지번 패턴)을 고치면 그쪽도 맞출 것.
+# =====================================================================================================
+# DB 접속 정보는 이 함수들 안에 적지 않는다(새 코드에 자격증명을 하드코딩하지 않는 원칙) — 호출하는 쪽이 이미 가진 연결 방식을
+# "연결 생성 함수"(인자 없이 부르면 pymysql 연결을 돌려주는 함수)로 넘겨준다: 오부사 워커는 self._DB연결, 오방·당근 워커는
+# auto.py::obang_data가 기존 연결에서 만들어 obangData['DB연결']로 넘긴다.
+_삭제_지번 = r'산?\d+(?:-\d+)?'
+_삭제_동지번_패턴 = re.compile(rf'([가-힣0-9]+(?:동|리|가))\s*({_삭제_지번}(?:\s*,\s*{_삭제_지번})*)')
+_삭제_호실_패턴 = re.compile(r'(\d+)\s*호')
+
+
+def 삭제대상_후보_조회(연결생성, 시작일=None, 종료일=None):
+    """
+    [삭제 허용 조건 ①] DB에서 삭제된 매물 후보를 찾는다 — 의뢰와 매물이 모두 삭제 상태(request_del='Y', object_del='Y')이고
+    삭제 시각(pr_request.request_udate)이 [시작일, 종료일] 안인 것. 시작일이 None이면 기간 제한 없이 전체(수동 전체 스캔용).
+    삭제 시각을 request_udate로 보는 근거: 프로중개인의 주요 삭제 경로(lib_client.php, lib_request.php 2곳)는 의뢰를 삭제하며
+    request_udate를 삭제 시각으로 갱신한다(코드 확인). 단, 기간 만료 의뢰를 지우는 자동삭제(deleteRequestsAutomatically)는 날짜를
+    갱신하지 않아 이 기준으로는 안 잡힌다 — 그런 건 수동 전체 스캔으로만 잡힌다.
+    :return: [{'object_code_new','object_code_obang','object_address','request_code','request_udate'}]
+    """
+    sql = """SELECT o.object_code_new, o.object_code_obang, o.object_address, o.request_code, p.request_udate
+             FROM pr_object o JOIN pr_request p ON p.request_code = o.request_code
+             WHERE o.object_del = 'Y' AND p.request_del = 'Y'"""
+    인자 = []
+    if 시작일 is not None:
+        sql += " AND p.request_udate BETWEEN %s AND %s"
+        인자 += [시작일, 종료일 or datetime.now().date()]
+    conn = 연결생성()
+    try:
+        cur = conn.cursor(pymysql.cursors.DictCursor)
+        cur.execute(sql, 인자)
+        return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def 삭제_직전_재확인(연결생성, 사이트, 외부번호, object_code_new):
+    """
+    [삭제 허용 조건 ①③ 재확인] 삭제 직전에 DB를 다시 읽어, 후보를 뽑은 뒤 그 사이에 복구되거나(①) 같은 번호를 쓰는 활성
+    매물이 있는지(③) 확인한다. 사이트는 '오방' | '당근' | '오부사'. :return: (허용 여부, 불허 사유)
+    """
+    외부번호 = str(외부번호 or '').strip()
+    if not 외부번호:
+        return False, '사이트 번호가 비어 있음'
+    conn = 연결생성()
+    try:
+        cur = conn.cursor()
+        cur.execute("""SELECT o.object_del, p.request_del FROM pr_object o JOIN pr_request p ON p.request_code = o.request_code
+                       WHERE o.object_code_new = %s""", (str(object_code_new),))
+        행 = cur.fetchone()
+        if not 행 or 행[0] != 'Y' or 행[1] != 'Y':
+            return False, '직전 재확인에서 DB의 의뢰·매물 삭제 상태가 확인되지 않음(복구됐거나 삭제 기록이 한쪽뿐)'
+        if 사이트 == '오방':
+            cur.execute("SELECT COUNT(*) FROM pr_object WHERE object_code_obang = %s AND object_del = 'N'", (외부번호,))
+        elif 사이트 == '당근':
+            cur.execute("""SELECT COUNT(*) FROM pr_externalad a JOIN pr_object o ON o.object_code_new = a.object_code_new
+                           WHERE a.ad_site = '당근' AND a.ad_code = %s AND a.ad_del = 'N' AND o.object_del = 'N'""", (외부번호,))
+        elif 사이트 == '오부사':
+            # 오부사 번호 = 새홈번호(5자리 규칙, lib_external_ad.php::externalAdDecideMode와 같다). 5자리가 아니면 오부사 번호일
+            # 근거가 없고, 그 번호의 활성 매물이 있으면 다른 매물이다.
+            if len(외부번호) != 5 or 외부번호 != str(object_code_new):
+                return False, '오부사 번호 규칙(5자리, 새홈번호와 동일)에 맞지 않음'
+            cur.execute("SELECT COUNT(*) FROM pr_object WHERE object_code_new = %s AND object_del = 'N'", (외부번호,))
+        else:
+            return False, f"알 수 없는 사이트 '{사이트}'"
+        if cur.fetchone()[0] > 0:
+            return False, f"{사이트} 번호 {외부번호}를 쓰는 활성 매물이 DB에 있음(번호 충돌 위험)"
+        return True, ''
+    finally:
+        conn.close()
+
+
+def 삭제용_주소_일치_판정(db주소, 사이트주소):
+    """
+    [삭제 허용 조건 ②] 사이트 매물이 DB의 삭제된 그 매물과 같은지 주소로 증명한다. 같은 동이고 지번이 하나라도 겹쳐야 하고
+    (여러 필지 묶음 주소 대응), 양쪽 주소에 호실(예: '304호')이 모두 있으면 호실도 같아야 한다 — 같은 번지의 다른 호실을
+    지우는 사고를 막기 위함. 한쪽에만 호실이 있으면(오부사 목록은 호실을 안 보여준다) 호실은 비교하지 않는다.
+    :return: (일치 여부, 불일치 사유)
+    """
+    def 동지번(주소):
+        m = _삭제_동지번_패턴.search(주소 or '')
+        return (m.group(1), {x.strip() for x in m.group(2).split(',')}) if m else None
+    db, site = 동지번(db주소), 동지번(사이트주소)
+    if not db or not site:
+        return False, f"주소에서 동·지번을 못 읽음(DB:{db주소!r} / 사이트:{사이트주소!r})"
+    if db[0] != site[0] or not (db[1] & site[1]):
+        return False, f"동·지번 불일치(DB:{db주소!r} / 사이트:{사이트주소!r})"
+    db호, site호 = set(_삭제_호실_패턴.findall(db주소 or '')), set(_삭제_호실_패턴.findall(사이트주소 or ''))
+    if db호 and site호 and not (db호 & site호):
+        return False, f"호실 불일치(DB:{sorted(db호)} / 사이트:{sorted(site호)})"
+    return True, ''
+
+
+def 삭제_허용_판정(연결생성, 사이트, 외부번호, object_code_new, db주소, 사이트주소):
+    """
+    삭제 직전에 부르는 최종 판정 — ②(동일 매물 증명)와 ①③ 재확인(DB 직전 재확인)을 모두 통과해야 True.
+    연결생성이 없으면(DB를 다시 확인할 수단이 없으면) 허용하지 않는다 — 증거 없이 지우지 않는다.
+    :return: (허용 여부, 불허 사유)
+    """
+    if 연결생성 is None:
+        return False, 'DB 연결 수단이 없어 직전 재확인을 할 수 없음'
+    ok, 사유 = 삭제용_주소_일치_판정(db주소, 사이트주소)
+    if not ok:
+        return False, 사유
+    return 삭제_직전_재확인(연결생성, 사이트, 외부번호, object_code_new)
+
+
+def 삭제_기록_남기기(사이트, 외부번호, object_code_new, 사이트주소, 사이트가격, 단계, 사유=''):
+    """
+    [삭제 허용 조건 ④의 기록] 무엇을 지웠는지(또는 왜 못 지웠는지) pr_log에 남긴다 — 복구용이 아니라 추적용.
+    단계: '삭제전'(삭제 직전 사이트 매물 정보) | '삭제완료' | '삭제실패' | '삭제보류'. 기록 실패는 본작업을 막지 않는다.
+    """
+    try:
+        로그저장(
+            log_target=str(object_code_new),
+            log_item='삭제처리기록',
+            log_value=json.dumps({'사이트': 사이트, '번호': str(외부번호), '단계': 단계, '사이트주소': 사이트주소,
+                                  '사이트가격': 사이트가격, '사유': 사유}, ensure_ascii=False),
+            admin_id='SYSTEM'
+        )
+    except Exception as 오류:
+        print(f"   [⚠️ 삭제기록 실패 - {사이트} {외부번호}] {오류}")
+
 
 def 최상단알림창(notice_text, title="알림"):
     """

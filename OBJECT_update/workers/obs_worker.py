@@ -1,4 +1,6 @@
+import os
 import re
+import sys
 import json
 import time
 import datetime
@@ -10,6 +12,10 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, UnexpectedAlertPresentException, NoAlertPresentException
+
+# 삭제 매물 처리의 공용 판정(동일 매물 증명·번호 단독 소유·직전 재확인·기록)은 오방·당근과 같은 함수를 쓴다.
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+from util.property_utils import 삭제_허용_판정, 삭제_기록_남기기
 
 # [동기화 주의] 같은 구조(공용계정 API 조회 → 로그인 → 사이트 상태 읽기 → 처리 → DB 반영)를 따르는
 # 짝꿍 워커는 obang_worker.py(오방)다. 공통 흐름(모드 해석, 요약 카운트 형식)을 고칠 땐 그쪽과
@@ -138,9 +144,20 @@ def 목록행_갱신일시_해석(날짜문구):
 class ObsAutomationWorker:
     """ 오부사(새홈, osan-bns.com) 매물 갱신 및 공개상태 정리를 전담하는 클래스 """
 
-    def __init__(self, driver, mode, progress_callback=None, unattended=False, 강제_새홈번호_목록=None, 갱신_기준일수=1):
+    def __init__(self, driver, mode, progress_callback=None, unattended=False, 강제_새홈번호_목록=None, 갱신_기준일수=1,
+                 전체점검=False, 적용=True):
         self.driver = driver
         self.mode = mode
+        # [2026-11-03 사용자 결정] 거래완료 비공개·삭제도 갱신처럼 "설정 기간 내 변경분"만 매일 처리한다(자동업데이트가 매일
+        # 쉬지 않고 돌기 때문에 전체를 매번 훑을 필요가 없다). 기간을 놓친 건(예: 날짜를 안 남기는 자동삭제)까지 점검해야 할
+        # 때만 수동으로 전체점검=True로 돌린다 — 이때는 갱신·가격 맞추기는 하지 않고 종결·삭제 매물만 본다.
+        # 적용=False(확인 모드)는 처리 대상 목록만 로그로 보여주고 사이트는 건드리지 않는다 — 전체점검은 사람이 대상을
+        # 확인하기 전에 대량으로 처리하지 않도록 기본을 확인 모드로 쓴다(auto.py --obs-full-scan).
+        self.전체점검 = 전체점검
+        self.적용 = 적용
+        if not 적용 and not 전체점검:
+            # 확인 모드는 갱신·가격 맞추기(사이트 수정 저장)까지 막지는 못하므로 전체점검과 함께만 허용한다.
+            raise ValueError('확인 모드(적용=False)는 전체점검=True와 함께만 쓸 수 있습니다')
         # 오방과 같은 기준(auto.py의 before_day)으로 "최근 N일 안에 의뢰확인일이 갱신된 매물"만 갱신한다.
         # 2026-10-06 사용자 결정: 처음엔 활성 매물 전체를 매일 갱신했으나(하루 약 180건) 요청이 있었던
         # 매물만 올리는 오방 방식(B안)으로 바꿨다 — 갱신_대상_여부() 참고.
@@ -152,6 +169,7 @@ class ObsAutomationWorker:
 
         self.complete_count = 0   # 갱신 성공
         self.end_ok = 0           # 거래완료인데 공개 중이던 매물을 비공개로 내림
+        self.delete_ok = 0        # 프로중개인에서 삭제된 매물을 사이트에서도 삭제함(삭제 허용 조건 4가지를 모두 통과한 건만)
         self.skip_count = 0
         self.error_count = 0
         self.not_found_count = 0  # DB상 오부사 활성 매물인데 사이트 목록에 없음
@@ -209,7 +227,7 @@ class ObsAutomationWorker:
             # 갱신 대상을 고르기 위한 값이다. LEFT JOIN이라 의뢰가 없는 매물도 행은 그대로 나온다.
             cur.execute("SELECT o.object_code_new, o.object_status, o.object_del, o.obs_open_yn, o.object_address, "
                         "o.object_ttype, o.object_tmoney1, o.object_tmoney2, o.object_udate, "
-                        "p.request_status, p.request_date, p.request_del, "
+                        "p.request_status, p.request_date, p.request_del, p.request_udate, "
                         "EXISTS(SELECT 1 FROM pr_request_fix f WHERE f.request_code=o.request_code AND f.fix_del='N') AS 관심여부 "
                         "FROM pr_object o LEFT JOIN pr_request p ON p.request_code=o.request_code "
                         "WHERE CHAR_LENGTH(o.object_code_new)=5")
@@ -235,18 +253,43 @@ class ObsAutomationWorker:
             return False
         if db행.get('관심여부'):
             return True
-        기준일 = db행.get('request_date')
-        if isinstance(기준일, str):
+        return self._설정기간_안인가(db행.get('request_date'), 오늘)
+
+    def _설정기간_안인가(self, 날짜, 오늘):
+        """ 날짜가 [오늘 - 갱신_기준일수, 오늘] 안인지. 못 읽는 값이면 False. """
+        if isinstance(날짜, str):
             # 날짜 칸이 비어있거나 '0000-00-00' 같은 값이 문자열로 오는 행이 있다(실측) — 못 읽으면 대상이 아니다.
             try:
-                기준일 = datetime.datetime.strptime(기준일[:10], '%Y-%m-%d').date()
+                날짜 = datetime.datetime.strptime(날짜[:10], '%Y-%m-%d').date()
             except ValueError:
                 return False
-        return bool(기준일 and 오늘 - datetime.timedelta(days=self.갱신_기준일수) <= 기준일 <= 오늘)
+        return bool(날짜 and 오늘 - datetime.timedelta(days=self.갱신_기준일수) <= 날짜 <= 오늘)
 
     @staticmethod
     def 종결매물_여부(db행):
         return db행['object_status'] == '거래완료' or db행['object_del'] == 'Y'
+
+    def 거래완료_대상_여부(self, db행, 오늘):
+        """
+        거래완료 비공개 대상 — 오방·당근과 같은 기준(auto.py::obang_data의 거래완료 조회): 의뢰가 성공/실패이고 의뢰일
+        (request_date)이 설정 기간 안. 전체점검은 기간 제한 없이 DB 거래완료 매물 전체(삭제된 매물은 삭제_대상_여부 쪽).
+        """
+        if db행['object_del'] == 'Y':
+            return False
+        if self.전체점검:
+            return db행['object_status'] == '거래완료'
+        if db행.get('request_status') not in ('성공', '실패') or db행.get('request_del') == 'Y':
+            return False
+        return self._설정기간_안인가(db행.get('request_date'), 오늘)
+
+    def 삭제_대상_여부(self, db행, 오늘):
+        """
+        [삭제 허용 조건 ①] 의뢰와 매물이 모두 삭제 상태이고 삭제 시각(request_udate)이 설정 기간 안. 전체점검은 기간 제한 없음.
+        기간 기준의 근거와 한계(자동삭제 경로는 날짜를 안 남김)는 util/property_utils.py::삭제대상_후보_조회 참고.
+        """
+        if db행['object_del'] != 'Y' or db행.get('request_del') != 'Y':
+            return False
+        return True if self.전체점검 else self._설정기간_안인가(db행.get('request_udate'), 오늘)
 
     @staticmethod
     def 주소_일치_여부(db행, 사이트행):
@@ -603,10 +646,14 @@ class ObsAutomationWorker:
         return self.driver.execute_async_script(_요청_전송_JS, url, body)
 
     def run(self):
-        """ :return: (성공, 비공개, 건너뜀, 실패, 미등록, 가격수정, 자동보정) — 총건수는 앞의 다섯의 합과 같고, 가격수정·자동보정은 부가 지표다. """
+        """
+        :return: (성공, 비공개, 건너뜀, 실패, 미등록, 가격수정, 자동보정, 삭제) — 총건수는 성공+비공개+삭제+건너뜀+실패+미등록의 합과
+            같고, 가격수정·자동보정은 이미 위 항목으로 센 매물의 부가 지표다.
+        """
         시작시각 = datetime.datetime.now().replace(microsecond=0)
         오늘 = 시작시각.date()
-        갱신함 = self.mode in ('all', 'update_only')
+        # 전체점검은 종결·삭제 매물만 본다(갱신·가격·거래유형 맞춤은 하지 않음).
+        갱신함 = self.mode in ('all', 'update_only') and not self.전체점검
         비공개함 = self.mode in ('all', 'close_only')
 
         self._알림(0, 100, '🔐 오부사 로그인/목록 읽는 중...')
@@ -614,7 +661,7 @@ class ObsAutomationWorker:
         사이트 = self.목록_전체읽기()
         db = self.DB_오부사후보_조회()
 
-        갱신대기, 비공개대기 = [], []
+        갱신대기, 비공개대기, 삭제대기 = [], [], []
         def 대상인가(코드):
             return self.강제_새홈번호_목록 is None or 코드 in self.강제_새홈번호_목록
 
@@ -633,9 +680,8 @@ class ObsAutomationWorker:
                 # [2026-10-10 C안 — 사용자 결정] 가격·필수항목·거래유형 맞춤(= 사이트 수정 저장)은 갱신과 같은 대상
                 # (설정 기간 내 의뢰 또는 관심 매물)에만 한다. 처음엔 DB 활성 매물 전체에 매일 적용했으나 기간 밖의
                 # 오래된 매물까지 DB 기준으로 덮어쓰는 것은 사용자가 정한 적이 없는 범위였다(DB 수정일이 오래돼 DB가
-                # 최신이라는 근거도 없음). 반대로 거래완료 비공개는 노출 중인 종결 매물을 놓치면 안 되므로 기간과
-                # 무관하게 전체에 적용한다(아래 elif 분기) — 오방/당근은 요청 기반이라 놓치면 다시 안 잡히지만 오부사는
-                # 상태 기반이라 전체를 훑어도 부담이 작다.
+                # 최신이라는 근거도 없음). 거래완료 비공개·삭제도 2026-11-03부터 같은 원칙(설정 기간 내 변경분만)을
+                # 따른다(아래 elif 분기들) — 기간 밖까지 점검해야 할 때는 수동 전체점검을 쓴다.
                 if not self.갱신_대상_여부(db행, 오늘):
                     self.skip_count += 1
                     continue
@@ -671,16 +717,26 @@ class ObsAutomationWorker:
                     self.skip_count += 1
                     continue
                 갱신대기.append(코드)
-            elif self.종결매물_여부(db행) and 비공개함 and 행 is not None and 행['pub']:
+            elif 비공개함 and self.삭제_대상_여부(db행, 오늘):
+                # [2026-11-03 사용자 결정] 프로중개인에서 삭제한 매물은 사이트에서도 삭제한다(복구는 고려하지 않음 — 원본은
+                # 프로중개인에 있다). 공개 여부와 무관하게 지운다. 사이트에 이미 없으면 목적이 달성된 것이라 건너뜀으로 센다.
+                # 실제 삭제는 삭제 허용 조건 4가지(util/property_utils.py 머리말)를 매물마다 통과한 것만 아래에서 한다.
+                if 행 is None:
+                    self.skip_count += 1
+                    continue
+                삭제대기.append(코드)
+            elif 비공개함 and 행 is not None and 행['pub'] and self.거래완료_대상_여부(db행, 오늘):
                 if not self.주소_일치_여부(db행, 행):
                     print(f"   [⚠️ 주소 불일치 - 오부사 {코드}] DB:{db행.get('object_address')} / 사이트:{행.get('addr')} — 같은 번호의 다른 매물일 수 있어 건너뜁니다")
                     self.skip_count += 1
                     continue
                 비공개대기.append(코드)
 
-        총 = len(갱신대기) + len(비공개대기)
-        print(f"   [오부사] 사이트 {len(사이트)}건 / DB후보 {len(db)}건 → 갱신 {len(갱신대기)}건, 비공개 {len(비공개대기)}건 처리 예정")
+        총 = len(갱신대기) + len(비공개대기) + len(삭제대기)
+        print(f"   [오부사] 사이트 {len(사이트)}건 / DB후보 {len(db)}건 → 갱신 {len(갱신대기)}건, 비공개 {len(비공개대기)}건, 삭제 {len(삭제대기)}건 처리 예정"
+              + ("" if self.적용 else " [확인 모드 — 사이트는 건드리지 않음]"))
         진행 = 0
+        비공개시도, 삭제시도 = [], []
         for 코드 in 갱신대기:
             진행 += 1
             self._알림(진행, max(총, 1), f"🔄 오부사 매물갱신 중... ({진행}/{총})")
@@ -691,13 +747,40 @@ class ObsAutomationWorker:
         for 코드 in 비공개대기:
             진행 += 1
             self._알림(진행, max(총, 1), f"🔒 오부사 거래완료 비공개 중... ({진행}/{총})")
+            if not self.적용:
+                print(f"   [👀 확인 모드 - 비공개 예정 - 오부사 {코드}] {사이트[코드].get('addr')}")
+                self.skip_count += 1
+                continue
             res = self._요청('/admin_item/public_flag', 'flag=false&id=' + urllib.parse.quote(코드))
             if res.get('status') != 200 or (res.get('text') or '').strip() == 'no':
                 print(f"   [❌ 비공개 요청 실패 - 오부사 {코드}] {res}")
+            비공개시도.append(코드)
+            time.sleep(0.2)
+        for 코드 in 삭제대기:
+            진행 += 1
+            self._알림(진행, max(총, 1), f"🗑️ 오부사 삭제 매물 정리 중... ({진행}/{총})")
+            db행, 행 = db[코드], 사이트[코드]
+            # [삭제 허용 조건 ②③ + ①③ 직전 재확인] 오부사 번호 = 새홈번호이므로 외부번호와 새홈번호가 같다.
+            허용, 사유 = 삭제_허용_판정(self._DB연결, '오부사', 코드, 코드, db행.get('object_address'), 행.get('addr'))
+            if not 허용:
+                print(f"   [⏸️ 삭제 보류 - 오부사 {코드}] {사유}")
+                if self.적용:   # 확인 모드는 어떤 기록도 남기지 않는다
+                    삭제_기록_남기기('오부사', 코드, 코드, 행.get('addr'), 행.get('price'), '삭제보류', 사유)
+                self.skip_count += 1
+                continue
+            if not self.적용:
+                print(f"   [👀 확인 모드 - 삭제 예정 - 오부사 {코드}] 허용 조건 통과 — {행.get('addr')} / {행.get('deal')} {행.get('price')}")
+                self.skip_count += 1
+                continue
+            삭제_기록_남기기('오부사', 코드, 코드, 행.get('addr'), 행.get('price'), '삭제전')
+            res = self._요청('/admin_item/delete_item_row', 'id=' + urllib.parse.quote(코드))
+            if res.get('status') != 200:
+                print(f"   [❌ 삭제 요청 실패 - 오부사 {코드}] {res}")
+            삭제시도.append((코드, 행.get('addr'), 행.get('price')))
             time.sleep(0.2)
 
         # 요청이 200을 줬다고 반영된 것은 아니다 — 처리 후 목록을 다시 읽어 실제 상태로 판정한다.
-        사이트 = self.목록_전체읽기() if 총 else 사이트
+        사이트 = self.목록_전체읽기() if (갱신대기 or 비공개시도 or 삭제시도) else 사이트
         for 코드 in 갱신대기:
             라벨, 일시 = 목록행_갱신일시_해석((사이트.get(코드) or {}).get('date'))
             if 라벨 == '갱신' and 일시 and 일시 >= 시작시각:
@@ -705,15 +788,26 @@ class ObsAutomationWorker:
             else:
                 self.error_count += 1
                 print(f"   [❌ 갱신 미반영 - 오부사 {코드}] 처리 후에도 갱신일시가 바뀌지 않았습니다: {(사이트.get(코드) or {}).get('date')}")
-        for 코드 in 비공개대기:
+        for 코드 in 비공개시도:
             if 코드 in 사이트 and not 사이트[코드]['pub']:
                 self.end_ok += 1
             else:
                 self.error_count += 1
                 print(f"   [❌ 비공개 미반영 - 오부사 {코드}] 처리 후에도 공개 상태입니다")
+        # [삭제 허용 조건 ④ 사후 검증] 삭제 요청이 200이어도 사이트 목록에 그 번호가 남아 있으면 삭제된 것이 아니다.
+        for 코드, 주소, 가격 in 삭제시도:
+            if 코드 not in 사이트:
+                self.delete_ok += 1
+                삭제_기록_남기기('오부사', 코드, 코드, 주소, 가격, '삭제완료')
+            else:
+                self.error_count += 1
+                print(f"   [❌ 삭제 미반영 - 오부사 {코드}] 삭제 요청 뒤에도 사이트 목록에 남아 있습니다")
+                삭제_기록_남기기('오부사', 코드, 코드, 주소, 가격, '삭제실패', '삭제 요청 뒤에도 사이트 목록에 남아 있음')
 
-        self.공개상태_DB반영(사이트, db)
-        return self.complete_count, self.end_ok, self.skip_count, self.error_count, self.not_found_count, self.price_fix_ok, self.auto_fix_ok
+        if self.적용:   # 확인 모드는 DB에도 쓰지 않는다
+            self.공개상태_DB반영(사이트, db)
+        return (self.complete_count, self.end_ok, self.skip_count, self.error_count, self.not_found_count,
+                self.price_fix_ok, self.auto_fix_ok, self.delete_ok)
 
     def 공개상태_DB반영(self, 사이트, db):
         """

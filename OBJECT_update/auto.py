@@ -12,6 +12,10 @@ from tkinter import ttk, messagebox
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 
+# 공용 유틸(util/property_utils.py)은 상위 폴더에 있다 — 워커 파일들이 쓰는 것과 같은 방식으로 경로를 잡는다.
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from util.property_utils import 삭제대상_후보_조회, 로그저장
+
 # 외부 폴더의 진짜 일꾼 모듈들을 정상적으로 매핑
 from workers.obang_worker import ObangAutomationWorker
 from workers.carrot_worker import CarrotAutomationWorker
@@ -599,6 +603,34 @@ def obang_data(before_day, 오방_선택=True, 당근_선택=True, 강제_새홈
     obang_complete = [str(r['object_code_obang']) for r in rows if r['object_code_obang']]
     dang_complete_set = set(carrot_map[r['object_code_new']] for r in rows if r['object_code_new'] in carrot_map)
 
+    # [2026-11-03 신규 — 사용자 결정] 삭제 매물: 프로중개인에서 의뢰·매물이 삭제된 지 설정 기간 안인 것을 오방·당근에서도 삭제한다
+    # (거래완료 비공개와 같은 기간 방식 — 자동업데이트가 매일 돌아서 전체를 훑지 않는다). 후보 선정 기준(삭제 허용 조건 ①)은
+    # util/property_utils.py::삭제대상_후보_조회, 실제 삭제 전 증명(②③④)은 각 워커가 한다. 당근은 광고번호가 pr_externalad에 있고
+    # (삭제된 매물의 광고라 ad_del과 광고기간 조건 없이 그 매물의 당근 광고를 모두 본다), 오방은 pr_object.object_code_obang다.
+    # 테스트 모드(강제_새홈번호_목록)는 지정한 번호만 다뤄야 하므로 삭제 대상을 모으지 않는다.
+    # 접속 정보는 이 함수가 이미 연 연결(conn)에서 꺼내 쓴다 — 새 코드에 비밀번호를 또 적지 않기 위함. 워커들이 삭제 직전에 DB를
+    # 다시 확인할 때(삭제 허용 조건 ③④) 이 함수를 부른다(obangData['DB연결']).
+    접속정보 = dict(host=conn.host, user=conn.user, password=conn.password, database='obangkr', charset='utf8')
+    연결생성 = lambda: pymysql.connect(**접속정보)
+    삭제매물 = []
+    if not 강제_새홈번호_목록:
+        삭제후보 = 삭제대상_후보_조회(연결생성, start_date, today)
+        삭제_당근코드 = {}
+        if 삭제후보 and 당근_선택:
+            자리표시자 = ",".join(["%s"] * len(삭제후보))
+            cursor.execute(f"SELECT object_code_new, ad_code FROM pr_externalad WHERE ad_site='당근' AND object_code_new IN ({자리표시자})",
+                           tuple(r['object_code_new'] for r in 삭제후보))
+            for 행 in cursor.fetchall():
+                삭제_당근코드.setdefault(행['object_code_new'], []).append(str(행['ad_code']))
+        for r in 삭제후보:
+            삭제매물.append({
+                'object_code_new': str(r['object_code_new']),
+                '오방코드': str(r['object_code_obang'] or '').strip() if 오방_선택 else '',
+                '당근코드목록': 삭제_당근코드.get(r['object_code_new'], []),
+                '주소': r['object_address'],
+                '삭제일': str(r['request_udate']),
+            })
+
     cursor.close(); conn.close()
     
     return {
@@ -608,7 +640,9 @@ def obang_data(before_day, 오방_선택=True, 당근_선택=True, 강제_새홈
         '당근_신규등록': len(dang_new_set), '당근_금일등록': len(dang_today_set), '당근_일반수정': len(dang_update_set), '당근_거래완료': len(dang_complete_set),
         # 🔥 [패치] 일꾼 파일이 루프를 돌릴 수 있도록 순수 매물번호 리스트 형태의 데이터셋 추가 전달
         '당근_업데이트목록': list(dang_update_set),
-        '당근_거래완료목록': list(dang_complete_set)
+        '당근_거래완료목록': list(dang_complete_set),
+        '삭제매물': 삭제매물,
+        'DB연결': 연결생성,
     }
 
 
@@ -835,8 +869,9 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
                 progress_callback=lambda c, t, txt, mode='determinate': progress_callback('obang', c, t, txt, mode),
                 unattended=unattended
             )
-            c_count, r_ok, u_ok, e_ok, s_ok, err_ok, nf_ok = obang_worker.run()
-            counts['complete'] += c_count; counts['restart'] += r_ok; counts['update'] += u_ok; counts['end'] += e_ok; counts['skip'] += s_ok; counts['error'] += err_ok
+            c_count, r_ok, u_ok, e_ok, s_ok, err_ok, nf_ok, d_ok = obang_worker.run()
+            # d_ok(삭제 성공)도 e_ok(비공개)와 같은 "거래종료 처리"라 end에 합친다.
+            counts['complete'] += c_count; counts['restart'] += r_ok; counts['update'] += u_ok; counts['end'] += e_ok + d_ok; counts['skip'] += s_ok; counts['error'] += err_ok
             # [처리결과 가시화] "총 N건" 자체를 요약 맨 앞에 적어, 뒤에 나열된 숫자를 더했을 때
             # 이 값과 정확히 같아야 한다는 걸 화면만 보고도 검산할 수 있게 한다(사용자 지침:
             # "각 사이트마다 카운트된 것들의 합은 항상 조회한 매물들의 숫자와 일치해야 한다").
@@ -846,10 +881,10 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
             # — 사용자 지적대로 "오방에 등록된 상태로 확인 안 됨"이라는 점에서 같은 의미라 하나로
             # 합친다. 일반 배치 실행에서는 오방_미등록_건수가 없어(0) nf_ok만 그대로 쓰인다.
             오방_미등록_합계 = nf_ok + obangData.get('오방_미등록_건수', 0)
-            오방_총건수 = u_ok + e_ok + s_ok + err_ok + 오방_미등록_합계
+            오방_총건수 = u_ok + e_ok + d_ok + s_ok + err_ok + 오방_미등록_합계
             # (총N건) 형태로 앞자리를 줄여서 진행 대시보드 라벨 한 줄에 다 들어오게 한다.
-            counts['오방_요약'] = f"(총{오방_총건수}건) 성공:{u_ok} 재등록:{r_ok} 비공개:{e_ok} 건너뜀:{s_ok} 실패:{err_ok} 미등록:{오방_미등록_합계}"
-            progress_callback('obang', 100, 100, f"✅ 오방 업데이트 완료 V \n(총{오방_총건수}건) 성공:{u_ok} 재등록:{r_ok} 비공개:{e_ok} 건너뜀:{s_ok} 실패:{err_ok} 미등록:{오방_미등록_합계}", 'determinate')
+            counts['오방_요약'] = f"(총{오방_총건수}건) 성공:{u_ok} 재등록:{r_ok} 비공개:{e_ok} 삭제:{d_ok} 건너뜀:{s_ok} 실패:{err_ok} 미등록:{오방_미등록_합계}"
+            progress_callback('obang', 100, 100, f"✅ 오방 업데이트 완료 V \n(총{오방_총건수}건) 성공:{u_ok} 재등록:{r_ok} 비공개:{e_ok} 삭제:{d_ok} 건너뜀:{s_ok} 실패:{err_ok} 미등록:{오방_미등록_합계}", 'determinate')
         else:
             progress_callback('obang', 0, 100, "⏭️ 오방부동산 스킵됨", 'determinate')
 
@@ -859,24 +894,24 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
                 progress_callback=lambda c, t, txt, mode='determinate': progress_callback('carrot', c, t, txt, mode),
                 unattended=unattended
             )
-            cc, ro, uo, eo, so, ho, err_c = carrot_worker.run()
-            counts['complete'] += cc; counts['restart'] += ro; counts['update'] += uo; counts['end'] += eo; counts['skip'] += so; counts['error'] += err_c
+            cc, ro, uo, eo, so, ho, err_c, do_c = carrot_worker.run()
+            counts['complete'] += cc; counts['restart'] += ro; counts['update'] += uo; counts['end'] += eo + do_c; counts['skip'] += so; counts['error'] += err_c
             # [처리결과 가시화] cc(최종완료_개수)와 eo(비공개완료_성공_개수)가 매물 단위의 실제
             # 항목 수이고, ro(끌어올리기)/uo(수정업데이트)/ho(숨김해제)는 cc 안에 이미 포함된
             # 같은 매물의 부가 지표라서 총건수 계산에선 제외한다(오방쪽과 동일한 원칙). 당근_미등록_건수
             # (테스트 모드에서 입력한 새홈번호에 당근 광고 자체가 없는 경우, 예: 691813)도 오방과
             # 동일하게 "미등록"으로 합산한다 — 그래야 총건수가 조회한 새홈번호 수와 정확히 맞는다.
             당근_미등록_건수 = obangData.get('당근_미등록_건수', 0)
-            당근_총건수 = cc + eo + so + err_c + 당근_미등록_건수
+            당근_총건수 = cc + eo + do_c + so + err_c + 당근_미등록_건수
             # [버그 수정] 총건수 계산에는 cc(최종완료_개수)를 넣어놓고, 정작 화면 문구에는 "성공"
             # 라벨이 없어서 cc가 어디서도 안 보였다 — "(총1건) 끌올:0 수정:0 비공개:0 건너뜀:0
             # 실패:0 미등록:0"처럼 표시된 항목을 다 더해도 0인데 총건수만 1로 나와 검산이 안 되는
             # 상황이 실제로 발생했다(사용자 지적). cc를 "성공" 라벨로 명시해 오방쪽(성공:{u_ok})과
             # 동일하게 항상 검산 가능하도록 맞춘다.
-            counts['당근_요약'] = f"(총{당근_총건수}건) 성공:{cc} 끌올:{ro + ho}(일반{ro}/숨김해제{ho}) 수정:{uo} 비공개:{eo} 건너뜀:{so} 실패:{err_c} 미등록:{당근_미등록_건수}"
+            counts['당근_요약'] = f"(총{당근_총건수}건) 성공:{cc} 끌올:{ro + ho}(일반{ro}/숨김해제{ho}) 수정:{uo} 비공개:{eo} 삭제:{do_c} 건너뜀:{so} 실패:{err_c} 미등록:{당근_미등록_건수}"
             progress_callback(
                 'carrot', 100, 100,
-                f"✅ 당근 업데이트 완료 V \n(총{당근_총건수}건) 성공:{cc} 끌올:{ro + ho}(일반{ro}/숨김해제{ho}) 수정:{uo} 비공개:{eo} 건너뜀:{so} 실패:{err_c} 미등록:{당근_미등록_건수}",
+                f"✅ 당근 업데이트 완료 V \n(총{당근_총건수}건) 성공:{cc} 끌올:{ro + ho}(일반{ro}/숨김해제{ho}) 수정:{uo} 비공개:{eo} 삭제:{do_c} 건너뜀:{so} 실패:{err_c} 미등록:{당근_미등록_건수}",
                 'determinate'
             )
 
@@ -917,15 +952,18 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
                     progress_callback=lambda c, t, txt, mode='determinate': progress_callback('obs', c, t, txt, mode),
                     unattended=unattended,
                     갱신_기준일수=user_settings['before_day'],
+                    # 수동 전체 점검(--obs-full-scan) 때만 켜진다 — 매일 자동 실행은 둘 다 기본값(기간 내 변경분만, 실제 처리).
+                    전체점검=user_settings.get('obs_full_scan', False),
+                    적용=user_settings.get('obs_apply', True),
                 )
-                o_ok, o_end, o_skip, o_err, o_nf, o_price, o_autofix = obs_worker.run()
-                counts['complete'] += o_ok; counts['end'] += o_end; counts['skip'] += o_skip; counts['error'] += o_err
-                # 총건수 = 처리 대상이었던 매물 수. 갱신/비공개 성공 + 건너뜀 + 실패 + 미등록의 합과 같다
+                o_ok, o_end, o_skip, o_err, o_nf, o_price, o_autofix, o_del = obs_worker.run()
+                counts['complete'] += o_ok; counts['end'] += o_end + o_del; counts['skip'] += o_skip; counts['error'] += o_err
+                # 총건수 = 처리 대상이었던 매물 수. 갱신/비공개/삭제 성공 + 건너뜀 + 실패 + 미등록의 합과 같다
                 # (오방/당근과 같은 검산 원칙 — 오방과 달리 '재등록' 같은 부가 지표가 없다).
-                오부사_총건수 = o_ok + o_end + o_skip + o_err + o_nf
+                오부사_총건수 = o_ok + o_end + o_del + o_skip + o_err + o_nf
                 # 가격수정(o_price)·자동보정(o_autofix: 필수항목 자동 입력 또는 거래유형 맞춤)은 오방의 재등록처럼
                 # 이미 위 항목으로 집계된 매물의 부가 지표라 총건수에 안 더한다.
-                counts['오부사_요약'] = f"(총{오부사_총건수}건) 성공:{o_ok} 가격수정:{o_price} 자동보정:{o_autofix} 비공개:{o_end} 건너뜀:{o_skip} 실패:{o_err} 미등록:{o_nf}"
+                counts['오부사_요약'] = f"(총{오부사_총건수}건) 성공:{o_ok} 가격수정:{o_price} 자동보정:{o_autofix} 비공개:{o_end} 삭제:{o_del} 건너뜀:{o_skip} 실패:{o_err} 미등록:{o_nf}"
                 progress_callback('obs', 100, 100, f"✅ 오부사 업데이트 완료 V \n{counts['오부사_요약']}", 'determinate')
             except Exception:
                 counts['error'] += 1
@@ -1262,9 +1300,37 @@ def run_unattended(log_path):
         log(f"❌ 실행 중 오류 발생(로그인 세션 만료 등 확인 필요):\n{traceback.format_exc()}")
         write_run_log('error', '실행 중 오류 발생(로그인 세션 만료 등) — 로그 파일 확인 필요')
 
+def run_obs_full_scan(apply):
+    """
+    [2026-11-03 신규 — 사용자 결정] 오부사 수동 전체 점검. 매일 자동 실행은 "설정 기간 내 변경분"만 처리하므로, 기간을 놓친 건
+    (예: 날짜를 안 남기는 자동삭제로 지워진 매물, 기간 밖 오래된 거래완료)까지 필요할 때만 사람이 돌린다. 기간 제한 없이 DB의
+    거래완료·삭제 매물 전체를 오부사와 대조하고(갱신·가격 맞추기는 하지 않음), apply=False(확인 모드, 기본)면 처리 대상 목록만
+    로그로 보여주고 사이트와 DB에는 아무것도 쓰지 않는다. 대량 처리 전에 사람이 목록을 확인하도록 적용은 별도로 한 번 더 실행한다.
+    오방·당근은 대상이 아니다(오방·당근은 요청 기반이라 이런 전체 대조가 없다). 실행: entrypoint.sh의 obs-full-scan[-apply] 인자.
+    """
+    def progress_callback(platform, current, total, text, mode='determinate'):
+        print(f"[{platform}] {text}")
+
+    모드문구 = '적용' if apply else '확인 모드(사이트·DB에 쓰지 않음)'
+    print(f"=== 오부사 수동 전체 점검 시작 — {모드문구} ===")
+    user_settings = {
+        'obang': False, 'carrot': False, 'obs': True, 'before_day': 1, 'mode': 'close_only',
+        'obs_full_scan': True, 'obs_apply': apply,
+    }
+    try:
+        counts = run_platform_workers({}, 'close_only', user_settings, progress_callback, unattended=True)
+        summary = f"[수동 전체 점검 — {모드문구}] 🟦오부사 — {counts.get('오부사_요약')}"
+        print(f"✅ {summary}")
+        # 매일 자동 실행의 결과(log_item='auto_update')와 섞이지 않게 별도 항목으로 남긴다.
+        로그저장('system', 'obs_full_scan', summary, 'SYSTEM')
+    except Exception:
+        print(f"❌ 수동 전체 점검 중 오류:\n{traceback.format_exc()}")
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--unattended":
         log_path = sys.argv[2] if len(sys.argv) > 2 else "unattended_run.log"
         run_unattended(log_path)
+    elif len(sys.argv) > 1 and sys.argv[1] == "--obs-full-scan":
+        run_obs_full_scan(apply='--apply' in sys.argv)
     else:
         update_start()

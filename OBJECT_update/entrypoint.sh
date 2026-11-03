@@ -11,6 +11,7 @@
 #   check). 나스 코드 반영 폴링 스크립트(nas_deploy_poll.sh)가 이 이미지 안의 pymysql로
 #   운영 DB를 확인/기록할 때 쓴다 — Xvfb 등 다른 준비가 필요 없는 가벼운 작업이라 별도
 #   분기로 뺐다.
+# - "obs-full-scan" / "obs-full-scan-apply" 인자: 오부사 수동 전체 점검(확인 모드 / 적용) — 아래 분기 주석 참고.
 # - "observe" 인자: 당근 목록 전체를 "보기만" 하고 pr_log에 기록한다(observe_carrot_exposure.py —
 #   당근 노출 규칙 규명용 관측, 2026-10-03). 새벽 5시 자동업데이트와 같은 크롬 프로필을 쓰므로
 #   DSM 작업 스케줄러에서 새벽 4~7시대를 피해 3시간마다 등록한다(겹치면 그 파일이 스스로 건너뛴다).
@@ -38,6 +39,13 @@ elif [ "$1" = "login" ]; then
     google-chrome --no-sandbox --disable-dev-shm-usage --disable-gpu --disable-software-rasterizer --user-data-dir=/app/OBJECT_update/daangn_profile "https://realty.daangn.com/ceo/home"
 elif [ "$1" = "observe" ]; then
     python observe_carrot_exposure.py
+elif [ "$1" = "obs-full-scan" ]; then
+    # 오부사 수동 전체 점검(확인 모드) — 기간 제한 없이 DB의 거래완료·삭제 매물 전체를 오부사와 대조해 처리 대상 목록만 로그로
+    # 보여준다(사이트·DB에 아무것도 쓰지 않음). 매일 자동 실행은 설정 기간 내 변경분만 처리하므로 필요할 때만 사람이 돌린다.
+    python auto.py --obs-full-scan
+elif [ "$1" = "obs-full-scan-apply" ]; then
+    # 위 확인 모드로 대상 목록을 본 뒤 실제로 처리(비공개·삭제)할 때만 돌린다.
+    python auto.py --obs-full-scan --apply
 else
     # 설정값은 이제 파일이 아니라 cafe24 환경설정 카드가 쓰는 pr_config(운영 DB)에서 직접 읽는다
     # (2026-08-30, web_config Flask 앱 폐기와 함께 전환).
