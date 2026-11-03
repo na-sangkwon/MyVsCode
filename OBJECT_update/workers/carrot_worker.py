@@ -1191,11 +1191,14 @@ class CarrotAutomationWorker:
                 삭제_메뉴.click()
             except Exception:
                 self.브라우저.execute_script("arguments[0].click();", 삭제_메뉴)
+            # [2026-11-03 시험용 매물(4913863)로 확인] 삭제 확인창은 role='alertdialog'이고 문구는 "정말 삭제할까요? 게시글을 삭제하면
+            # 모든 데이터가 삭제되고 다시 볼 수 없어요."이며 버튼은 [삭제][취소] 둘이다(당근 삭제는 복구 불가). 사진 안내 팝업 같은 다른
+            # 안내창이 먼저 잡혀 엉뚱한 버튼을 누르지 않도록 alertdialog만 보고, 문구에 '삭제'가 있는 창일 때만 진행한다.
             확인창 = WebDriverWait(self.브라우저, 4).until(
-                EC.visibility_of_element_located((By.XPATH, "//*[@role='alertdialog' or @role='dialog']"))
+                EC.visibility_of_element_located((By.XPATH, "//*[@role='alertdialog']"))
             )
             확인창_문구 = (확인창.text or '').replace('\n', ' ')[:120]
-            확인_버튼목록 = 확인창.find_elements(By.XPATH, ".//button[normalize-space(.)='삭제']")
+            확인_버튼목록 = 확인창.find_elements(By.XPATH, ".//button[normalize-space(.)='삭제']") if '삭제' in 확인창_문구 else []
             if len(확인_버튼목록) != 1:
                 # 예상한 확인창이 아니다 — 취소 쪽(닫기)으로만 빠져나오고 아무것도 지우지 않는다.
                 try:
