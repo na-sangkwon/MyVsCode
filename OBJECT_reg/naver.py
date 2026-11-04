@@ -318,6 +318,9 @@ class NaverThread(QThread):
         # 없었고, 로컬도우미 결과에는 "연장 후 광고 기록을 읽지 못함"이라는 오류처럼 보이는 문구만 남았다(2026-10-16 474558 사례).
         # 로컬도우미(local_helper/main.py::run_naver_extend_worker)가 이 값을 결과·관리이력 문구로 그대로 쓴다.
         self.ad_record_cleanup_reasons = {}
+        # [2026-11-04] 연장 제출 때 실제로 쓴 검증방식 { 새홈매물번호: '모바일확인V2 (집주인)' | '홍보확인서 확인' } — 로컬도우미가 연장이 확인된
+        # 매물만 관리이력에 남긴다(광고요약이 "등록 당시 검증방식"으로 보여줌). 옛 로컬도우미에는 이 값을 읽는 코드가 없어도 무해하다.
+        self.used_verify_methods = {}
         # [2026-09-27 추가 — 사용자 요청 "테스트모드에서만 작동하는 기능을 추가할 수 있게"] True면
         # 값 채우기·등기부첨부 등은 전부 원래대로 실행하되, 매물등록_최종제출()의 실제 "매물등록"
         # 버튼 클릭(되돌릴 수 없는 지점)만 건너뛴다 — 이 스레드가 웹 테스트페이지에서 시작됐고
@@ -1199,106 +1202,12 @@ class NaverThread(QThread):
                 except Exception as e:
                     print(f"홍보확인서작성 오류: {e}")
 
-            # [2026-09-28 추가 — 사용자 요청 "연장등록도 소유자정보 확인되면 검증방식을 자동전환"]
-            # 검증방식선택및의뢰인정보입력()이 신규등록(데스크톱) 화면 전용으로 갖고 있던 판정 로직과
-            # 동일한 규칙을, 화면 조작 없이 순수 계산만 하는 함수로 따로 뽑았다 — 연장등록()도 같은
-            # 규칙으로 검증방식을 판정해야 하는데, 신규등록 쪽은 self.data(landData 있는 흐름)의
-            # 클로저 변수에 의존하고 있어 그대로 재사용할 수 없었다(사용자와 상의해 신규등록 코드는
-            # 건드리지 않기로 함 — 이미 운영 중인 흐름의 회귀위험을 줄이기 위함).
-            # ⚠️ 동기화 경고: 이 함수는 검증방식선택및의뢰인정보입력() 안의 판정 부분(소유자유형·
-            # 검증방식 결정 규칙)과 로직이 같아야 한다 — 한쪽만 고치고 다른 쪽을 깜빡하지 않도록 주의.
-            def 판정할검증방식(등록된소유자들_arr, contactor_info, 등기부확인여부):
-                소유자명 = ''
-                소유자연락처 = ''
-                소유자유형 = '본인'
-                선택할검증방식 = '홍보확인서 확인'
-                소유자통신사 = ''
-
-                print("[연장] 등기부확인여부:"+등기부확인여부+" 등록된 소유자수:"+str(len(등록된소유자들_arr)))
-                if len(등록된소유자들_arr) > 0:
-                    소유자명 = 등록된소유자들_arr[0]
-                    if 등기부확인여부 == 'Y':
-                        if '(주)' in 소유자명 or '주식회사' in 소유자명 or '법인' in 소유자명:
-                            소유자유형 = '직원'
-                        elif '종중' in 소유자명 or '신탁' in 소유자명:
-                            소유자유형 = '직원'
-                        else:
-                            소유자유형 = '본인'
-                    else:
-                        소유자유형 = '본인'
-
-                    if 소유자유형 == '본인':
-                        의뢰인명 = 소유자명
-                    else:
-                        의뢰인명 = ''
-
-                    if contactor_info and 'contactor_name' in contactor_info:
-                        if ('미확인' not in contactor_info['contactor_name'] and contactor_info['contactor_name'] in 등록된소유자들_arr
-                                and contactor_info['contactor_type'] == '본인'):
-                            소유자명 = contactor_info['contactor_name']
-                            소유자연락처 = contactor_info['contactor_phone1']
-                            소유자통신사 = contactor_info['telecom']
-                        elif contactor_info['contactor_name'] not in 등록된소유자들_arr and contactor_info['contactor_type'] == '대리인-법인':
-                            소유자유형 = '직원'
-                        else:
-                            print(f"[연장] 소유자정보 불일치 — 등기부상 소유자:{등록된소유자들_arr}, 의뢰인:{contactor_info['contactor_name']}({contactor_info['contactor_type']})")
-
-                        if 소유자유형 == '본인' and 소유자연락처 and 소유자통신사 != '미확인':
-                            선택할검증방식 = '모바일확인V2 (집주인)'
-                    else:
-                        print("[연장] 접촉자정보 없음 — 홍보확인서 방식으로 진행")
-                else:
-                    소유자명 = contactor_info['contactor_name'] if contactor_info and 'contactor_name' in contactor_info else ''
-                    소유자유형 = '본인'
-
-                print(f"[연장] 판정된 검증방식:{선택할검증방식}, 소유자명:{소유자명}, 소유자유형:{소유자유형}")
-                return 선택할검증방식, 소유자명, 소유자유형, 소유자연락처, 소유자통신사
-
-            # [2026-09-28 신규] 연장(재등록) 화면 전용 — 신규등록 판정에 필요한 소유자/접촉자 정보를
-            # object_data.getData()로 조회해 판정할검증방식()에 넣을 수 있는 모양으로 정리한다.
-            # getData()가 돌려주는 clientData/contactorData/writeData 구조에서 필요한 값만 뽑는
-            # 방식은 이 파일의 신규등록 분기(run() 상단, "landData 없음" 아닌 else)가 하는 것과
-            # 같은 규칙이다 — 다만 신규등록 쪽 코드는 tr_target 등 등록화면 전용 값도 함께 계산해서
-            # 그대로 재사용할 수 없어(사용자와 상의해 신규등록 코드는 건드리지 않기로 함) 필요한
-            # 부분만 다시 정리했다.
-            def 연장용_소유자정보조회(object_code_new, admin_id, admin_pw):
-                try:
-                    조회결과 = object_data.getData(object_code_new, admin_id, admin_pw)
-                except Exception as e:
-                    print(f"[연장] 소유자정보 조회 실패: {e}")
-                    return [], None, 'N', ''
-
-                if not 조회결과:
-                    return [], None, 'N', ''
-
-                write_data = 조회결과.get('writeData') or {}
-                등기부확인여부 = write_data.get('master_check', 'N')
-                object_type = write_data.get('object_type', '')
-
-                등록된소유자들 = write_data.get('master_name', '') or ''
-                등록된소유자들_arr = [s.strip() for s in 등록된소유자들.split(',') if s.strip()]
-
-                client_data = 조회결과.get('clientData') or {}
-                client_code = client_data.get('client_code', '')
-                contactor_data = (조회결과.get('contactorData') or {}).get('contactor_data') or {}
-                contactor_info = None
-                contactor_keys_list = list(contactor_data.keys())
-                if contactor_keys_list:
-                    for key in contactor_keys_list:
-                        keyData = contactor_data[key]
-                        if (keyData.get('contactor_type') in ['본인', '대표']) and keyData.get('contactor_phone1'):
-                            if keyData.get('telecom') != '미확인':
-                                contactor_info = keyData
-                                break
-                            else:
-                                contactor_info = keyData
-                    if contactor_info is None:
-                        for key in contactor_keys_list:
-                            if key == client_code:
-                                contactor_info = contactor_data[key]
-                                break
-
-                return 등록된소유자들_arr, contactor_info, 등기부확인여부, object_type
+            # [2026-11-04 변경 — 사용자 승낙 "연장 자동화의 자체 판정을 없애고 서버가 판정한 결과를 쓴다"] 여기 있던 검증방식 판정(판정할검증방식)과
+            # 소유자정보 조회(연장용_소유자정보조회)는 서버 규칙(core/lib/lib_external_ad.php::resolveNaverServeOwnerAndVerifyMethod)의 복사본이었다.
+            # 10/22에 서버에 "등기확인=Y일 때만 모바일확인" 조건이 추가됐는데 이 복사본은 그대로여서, 등기확인이 안 된 홍보확인서 광고가 연장 때
+            # 모바일확인으로 올라가 등기부를 요구받는 어긋남이 생길 수 있었다. 이제 판정은 서버 한 곳에서 하고, 로컬도우미(local_helper/main.py::
+            # fetch_naver_extend_verify_decision)가 매물마다 받아 네이버매물정보['verify_decision']에 심어준다 — 이 파일은 그 결과만 쓴다.
+            # (신규등록 화면용 검증방식선택및의뢰인정보입력()은 데스크톱 전용 흐름이라 그대로 두었다 — 같은 규칙의 복사본이 거기에 남아 있다.)
 
             # [2026-09-28 신규] "검증방식" 항목은 신규등록 화면(h2 구조)과 달리 연장(재등록) 화면에서
             # 아코디언(v-radio-accordion-group) 구조를 쓴다 — 라이브 DOM을 직접 열어 확인함(th/strong도
@@ -2115,8 +2024,20 @@ class NaverThread(QThread):
                     # "검증방식" 항목까지 이동한 뒤(빠른이동("검증방식") 다음)에 한다. 반대 방향
                     # (이미 모바일확인V2인 것을 홍보확인서로 낮추는 것)은 절대 하지 않는다 — 소유자
                     # 정보 조회 실패 등으로 판정이 애매해져도 기존 상태를 그대로 두는 쪽이 안전하다.
-                    등록된소유자들_arr, contactor_info, 등기부확인여부, _ = 연장용_소유자정보조회(새홈매물번호, manager_id, '')
-                    판정된검증방식, 소유자명, 소유자유형, 소유자연락처, 소유자통신사 = 판정할검증방식(등록된소유자들_arr, contactor_info, 등기부확인여부)
+                    # [2026-11-04] 판정은 서버가 한다(위 설명 참고). 판정을 못 받았으면(서버 오류 등) 검증방식을 올리지 않고 화면의 현재 방식을 그대로 둔다 —
+                    # 모르는 채로 모바일확인으로 올리면 등기부를 요구해 검수 실패가 난다.
+                    서버판정 = 네이버매물정보.get('verify_decision') or {}
+                    판정된검증방식 = 서버판정.get('verify_method') or ''
+                    소유자명 = 서버판정.get('owner_name') or ''
+                    소유자유형 = 서버판정.get('owner_type') or '본인'
+                    소유자연락처 = 서버판정.get('owner_phone') or ''
+                    소유자통신사 = 서버판정.get('owner_telecom') or ''
+                    # 연장_의뢰인정보_채우기()가 읽는 키(contactor_gender·telecom)만 같은 이름으로 맞춘 모양
+                    contactor_info = {'contactor_gender': 서버판정.get('owner_gender') or '', 'telecom': 소유자통신사}
+                    if 서버판정:
+                        print(f"[연장] 서버 판정 검증방식:{판정된검증방식}, 소유자명:{소유자명}, 소유자유형:{소유자유형}")
+                    else:
+                        print("[연장] 서버 판정을 받지 못함 — 검증방식을 바꾸지 않고 화면의 현재 방식을 유지")
                     검증방식_전환됨 = False
 
                     #첫번째 리스트의 재등록버튼 클릭
@@ -2421,6 +2342,12 @@ class NaverThread(QThread):
                     if 동의결과_msg != "200":
                         연장결과_msg += 동의결과_msg
                         pyautogui.alert(f"동의결과_msg: {동의결과_msg}")
+                    # [2026-11-04] 이 매물을 제출할 때의 검증방식을 기억해 둔다 — 로컬도우미(local_helper/main.py)가 연장이 실제로 확인된 매물만
+                    # 관리이력('검증방식')에 남긴다. 위 전환 처리까지 끝난 뒤의 화면 기준 값이라 추측이 아니다. 방식 이름은 서버 표준 이름으로 맞춘다.
+                    if '모바일' in str(검증방식):
+                        self.used_verify_methods[새홈매물번호] = '모바일확인V2 (집주인)'
+                    elif '홍보확인서' in str(검증방식):
+                        self.used_verify_methods[새홈매물번호] = '홍보확인서 확인'
                     # [2026-10-04 이동] 등기부등본 첨부는 검증방식 전환과 의뢰인정보 입력이 모두 끝난 뒤에
                     # 해야 한다 — 위 등기부등본_첨부하기() 주석 참고.
                     # [2026-10-09] 등기부등본_첨부하기()는 "첨부 대상이 아니거나 첨부 정보가 없어 건너뜀"이면 None, 첨부를
