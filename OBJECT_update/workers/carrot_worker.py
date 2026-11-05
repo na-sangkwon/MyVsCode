@@ -183,6 +183,30 @@ class CarrotAutomationWorker:
         본문 = str(오류).split('Stacktrace')[0].replace('Message:', '').strip()
         return f"{type(오류).__name__}: {본문}" if 본문 else type(오류).__name__
 
+    # 지금 화면에 보이는 입력 오류 문구(예: "기타 관리비 항목명은 필수 항목입니다")를 읽어 돌려준다 — 못 읽거나 없으면 [].
+    # 당근 폼은 오류 문구를 별도 클래스 없이 칸 아래 짧은 글로 붙이므로, 문구에 흔히 들어가는 말("필수", "입력해", "올바른")로 찾고
+    # 글자가 보이는 가장 안쪽 요소만 취한다(상위 요소가 하위 글을 통째로 품어 같은 문장이 중복되는 것을 피하기 위함).
+    # [추정] 이 말들이 당근의 모든 오류 문구를 잡는지는 확인 못 했다 — 놓치면 사유가 예전처럼 "시간 초과"로만 남는다.
+    def _화면_입력오류_문구_수집(self):
+        try:
+            문구목록 = self.브라우저.execute_script("""
+                var out = [];
+                document.querySelectorAll('body *').forEach(function (el) {
+                    if (el.children.length > 0) return;
+                    var t = (el.textContent || '').trim();
+                    if (!t || t.length > 80) return;
+                    if (!/필수|입력해|올바른/.test(t)) return;
+                    var r = el.getBoundingClientRect();
+                    if (r.width === 0 || r.height === 0) return;
+                    if (out.indexOf(t) === -1) out.push(t);
+                });
+                return out.slice(0, 5);
+            """)
+            return [str(x) for x in (문구목록 or [])]
+        except Exception as 오류:
+            print(f"   [⚠️ 경고] 화면 오류 문구 수집 실패: {오류}")
+            return []
+
     # 처리 자체가 실패한 매물과 그 사유를 연장 결과에 실을 목록에 남긴다(같은 매물은 한 번만).
     def 처리실패_기록(self, 당근매물번호, 사유):
         if any(x['당근번호'] == str(당근매물번호) for x in self.처리실패_목록):
@@ -836,9 +860,20 @@ class CarrotAutomationWorker:
             self.조치_기록(당근매물번호, '수정폼저장', '가격동기화')
 
             # 비동기 저장 통신 및 메인 대시보드 리스트 목록 조회 화면 복귀 대기
-            WebDriverWait(self.브라우저, 10).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "form input[placeholder*='지번']"))
-            )
+            # [2026-11-05 추가 — 사용자 승낙, 매물 3639847] 저장이 막혀 목록으로 못 돌아오면(실제 화면에서 "기타 관리비 항목명은 필수 항목입니다"
+            # 같은 빨간 문구가 폼에 남아 있었음) 그냥 시간 초과로 끝내지 않고 화면에 남은 오류 문구를 읽어 실패 사유로 남긴다.
+            # [검토했다가 버린 방법] 막힌 칸(예: '기타' 체크)을 프로그램이 대신 고쳐 다시 저장하는 방식 — 당근 폼의 다른 칸을 임의로 바꾸는
+            # 일이라 보류하고, 사람이 사유를 보고 판단하게 한다(같은 오류가 다른 매물에서도 나는지 먼저 알아야 함).
+            try:
+                WebDriverWait(self.브라우저, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "form input[placeholder*='지번']"))
+                )
+            except TimeoutException:
+                화면오류_문구목록 = self._화면_입력오류_문구_수집()
+                if 화면오류_문구목록:
+                    print(f"   [❌ 저장 막힘 - {당근매물번호}] 수정 폼에 남은 오류: {' / '.join(화면오류_문구목록)}")
+                    self._직전_실패사유 = "당근 수정 폼 저장이 막힘 — 화면의 오류 문구: " + ' / '.join(화면오류_문구목록)
+                raise
             time.sleep(1.5)
 
             # 재조회 및 상태값 정밀 상호 교차 사후 검속 보정 벨트 가동
@@ -947,7 +982,9 @@ class CarrotAutomationWorker:
             return True
         except Exception as 오류:
             print(f"   [❌ 오류 - {당근매물번호}] 수정방식 업데이트 고도화 시퀀스 도중 최종 실패: {오류}")
-            self._직전_실패사유 = f"'{self._마지막_단계_메시지}' 중 {self._예외_요약(오류)}"
+            # 위에서 화면의 오류 문구로 더 구체적인 사유를 이미 남겼으면 그걸 덮어쓰지 않는다
+            if not self._직전_실패사유:
+                self._직전_실패사유 = f"'{self._마지막_단계_메시지}' 중 {self._예외_요약(오류)}"
             # [2026-09-23 추가] 위 어느 단계(수정폼 진입/저장, 사진팝업 탈출 등)에서 실패했든 화면이
             # 수정폼이나 잔여 팝업에 멈춰있을 수 있다 — 정리하지 않고 다음 매물로 넘어가면 그 배경이
             # 다음 매물의 [수정] 버튼 클릭까지 막는 연쇄 실패로 이어진다(property_utils.py의
