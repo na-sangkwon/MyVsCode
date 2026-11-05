@@ -183,6 +183,46 @@ class CarrotAutomationWorker:
         본문 = str(오류).split('Stacktrace')[0].replace('Message:', '').strip()
         return f"{type(오류).__name__}: {본문}" if 본문 else type(오류).__name__
 
+    # 수정 폼의 "관리비에 포함" 중 '기타'가 체크돼 있는데 항목명 칸이 비어 있으면 체크를 푼다 → 풀었으면 True.
+    # [왜] 당근은 이 상태로는 "기타 관리비 항목명은 필수 항목입니다" 오류로 저장을 막는다(매물 3639847 — 우리 자동화가 손대기 전 평소 크롬에서도
+    # 이미 같은 상태였음을 확인했다). 등록 코드(OBJECT_reg/daangn.py)도 "기타는 체크 제외"가 방침이라 같은 기준으로 맞춘다.
+    # [범위를 이것 하나로 한정한 이유] 그 밖의 알 수 없는 필수 오류는 칸 의미를 모른 채 값을 채우면 광고 내용이 틀어질 수 있어 고치지 않고
+    # 저장이 막힌 뒤 사유 보고(_화면_입력오류_문구_수집)로만 남긴다. 항목명이 이미 적혀 있으면(사람이 쓴 의미 있는 값) 건드리지 않는다.
+    # 선택자는 2026-11-05 당근 수정 폼 실측: label.seed-checkbox__root(글자 '기타') 안 input[name=includeManageCostOptionV3],
+    # 항목명 칸은 input[name=includeManageCostOptionV3_ETC_customOptionName]. 실패해도 본작업(가격 수정)은 막지 않는다.
+    def 관리비포함_기타_빈항목_해제(self, 당근매물번호):
+        try:
+            판정 = self.브라우저.execute_script("""
+                var labels = [].slice.call(document.querySelectorAll('label.seed-checkbox__root')).filter(function (l) {
+                    return (l.textContent || '').trim() === '기타' && l.querySelector("input[name='includeManageCostOptionV3']");
+                });
+                if (!labels.length) return 'NONE';
+                var box = labels[0].querySelector('input');
+                if (!box.checked) return 'UNCHECKED';
+                var nameInput = document.querySelector("input[name='includeManageCostOptionV3_ETC_customOptionName']");
+                if (nameInput && (nameInput.value || '').trim() !== '') return 'HAS_NAME';
+                labels[0].click();   // 실제 클릭 이벤트로 풀어야 폼 상태(React)에도 반영된다
+                return 'CLICKED';
+            """)
+            if 판정 != 'CLICKED':
+                return False
+            time.sleep(0.4)
+            해제됨 = self.브라우저.execute_script("""
+                var l = [].slice.call(document.querySelectorAll('label.seed-checkbox__root')).filter(function (x) {
+                    return (x.textContent || '').trim() === '기타' && x.querySelector("input[name='includeManageCostOptionV3']");
+                })[0];
+                return !!l && !l.querySelector('input').checked;
+            """)
+            if 해제됨:
+                print(f"   [🧹 자동 보정 - {당근매물번호}] 항목명이 빈 '기타 관리비' 체크를 해제했습니다(저장이 막히는 필수 오류 예방)")
+                self.조치_기록(당근매물번호, '기타관리비해제', '항목명이 빈 기타 체크가 저장을 막아 해제')
+                return True
+            print(f"   [⚠️ 경고 - {당근매물번호}] '기타 관리비' 체크 해제를 시도했지만 풀리지 않았습니다")
+            return False
+        except Exception as 오류:
+            print(f"   [⚠️ 경고 - {당근매물번호}] 기타 관리비 자동 보정 실패(가격 수정은 계속 진행): {오류}")
+            return False
+
     # 지금 화면에 보이는 입력 오류 문구(예: "기타 관리비 항목명은 필수 항목입니다")를 읽어 돌려준다 — 못 읽거나 없으면 [].
     # 당근 폼은 오류 문구를 별도 클래스 없이 칸 아래 짧은 글로 붙이므로, 문구에 흔히 들어가는 말("필수", "입력해", "올바른")로 찾고
     # 글자가 보이는 가장 안쪽 요소만 취한다(상위 요소가 하위 글을 통째로 품어 같은 문장이 중복되는 것을 피하기 위함).
@@ -844,6 +884,9 @@ class CarrotAutomationWorker:
                 print(f"   [🔎 동기화 - {당근매물번호}] {현재_단계}/{총_단계}단계: {항목이름} 동기화 시작...")
                 self.단계_알림(당근매물번호, f"{현재_단계}/{총_단계}단계: {항목이름} 동기화 중")
                 실행함수()
+
+            # [2026-11-05 추가 — 사용자 승낙, 매물 3639847] 저장 전에 "기타인데 항목명이 빈" 관리비 포함 체크를 풀어 저장이 막히지 않게 한다.
+            self.관리비포함_기타_빈항목_해제(당근매물번호)
 
             # 매물 수정 완료 버튼 최종 제출
             현재_단계 += 1
