@@ -180,15 +180,38 @@ class ObangAutomationWorker:
         wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "#search-items tr.admin_column")))
         return True
 
+    def _페이지_링크_클릭(self, 링크문구, timeout=10):
+        """페이지 이동 링크('마지막'/'이전' 등)를 눌러 새 목록이 뜰 때까지 기다린다. 링크가 없으면 False."""
+        링크들 = self.driver.find_elements(By.XPATH, f"//ul[@id='paging']//a[contains(., '{링크문구}')]")
+        if not 링크들: return False
+        기존행들 = self.driver.find_elements(By.CSS_SELECTOR, "#search-items tr.admin_column")
+        기존_첫행 = 기존행들[0] if 기존행들 else None
+        self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", 링크들[0])
+        링크들[0].click()
+        wait = WebDriverWait(self.driver, timeout)
+        if 기존_첫행:
+            try: wait.until(EC.staleness_of(기존_첫행))
+            except: pass
+        wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "#search-items tr.admin_column")))
+        return True
+
     def 모든페이지_비공개처리(self, 최대페이지=None, timeout=8):
         """
-        첫 페이지부터 '다음'이 없을 때까지 반복 처리.
+        마지막 페이지에서 시작해 '이전'이 없을 때까지 거꾸로 처리.
         - obangData['거래완료매물']과 현재 페이지를 교집합 후 비공개 처리
         - 최대페이지: 안전장치(정수). None이면 제한 없음.
+        [2026-11-05 순서 변경] 예전엔 첫 페이지부터 '다음'으로 넘겼는데, 이 목록은 '공개 매물만' 필터라
+        앞 페이지에서 매물을 비공개로 바꾸면 목록이 줄어 뒤 매물이 앞으로 당겨지고(페이지 링크가
+        /100, /200처럼 위치 번호 방식), 다음 페이지를 누르면 당겨진 매물들을 한 번도 검사하지 못하고
+        건너뛰었다(2026-11-05 직접 재현: 같은 방식으로 114건을 닫으니 29건이 빠짐). 거꾸로 가면 뒤쪽에서
+        숨겨도 아직 안 본 앞 페이지는 밀리지 않는다. 검토했다가 버린 방법: 대상마다 코드로 다시 검색 —
+        건수만큼 검색이 늘어 느려서 제외.
         """
         DB완료_set = set(str(x).strip() for x in (self.data.get('거래완료매물') or []) if str(x).strip())
         총성공, 총스킵, 총실패 = [], [], []
         페이지 = 1
+
+        self._페이지_링크_클릭('마지막', timeout=timeout)  # 한 페이지뿐이면 링크가 없어 그대로 현재(유일한) 페이지를 처리한다
 
         while True:
             print(f"\n=== [{페이지}페이지] 비공개 처리 시작 ===")
@@ -200,7 +223,7 @@ class ObangAutomationWorker:
             총스킵 += 결과.get("이미비공개", [])
             총실패 += 결과.get("실패", [])
             if 최대페이지 and 페이지 >= 최대페이지: break
-            이동됨 = self.다음페이지로_이동(timeout=timeout)
+            이동됨 = self._페이지_링크_클릭('이전', timeout=timeout)
             if not 이동됨: break
             페이지 += 1
 
