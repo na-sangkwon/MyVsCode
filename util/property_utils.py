@@ -1682,8 +1682,14 @@ def 데이터베이스_다중_가격스펙_전수조회(item_code, ad_site=None)
                    c.request_trading 
             FROM pr_externalad AS e
             JOIN pr_object AS o ON e.object_code_new = o.object_code_new
-            JOIN pr_request_give AS c ON o.land_group_code = c.land_group_code AND o.building_group_code = c.building_group_code AND o.room_group_code = c.room_group_code
+            JOIN pr_request_give AS c ON c.request_code = o.request_code AND c.give_del = 'N'
         """
+        # [2026-11-08 수정] 예전엔 토지·건물·호실 그룹코드가 같은 의뢰 행을 "아무거나 1건(LIMIT 1)" 집었다.
+        # 같은 호실에 삭제된 옛 의뢰(give_del='Y', 가격 빈칸)가 남아 있으면 그 행이 먼저 잡혀 가격이 있는데도
+        # "유효한 가격 정보 없음"으로 연장이 취소됐다(당근 4639802 / 드라마타워 801호, 본섭 DB로 직접 확인:
+        # 같은 호실그룹에 삭제 의뢰 221212_0700과 현재 의뢰 230211_0400이 함께 있었음).
+        # 웹 화면(lib_external_ad.php의 pr_object.request_code = pr_request_give.request_code, give_del='N')과
+        # 같은 기준으로 맞춘다 — 그룹코드 조인은 "같은 호실의 다른 의뢰"를 섞을 수 있어 쓰지 않는다.
         
         # 🎯 [소장님 지시 규칙] ad_site 존재 여부에 따른 동적 관문 분기 생성
         if ad_site and str(ad_site).strip():
