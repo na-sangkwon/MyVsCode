@@ -601,7 +601,23 @@ def obang_data(before_day, 오방_선택=True, 당근_선택=True, 강제_새홈
     rows = cursor.fetchall()
 
     obang_complete = [str(r['object_code_obang']) for r in rows if r['object_code_obang']]
-    dang_complete_set = set(carrot_map[r['object_code_new']] for r in rows if r['object_code_new'] in carrot_map)
+    # [2026-11-08] 오방 비공개 처리 뒤 DB의 공개 표시(obang_open_yn)를 함께 맞추려면 오방코드→새홈번호 연결이 필요하다
+    # (프로중개인 매물 목록의 활성/종료 아이콘이 이 값을 본다).
+    거래완료_새홈번호 = {str(r['object_code_obang']): str(r['object_code_new']) for r in rows if r['object_code_obang']}
+    if 강제_새홈번호_목록:
+        dang_complete_set = set(carrot_map[r['object_code_new']] for r in rows if r['object_code_new'] in carrot_map)
+    else:
+        # [2026-11-08 근본수정] 예전엔 위 rows(기간 안에 확인된 거래완료 의뢰)를 carrot_map과 맞췄는데, carrot_map은 끌올·수정
+        # 대상을 고르려고 "광고 시작 14일 경과"로 걸러 둔 목록이라 14일이 안 된 광고의 거래완료는 후보에서 빠졌고, 하루만 지나도
+        # 기간 밖이라 영영 다시 안 잡혔다(833272 등 4건이 거래완료 후에도 당근에서 판매중). 거래완료는 광고 나이와 무관하게
+        # 닫혀야 하므로, 프로중개인이 거래완료인 매물의 당근 광고를 직접 대상으로 삼는다(현재 33건 안팎 — 이미 숨김인 건
+        # 워커가 건너뜀으로 센다). 기간 조건은 두지 않아 한 번 놓쳐도 다음 실행에서 다시 잡힌다.
+        cursor.execute("""SELECT DISTINCT a.ad_code FROM pr_externalad AS a
+                          JOIN pr_object AS o ON o.object_code_new = a.object_code_new AND o.object_del = 'N'
+                          JOIN pr_request AS p ON p.request_code = o.request_code AND p.request_del = 'N'
+                          WHERE a.ad_site = '당근' AND a.ad_del = 'N' AND o.object_status = '거래완료'
+                            AND p.tr_type = '내놓기' AND p.request_status IN ('성공','실패')""")
+        dang_complete_set = set(str(r['ad_code']) for r in cursor.fetchall() if r['ad_code'])
 
     # [2026-11-03 신규 — 사용자 결정] 삭제 매물: 프로중개인에서 의뢰·매물이 삭제된 지 설정 기간 안인 것을 오방·당근에서도 삭제한다
     # (거래완료 비공개와 같은 기간 방식 — 자동업데이트가 매일 돌아서 전체를 훑지 않는다). 후보 선정 기준(삭제 허용 조건 ①)은
@@ -636,7 +652,7 @@ def obang_data(before_day, 오방_선택=True, 당근_선택=True, 강제_새홈
     return {
         '금일등록매물': 금일등록매물, '신규등록매물': 신규등록매물, '미등록의뢰수': 미등록의뢰수, 'img_update': img_update,
         '업데이트매물': obang_update, '업데이트매물_관심': obang_update_fav, '업데이트매물_일반': obang_update_normal,
-        '거래완료매물': obang_complete, '오방매물정보': obang_map,
+        '거래완료매물': obang_complete, '거래완료_새홈번호': 거래완료_새홈번호, '오방매물정보': obang_map,
         '당근_신규등록': len(dang_new_set), '당근_금일등록': len(dang_today_set), '당근_일반수정': len(dang_update_set), '당근_거래완료': len(dang_complete_set),
         # 🔥 [패치] 일꾼 파일이 루프를 돌릴 수 있도록 순수 매물번호 리스트 형태의 데이터셋 추가 전달
         '당근_업데이트목록': list(dang_update_set),
