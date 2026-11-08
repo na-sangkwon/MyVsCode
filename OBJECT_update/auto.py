@@ -598,7 +598,14 @@ def obang_data(before_day, 오방_선택=True, 당근_선택=True, 강제_새홈
     # 거래완료매물 수집 — 테스트 모드일 때는 위에서 이미 구한 테스트_f_codes를 그대로 재사용한다.
     # (지정된 새홈번호의 의뢰가 이미 완료(성공/실패) 상태라면 여기서, 아직 진행 중이면 위
     # recently_res 쪽에서 잡힌다 — 상호 배타적이라 중복 집계될 일이 없다.)
-    거래완료_조건 = f'p.request_code IN (\'{테스트_f_codes}\')' if 강제_새홈번호_목록 else f'p.request_date BETWEEN "{거래완료_시작_str}" AND "{today_str}"'
+    # [2026-11-08 근본수정] 거래완료 대상의 기간 기준을 의뢰확인일(p.request_date)에서 매물수정일(o.object_udate)로 바꿨다.
+    # 의뢰확인일은 "사람이 의뢰를 접촉·확인한 날"이라 종료 처리 때 갱신되지 않는 경로가 있다 — 계약 성공, 매물관리 거래완료(접촉방법 '미접촉'),
+    # 관리메모로 종료(공실 확인 등 의뢰 확인 없이 거래 종료만 기록; 관리메모는 의뢰확인일을 바꾸지 않는 게 설계). 반면 매물수정일은 세 경로 모두
+    # 의뢰상태가 실제로 바뀔 때 갱신하고(updateGiveObjectModifiedDate), 상담기록 재계산처럼 날짜가 거꾸로 돌아가는 일이 없다.
+    # 최근 90일 종료 745건 중 매물수정일은 종료 기록일 이후가 745건 전부, 의뢰확인일은 582건(78%)이었다.
+    # 검토했다가 버린 방법: 종료 시 의뢰확인일도 갱신(관리메모 설계와 충돌, 상담기록 수정 때 재계산이 되돌림), 종료 기록(pr_record) 문구 검색(문구 의존).
+    # 단점: 종료 뒤 매물을 다시 수정해도 대상에 잡히지만, 이미 비공개된 매물은 워커가 건너뛰어 무해하다.
+    거래완료_조건 = f'p.request_code IN (\'{테스트_f_codes}\')' if 강제_새홈번호_목록 else f'o.object_udate BETWEEN "{거래완료_시작_str}" AND "{today_str}"'
     query = f"""SELECT o.object_code_obang, o.object_code_new FROM pr_request AS p
                JOIN pr_request_give AS c ON p.request_code = c.request_code
                JOIN pr_object AS o ON o.object_del = 'N' AND o.land_group_code = c.land_group_code AND o.building_group_code = c.building_group_code AND o.room_group_code = c.room_group_code
