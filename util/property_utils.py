@@ -199,6 +199,149 @@ def 삭제_기록_남기기(사이트, 외부번호, object_code_new, 사이트�
         print(f"   [⚠️ 삭제기록 실패 - {사이트} {외부번호}] {오류}")
 
 
+# =====================================================================================================
+# [2026-11-08] 거래완료·삭제 처리 기간의 "따라잡기" + 사람이 직접 고쳐야 할 매물의 담당자 알림
+#
+# 거래완료 비공개·삭제는 "설정 기간(기본 어제~오늘) 안에 바뀐 건"만 매일 처리한다. 그런데 자동업데이트가 며칠 빠지거나 매물 하나가
+# 처리에 실패하면 그 건은 기간 밖으로 밀려 영영 안 잡혔다(당근 833272 등). 그래서 마지막으로 "거래완료·삭제를 한 건도 실패 없이 마친
+# 실행일"을 pr_config에 저장해 두고, 다음 실행은 [그 날짜 ~ 오늘]을 처리 기간으로 삼는다 — 평소엔 어제~오늘이라 예전과 같고, 빠지거나
+# 실패한 날이 있으면 그날부터 따라잡는다(처리 대상을 찾는 기준은 그대로 "상태가 바뀐 시기"라 매번 전체를 훑지 않는다).
+# 검토했다가 버린 방법: 거래완료된 광고를 날짜 없이 매번 전부 조회 — 당근은 거래완료 광고가 하루 1.3건꼴로 쌓이고(삭제 처리 0건)
+# 건당 약 2.7초라 시간이 계속 늘어난다.
+# =====================================================================================================
+_거래완료_처리_기준일_키 = ('auto_update', 'closure_last_clean_date')
+_거래완료_처리_최대_거슬러올라갈_일수 = 30   # 설정이 지워지는 등 이상 상황에서 기간이 한없이 늘어나지 않게 하는 상한
+
+
+def 거래완료_처리_시작일_계산(연결, 오늘, 기본_기준일수):
+    """
+    거래완료·삭제 처리 기간의 시작일을 정한다 = min(오늘 - 기본_기준일수, 마지막으로 실패 없이 마친 실행일). 저장된 값이 없거나
+    못 읽으면 기본값을 쓴다. 상한(30일)을 넘으면 상한으로 자른다.
+    :param 연결: 열려 있는 pymysql 연결(pr_config 읽기용)
+    :return: (시작일, 상한적용여부, 저장된_기준일 또는 None)
+    """
+    기본_시작일 = 오늘 - timedelta(days=기본_기준일수)
+    저장값 = None
+    try:
+        커서 = 연결.cursor()
+        커서.execute("SELECT config_value FROM pr_config WHERE config_group=%s AND config_key=%s", _거래완료_처리_기준일_키)
+        행 = 커서.fetchone()
+        커서.close()
+        if 행 and 행[0]:
+            저장값 = datetime.strptime(str(행[0])[:10], '%Y-%m-%d').date()
+    except Exception as 오류:
+        print(f"   [⚠️ 처리 기준일 조회 실패 — 기본 기간 사용] {오류}")
+    시작일 = min(기본_시작일, 저장값) if 저장값 else 기본_시작일
+    상한 = 오늘 - timedelta(days=_거래완료_처리_최대_거슬러올라갈_일수)
+    if 시작일 < 상한:
+        return 상한, True, 저장값
+    return 시작일, False, 저장값
+
+
+def 거래완료_처리_기준일_저장(연결생성, 날짜):
+    """ '이 날짜까지는 거래완료·삭제를 실패 없이 마쳤다'를 pr_config에 남긴다(없으면 새로 만들고 있으면 덮어쓴다). 실패는 본작업을 막지 않는다. """
+    try:
+        연결 = 연결생성()
+        try:
+            커서 = 연결.cursor()
+            커서.execute("SELECT config_no FROM pr_config WHERE config_group=%s AND config_key=%s", _거래완료_처리_기준일_키)
+            행 = 커서.fetchone()
+            지금 = datetime.now()
+            if 행:
+                커서.execute("UPDATE pr_config SET config_value=%s, config_udate=%s, config_utime=%s WHERE config_no=%s",
+                           (날짜.strftime('%Y-%m-%d'), 지금.strftime('%Y-%m-%d'), 지금.strftime('%H:%M:%S'), 행[0]))
+            else:
+                커서.execute("INSERT INTO pr_config (config_group, config_key, config_value, config_desc, config_udate, config_utime) VALUES (%s, %s, %s, %s, %s, %s)",
+                           (_거래완료_처리_기준일_키[0], _거래완료_처리_기준일_키[1], 날짜.strftime('%Y-%m-%d'),
+                            '거래완료·삭제 처리를 실패 없이 마친 마지막 실행일(다음 실행은 이 날짜부터 따라잡음)', 지금.strftime('%Y-%m-%d'), 지금.strftime('%H:%M:%S')))
+            연결.commit()
+            커서.close()
+        finally:
+            연결.close()
+    except Exception as 오류:
+        print(f"   [⚠️ 처리 기준일 저장 실패 — 다음 실행이 더 거슬러 올라가 다시 처리합니다] {오류}")
+
+
+def 자동업데이트_담당자_알림_보내기(연결생성, 서비스토큰, 조치목록, 오방센터_알림=None, 서버주소='obangkr.cafe24.com'):
+    """
+    사람이 직접 고쳐야 하는 매물을 그 의뢰 담당자에게 알린다(기존 sendPushAlarm — 앱 푸시 + 알림함 — 를 부르는 서버 API 사용:
+    api/get_api_lib.php 'sendautoupdatealarm'). 알림 문구는 "어떤 매물인지(사이트·번호·주소) / 무엇이 문제인지 / 어디를 고칠지".
+    받는 사람은 의뢰 담당자(pr_request.admin_id) — 오방·오부사는 광고 행이 없어 광고 등록자 정보가 없고, 광고 등록자는 의뢰 담당자와
+    거의 같은 계정이라 의뢰 담당자 기준으로 통일했다. 담당자가 비었거나 '미지정'이면 오방센터 담당자 전원에게 보낸다.
+    같은 매물·같은 제목 알림은 서버가 최근 2일 안이면 건너뛴다(처음 즉시, 해결 안 되면 3일마다).
+    :param 조치목록: [{'사이트': '오방'|'당근'|'오부사', '외부번호', '구분', '사유', '조치'}]
+    :param 오방센터_알림: (제목, 내용) — 주면 매물 알림과 별개로 오방센터 담당자 전원에게 한 건 보낸다(자동업데이트가 빠졌던 경우 등).
+    알림 실패는 본작업(거래완료 비공개 등)을 막지 않는다. 시험할 때 실제 담당자에게 가지 않게 하려면 환경변수
+    AUTOUPDATE_ALARM_ONLY_TO=관리자아이디 를 주면 모든 알림이 그 사람에게만 간다. 서버주소는 시험용(테섭) 외엔 기본값(본섭)을 쓴다.
+    :return: {'보냄','중복','실패','대상수'}
+    """
+    import urllib.request, urllib.parse
+    결과 = {'보냄': 0, '중복': 0, '실패': 0, '대상수': len(조치목록 or [])}
+    if not 조치목록 and not 오방센터_알림:
+        return 결과
+    시험_수신자 = os.environ.get('AUTOUPDATE_ALARM_ONLY_TO', '').strip()
+
+    def 보내기(관리자, 의뢰코드, 제목, 내용):
+        if 시험_수신자:
+            관리자 = 시험_수신자
+        본문 = urllib.parse.urlencode({'fn': 'sendautoupdatealarm', 'service_token': 서비스토큰, 'admin_id': 관리자,
+                                     'related_code': 의뢰코드 or '', 'title': 제목, 'content': 내용}).encode('utf-8')
+        try:
+            요청 = urllib.request.Request(f'https://{서버주소}/api/get_api_lib.php', data=본문, method='POST')
+            with urllib.request.urlopen(요청, timeout=30) as 응답:
+                값 = json.loads(응답.read().decode('utf-8'))
+            if not 값.get('ok'):
+                결과['실패'] += 1
+            elif (값.get('data') or {}).get('sent'):
+                결과['보냄'] += 1
+            else:
+                결과['중복'] += 1
+        except Exception as 오류:
+            결과['실패'] += 1
+            print(f"   [⚠️ 담당자 알림 전송 실패 - {관리자}] {type(오류).__name__}: {str(오류)[:150]}")
+
+    try:
+        연결 = 연결생성()
+    except Exception as 오류:
+        print(f"   [⚠️ 담당자 알림 건너뜀 — DB 연결 실패] {오류}")
+        결과['실패'] += 결과['대상수']
+        return 결과
+    try:
+        커서 = 연결.cursor()
+        커서.execute("SELECT admin_id FROM pr_admin WHERE admin_del='N' AND admin_part='오방센터'")
+        오방센터_목록 = [행[0] for 행 in 커서.fetchall()]
+        조회문 = {
+            '오방': ("SELECT o.object_code_new, o.request_code, o.object_address, r.admin_id FROM pr_object o "
+                    "LEFT JOIN pr_request r ON r.request_code=o.request_code WHERE o.object_code_obang=%s AND o.object_del='N' "
+                    "ORDER BY o.object_udate DESC LIMIT 1"),
+            '당근': ("SELECT o.object_code_new, o.request_code, o.object_address, r.admin_id FROM pr_externalad a "
+                    "JOIN pr_object o ON o.object_code_new=a.object_code_new LEFT JOIN pr_request r ON r.request_code=o.request_code "
+                    "WHERE a.ad_site='당근' AND a.ad_code=%s ORDER BY a.ad_no DESC LIMIT 1"),
+            '오부사': ("SELECT o.object_code_new, o.request_code, o.object_address, r.admin_id FROM pr_object o "
+                     "LEFT JOIN pr_request r ON r.request_code=o.request_code WHERE o.object_code_new=%s AND o.object_del='N' LIMIT 1"),
+        }
+        for 항목 in (조치목록 or []):
+            try:
+                커서.execute(조회문[항목['사이트']], (항목['외부번호'],))
+                행 = 커서.fetchone()
+                새홈번호, 의뢰코드, 주소, 담당자 = (행 if 행 else ('', '', '', ''))
+                수신자들 = [담당자] if 담당자 and 담당자 != '미지정' else 오방센터_목록
+                제목 = f"{항목['사이트']} 확인 필요 · {항목['외부번호']}"
+                내용 = f"{(주소 or '주소 미확인')} — {항목['사유']}. {항목['조치']}"
+                for 수신자 in 수신자들:
+                    보내기(수신자, 의뢰코드, 제목, 내용)
+            except Exception as 오류:
+                결과['실패'] += 1
+                print(f"   [⚠️ 담당자 알림 준비 실패 - {항목.get('사이트')} {항목.get('외부번호')}] {오류}")
+        if 오방센터_알림:
+            for 수신자 in 오방센터_목록:
+                보내기(수신자, '', 오방센터_알림[0], 오방센터_알림[1])
+        커서.close()
+    finally:
+        연결.close()
+    return 결과
+
+
 def 최상단알림창(notice_text, title="알림"):
     """
     [소장님 기획 반영] 크롬 뒤로 숨지 않는 최상단 강제고정형 일반 안내창입니다.

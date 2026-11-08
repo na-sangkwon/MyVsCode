@@ -145,9 +145,16 @@ class ObsAutomationWorker:
     """ 오부사(새홈, osan-bns.com) 매물 갱신 및 공개상태 정리를 전담하는 클래스 """
 
     def __init__(self, driver, mode, progress_callback=None, unattended=False, 강제_새홈번호_목록=None, 갱신_기준일수=1,
-                 전체점검=False, 적용=True):
+                 전체점검=False, 적용=True, 거래완료_기준일수=None):
         self.driver = driver
         self.mode = mode
+        # [2026-11-08] 거래완료 비공개·삭제의 기간은 갱신 기간과 따로 늘릴 수 있다 — 자동업데이트가 며칠 빠졌거나 처리에 실패한 건이
+        # 있으면 다음 실행에서 그 기간만큼 더 거슬러 따라잡아야 하는데(auto.py의 거래완료 처리 시작일 계산), 갱신(끌어올림)은
+        # 옛 매물까지 다시 올리면 안 되기 때문. 안 주면 갱신 기간과 같다.
+        self.거래완료_기준일수 = 갱신_기준일수 if 거래완료_기준일수 is None else 거래완료_기준일수
+        # [2026-11-08] 사람이 직접 고쳐야 하는 매물(사유·조치 문구 포함) — auto.py가 실행 뒤 담당자 알림으로 보낸다.
+        self.조치필요_목록 = []
+        self._직전_실패사유 = ''
         # [2026-11-03 사용자 결정] 거래완료 비공개·삭제도 갱신처럼 "설정 기간 내 변경분"만 매일 처리한다(자동업데이트가 매일
         # 쉬지 않고 돌기 때문에 전체를 매번 훑을 필요가 없다). 기간을 놓친 건(예: 날짜를 안 남기는 자동삭제)까지 점검해야 할
         # 때만 수동으로 전체점검=True로 돌린다 — 이때는 갱신·가격 맞추기는 하지 않고 종결·삭제 매물만 본다.
@@ -255,15 +262,22 @@ class ObsAutomationWorker:
             return True
         return self._설정기간_안인가(db행.get('request_date'), 오늘)
 
-    def _설정기간_안인가(self, 날짜, 오늘):
-        """ 날짜가 [오늘 - 갱신_기준일수, 오늘] 안인지. 못 읽는 값이면 False. """
+    def _조치필요_추가(self, 구분, 코드, 사유, 조치):
+        """ 같은 (구분, 코드)는 한 번만 담는다. 구분: '거래완료삭제'(비공개·삭제가 안 됨 — 처리 기준일을 올리지 않는다) | '업데이트'. """
+        if any(x['구분'] == 구분 and x['외부번호'] == str(코드) for x in self.조치필요_목록):
+            return
+        self.조치필요_목록.append({'사이트': '오부사', '외부번호': str(코드), '구분': 구분, '사유': 사유, '조치': 조치})
+
+    def _설정기간_안인가(self, 날짜, 오늘, 기준일수=None):
+        """ 날짜가 [오늘 - 기준일수, 오늘] 안인지(기준일수를 안 주면 갱신_기준일수). 못 읽는 값이면 False. """
         if isinstance(날짜, str):
             # 날짜 칸이 비어있거나 '0000-00-00' 같은 값이 문자열로 오는 행이 있다(실측) — 못 읽으면 대상이 아니다.
             try:
                 날짜 = datetime.datetime.strptime(날짜[:10], '%Y-%m-%d').date()
             except ValueError:
                 return False
-        return bool(날짜 and 오늘 - datetime.timedelta(days=self.갱신_기준일수) <= 날짜 <= 오늘)
+        기준일수 = self.갱신_기준일수 if 기준일수 is None else 기준일수
+        return bool(날짜 and 오늘 - datetime.timedelta(days=기준일수) <= 날짜 <= 오늘)
 
     @staticmethod
     def 종결매물_여부(db행):
@@ -280,7 +294,7 @@ class ObsAutomationWorker:
             return db행['object_status'] == '거래완료'
         if db행.get('request_status') not in ('성공', '실패') or db행.get('request_del') == 'Y':
             return False
-        return self._설정기간_안인가(db행.get('request_date'), 오늘)
+        return self._설정기간_안인가(db행.get('request_date'), 오늘, self.거래완료_기준일수)
 
     def 삭제_대상_여부(self, db행, 오늘):
         """
@@ -289,7 +303,7 @@ class ObsAutomationWorker:
         """
         if db행['object_del'] != 'Y' or db행.get('request_del') != 'Y':
             return False
-        return True if self.전체점검 else self._설정기간_안인가(db행.get('request_udate'), 오늘)
+        return True if self.전체점검 else self._설정기간_안인가(db행.get('request_udate'), 오늘, self.거래완료_기준일수)
 
     @staticmethod
     def 주소_일치_여부(db행, 사이트행):
@@ -516,15 +530,18 @@ class ObsAutomationWorker:
             결과, 해결한 = self._저장하고_거부사유_해결하기(코드)
             if 결과 != '이동함':
                 print(f"   [❌ 가격 저장 거부 - 사람이 채워야 함 - 오부사 {코드}] {결과}")
+                self._직전_실패사유 = f"오부사가 가격 저장을 거부했습니다: {결과}"
                 return '실패'
             self._이번_매물_해결문구.extend(해결한)
             확인 = self._수정폼_가격읽기(코드, list(목표))
             if 확인 == 목표:
                 return '수정함'
             print(f"   [❌ 가격 수정 미반영 - 오부사 {코드}] 저장 후 다시 열어보니 {확인} (목표 {목표})")
+            self._직전_실패사유 = f"가격을 저장했지만 오부사에 반영되지 않았습니다(오부사 {확인} / 프로중개인 {목표})"
             return '실패'
         except Exception as e:
             print(f"   [❌ 가격 수정 실패 - 오부사 {코드}] {type(e).__name__}: {str(e)[:200]}")
+            self._직전_실패사유 = f"가격을 맞추는 중 오류가 났습니다({type(e).__name__})"
             self._알림창_정리()
             return '실패'
 
@@ -579,12 +596,14 @@ class ObsAutomationWorker:
             time.sleep(0.8)
             if self.driver.execute_script(현재형_JS) != 목표형:
                 print(f"   [❌ 거래유형 수정 실패 - 오부사 {코드}] 거래유형 버튼을 눌러도 {목표형}로 바뀌지 않았습니다")
+                self._직전_실패사유 = f"거래유형 버튼을 눌러도 {목표형}(으)로 바뀌지 않았습니다"
                 return '실패'
             for 이름, 값 in 목표.items():
                 self._입력칸_값_넣기(self.driver.find_element(By.NAME, 이름), 값)
             결과, 해결한 = self._저장하고_거부사유_해결하기(코드)
             if 결과 != '이동함':
                 print(f"   [❌ 거래유형 저장 거부 - 사람이 채워야 함 - 오부사 {코드}] {결과}")
+                self._직전_실패사유 = f"오부사가 거래유형 저장을 거부했습니다: {결과}"
                 return '실패'
             self._이번_매물_해결문구.extend(해결한)
             확인 = self._수정폼_가격읽기(코드, list(목표))
@@ -592,9 +611,11 @@ class ObsAutomationWorker:
             if 확인 == 목표 and 확인형 == 목표형:
                 return '수정함'
             print(f"   [❌ 거래유형 수정 미반영 - 오부사 {코드}] 저장 후 다시 열어보니 유형 {확인형}, 가격 {확인} (목표 {목표형}, {목표})")
+            self._직전_실패사유 = f"거래유형을 저장했지만 오부사에 반영되지 않았습니다(오부사 {확인형} / 프로중개인 {목표형})"
             return '실패'
         except Exception as e:
             print(f"   [❌ 거래유형 수정 실패 - 오부사 {코드}] {type(e).__name__}: {str(e)[:200]}")
+            self._직전_실패사유 = f"거래유형을 맞추는 중 오류가 났습니다({type(e).__name__})"
             self._알림창_정리()
             return '실패'
 
@@ -697,6 +718,8 @@ class ObsAutomationWorker:
                         self.price_fix_ok += 1
                     elif 가격결과 == '실패':
                         self.error_count += 1
+                        self._조치필요_추가('업데이트', 코드, self._직전_실패사유 or '가격을 맞추지 못했습니다',
+                                        '오부사 매물 수정화면에서 위 항목을 채우거나 가격을 직접 확인해 주세요')
                         continue
                 elif 가격판정 == '대상아님' and '거래유형 불일치' in 가격사유:
                     허용, 불허사유 = self.거래유형_자동수정_허용(db행, 행, 오늘)
@@ -708,6 +731,8 @@ class ObsAutomationWorker:
                             유형맞춤함 = True
                         elif 유형결과 == '실패':
                             self.error_count += 1
+                            self._조치필요_추가('업데이트', 코드, self._직전_실패사유 or '거래유형을 맞추지 못했습니다',
+                                            '오부사 매물 수정화면에서 위 항목을 채우거나 거래유형을 직접 확인해 주세요')
                             continue
                 # 필수항목 자동 입력이나 거래유형 맞춤이 한 번이라도 있었으면 보정 1건으로 센다(가격수정처럼 부가 지표).
                 if 유형맞춤함 or self._이번_매물_해결문구:
@@ -794,6 +819,8 @@ class ObsAutomationWorker:
             else:
                 self.error_count += 1
                 print(f"   [❌ 비공개 미반영 - 오부사 {코드}] 처리 후에도 공개 상태입니다")
+                self._조치필요_추가('거래완료삭제', 코드, '거래완료된 매물인데 오부사에서 비공개가 반영되지 않았습니다',
+                                '오부사 관리화면에서 해당 매물을 직접 비공개로 바꿔 주세요')
         # [삭제 허용 조건 ④ 사후 검증] 삭제 요청이 200이어도 사이트 목록에 그 번호가 남아 있으면 삭제된 것이 아니다.
         for 코드, 주소, 가격 in 삭제시도:
             if 코드 not in 사이트:
@@ -803,6 +830,8 @@ class ObsAutomationWorker:
                 self.error_count += 1
                 print(f"   [❌ 삭제 미반영 - 오부사 {코드}] 삭제 요청 뒤에도 사이트 목록에 남아 있습니다")
                 삭제_기록_남기기('오부사', 코드, 코드, 주소, 가격, '삭제실패', '삭제 요청 뒤에도 사이트 목록에 남아 있음')
+                self._조치필요_추가('거래완료삭제', 코드, '프로중개인에서 삭제된 매물인데 오부사에서 삭제되지 않았습니다',
+                                '오부사 관리화면에서 해당 매물을 직접 삭제해 주세요')
 
         if self.적용:   # 확인 모드는 DB에도 쓰지 않는다
             self.공개상태_DB반영(사이트, db)

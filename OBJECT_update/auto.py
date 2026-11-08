@@ -14,10 +14,10 @@ from selenium.webdriver.chrome.options import Options
 
 # 공용 유틸(util/property_utils.py)은 상위 폴더에 있다 — 워커 파일들이 쓰는 것과 같은 방식으로 경로를 잡는다.
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from util.property_utils import 삭제대상_후보_조회, 로그저장
+from util.property_utils import 삭제대상_후보_조회, 로그저장, 거래완료_처리_시작일_계산, 거래완료_처리_기준일_저장, 자동업데이트_담당자_알림_보내기
 
 # 외부 폴더의 진짜 일꾼 모듈들을 정상적으로 매핑
-from workers.obang_worker import ObangAutomationWorker
+from workers.obang_worker import ObangAutomationWorker, OBANG_SERVICE_TOKEN   # 토큰은 담당자 알림 API(sendautoupdatealarm)에도 같은 값을 쓴다
 from workers.carrot_worker import CarrotAutomationWorker
 from workers.obs_worker import ObsAutomationWorker
 
@@ -351,9 +351,13 @@ def show_update_preview(data, before_day, user_settings):
     root.mainloop()
     return proceed
 
-def obang_data(before_day, 오방_선택=True, 당근_선택=True, 강제_새홈번호_목록=None):
+def obang_data(before_day, 오방_선택=True, 당근_선택=True, 강제_새홈번호_목록=None, 거래완료_시작일=None):
     """
     기존 DB 로직에 당근 데이터 매핑 연동을 결합한 데이터 수집 함수.
+
+    거래완료_시작일: [무인 실행 전용] 거래완료 비공개·삭제 대상을 찾는 기간의 시작일(날짜). 안 주면 before_day 기준(어제~오늘).
+    자동업데이트가 며칠 빠졌거나 처리에 실패한 건이 있으면 그날부터 따라잡도록 호출부(run_unattended)가 더 이른 날짜를 준다
+    (util/property_utils.py::거래완료_처리_시작일_계산). 업데이트(끌올·수정) 대상 기간은 이 값과 무관하게 before_day 그대로다.
 
     강제_새홈번호_목록: [단독/다중 테스트 모드 전용] 값이 있으면, 아래 3개 후보군 쿼리(당근 광고
     대상 / 오방 업데이트 대상 / 오방 거래완료 대상)가 평소의 "최근 N일 의뢰수정 또는 관심 매물"·
@@ -368,7 +372,10 @@ def obang_data(before_day, 오방_선택=True, 당근_선택=True, 강제_새홈
 
     start_date = today - datetime.timedelta(days=before_day)
     today_str, start_date_str = today.strftime("%Y-%m-%d"), start_date.strftime("%Y-%m-%d")
-    today_date, start_date_date = today, start_date    
+    today_date, start_date_date = today, start_date
+    # 거래완료·삭제 처리 기간의 시작 — 따라잡기가 필요 없으면 위 start_date와 같다.
+    거래완료_시작 = 거래완료_시작일 or start_date
+    거래완료_시작_str = 거래완료_시작.strftime("%Y-%m-%d")
 
     conn = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', charset='utf8')
     cursor = conn.cursor(pymysql.cursors.DictCursor)
@@ -591,7 +598,7 @@ def obang_data(before_day, 오방_선택=True, 당근_선택=True, 강제_새홈
     # 거래완료매물 수집 — 테스트 모드일 때는 위에서 이미 구한 테스트_f_codes를 그대로 재사용한다.
     # (지정된 새홈번호의 의뢰가 이미 완료(성공/실패) 상태라면 여기서, 아직 진행 중이면 위
     # recently_res 쪽에서 잡힌다 — 상호 배타적이라 중복 집계될 일이 없다.)
-    거래완료_조건 = f'p.request_code IN (\'{테스트_f_codes}\')' if 강제_새홈번호_목록 else f'p.request_date BETWEEN "{start_date_str}" AND "{today_str}"'
+    거래완료_조건 = f'p.request_code IN (\'{테스트_f_codes}\')' if 강제_새홈번호_목록 else f'p.request_date BETWEEN "{거래완료_시작_str}" AND "{today_str}"'
     query = f"""SELECT o.object_code_obang, o.object_code_new FROM pr_request AS p
                JOIN pr_request_give AS c ON p.request_code = c.request_code
                JOIN pr_object AS o ON o.object_del = 'N' AND o.land_group_code = c.land_group_code AND o.building_group_code = c.building_group_code AND o.room_group_code = c.room_group_code
@@ -604,19 +611,17 @@ def obang_data(before_day, 오방_선택=True, 당근_선택=True, 강제_새홈
     # [2026-11-08] 오방 비공개 처리 뒤 DB의 공개 표시(obang_open_yn)를 함께 맞추려면 오방코드→새홈번호 연결이 필요하다
     # (프로중개인 매물 목록의 활성/종료 아이콘이 이 값을 본다).
     거래완료_새홈번호 = {str(r['object_code_obang']): str(r['object_code_new']) for r in rows if r['object_code_obang']}
-    if 강제_새홈번호_목록:
-        dang_complete_set = set(carrot_map[r['object_code_new']] for r in rows if r['object_code_new'] in carrot_map)
-    else:
-        # [2026-11-08 근본수정] 예전엔 위 rows(기간 안에 확인된 거래완료 의뢰)를 carrot_map과 맞췄는데, carrot_map은 끌올·수정
-        # 대상을 고르려고 "광고 시작 14일 경과"로 걸러 둔 목록이라 14일이 안 된 광고의 거래완료는 후보에서 빠졌고, 하루만 지나도
-        # 기간 밖이라 영영 다시 안 잡혔다(833272 등 4건이 거래완료 후에도 당근에서 판매중). 거래완료는 광고 나이와 무관하게
-        # 닫혀야 하므로, 프로중개인이 거래완료인 매물의 당근 광고를 직접 대상으로 삼는다(현재 33건 안팎 — 이미 숨김인 건
-        # 워커가 건너뜀으로 센다). 기간 조건은 두지 않아 한 번 놓쳐도 다음 실행에서 다시 잡힌다.
-        cursor.execute("""SELECT DISTINCT a.ad_code FROM pr_externalad AS a
-                          JOIN pr_object AS o ON o.object_code_new = a.object_code_new AND o.object_del = 'N'
-                          JOIN pr_request AS p ON p.request_code = o.request_code AND p.request_del = 'N'
-                          WHERE a.ad_site = '당근' AND a.ad_del = 'N' AND o.object_status = '거래완료'
-                            AND p.tr_type = '내놓기' AND p.request_status IN ('성공','실패')""")
+    # [2026-11-08 근본수정] 예전엔 이 rows(기간 안에 확인된 거래완료 의뢰)를 carrot_map과 맞췄는데, carrot_map은 끌올·수정 대상을
+    # 고르려고 "광고 시작 14일 경과"로 걸러 둔 목록이라 14일이 안 된 광고의 거래완료는 후보에서 빠졌고, 하루만 지나도 기간 밖이라
+    # 영영 다시 안 잡혔다(833272 등 4건이 거래완료 후에도 당근에서 판매중). 거래완료는 광고 나이와 무관하게 닫혀야 하므로
+    # carrot_map 대신 이 매물들의 당근 광고를 pr_externalad에서 직접 찾는다(삭제 처리된 광고 ad_del='Y'는 제외).
+    # 거래완료된 광고 전체를 날짜 없이 매번 조회하는 방식은 건수가 계속 쌓여 시간이 늘어나 버렸다(거래완료_처리_시작일_계산 주석 참고).
+    거래완료_새홈번호들 = list({str(r['object_code_new']) for r in rows if r['object_code_new']})
+    dang_complete_set = set()
+    if 거래완료_새홈번호들:
+        자리표시자 = ",".join(["%s"] * len(거래완료_새홈번호들))
+        cursor.execute(f"SELECT ad_code FROM pr_externalad WHERE ad_site = '당근' AND ad_del = 'N' AND object_code_new IN ({자리표시자})",
+                       tuple(거래완료_새홈번호들))
         dang_complete_set = set(str(r['ad_code']) for r in cursor.fetchall() if r['ad_code'])
 
     # [2026-11-03 신규 — 사용자 결정] 삭제 매물: 프로중개인에서 의뢰·매물이 삭제된 지 설정 기간 안인 것을 오방·당근에서도 삭제한다
@@ -630,7 +635,7 @@ def obang_data(before_day, 오방_선택=True, 당근_선택=True, 강제_새홈
     연결생성 = lambda: pymysql.connect(**접속정보)
     삭제매물 = []
     if not 강제_새홈번호_목록:
-        삭제후보 = 삭제대상_후보_조회(연결생성, start_date, today)
+        삭제후보 = 삭제대상_후보_조회(연결생성, 거래완료_시작, today)
         삭제_당근코드 = {}
         if 삭제후보 and 당근_선택:
             자리표시자 = ",".join(["%s"] * len(삭제후보))
@@ -827,6 +832,9 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
         'complete': 0, 'restart': 0, 'update': 0, 'end': 0, 'skip': 0, 'error': 0,
         '작업모드': 작업모드_표시,
         '오방_요약': "선택 안 함(스킵됨)", '당근_요약': "선택 안 함(스킵됨)", '오부사_요약': "선택 안 함(스킵됨)",
+        # [2026-11-08] 사람이 직접 고쳐야 하는 매물 — 각 워커의 조치필요_목록을 모은 것(무인 실행이 실행 뒤 담당자 알림으로 보낸다).
+        # 구분 '거래완료삭제'가 하나라도 있으면 그날 거래완료·삭제 처리가 덜 끝난 것이다. '오부사_예외'는 오부사 워커가 예외로 중단된 경우.
+        '조치필요목록': [], '오부사_예외': False,
     }
     print(f"   [⚙️ 작업 모드] {작업모드_표시} | 오방:{'실행' if user_settings['obang'] else '건너뜀'} 당근:{'실행' if user_settings['carrot'] else '건너뜀'}")
 
@@ -886,6 +894,7 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
                 unattended=unattended
             )
             c_count, r_ok, u_ok, e_ok, s_ok, err_ok, nf_ok, d_ok = obang_worker.run()
+            counts['조치필요목록'].extend(obang_worker.조치필요_목록)
             # d_ok(삭제 성공)도 e_ok(비공개)와 같은 "거래종료 처리"라 end에 합친다.
             counts['complete'] += c_count; counts['restart'] += r_ok; counts['update'] += u_ok; counts['end'] += e_ok + d_ok; counts['skip'] += s_ok; counts['error'] += err_ok
             # [처리결과 가시화] "총 N건" 자체를 요약 맨 앞에 적어, 뒤에 나열된 숫자를 더했을 때
@@ -911,6 +920,7 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
                 unattended=unattended
             )
             cc, ro, uo, eo, so, ho, err_c, do_c = carrot_worker.run()
+            counts['조치필요목록'].extend(carrot_worker.조치필요_목록)
             counts['complete'] += cc; counts['restart'] += ro; counts['update'] += uo; counts['end'] += eo + do_c; counts['skip'] += so; counts['error'] += err_c
             # [처리결과 가시화] cc(최종완료_개수)와 eo(비공개완료_성공_개수)가 매물 단위의 실제
             # 항목 수이고, ro(끌어올리기)/uo(수정업데이트)/ho(숨김해제)는 cc 안에 이미 포함된
@@ -971,8 +981,11 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
                     # 수동 전체 점검(--obs-full-scan) 때만 켜진다 — 매일 자동 실행은 둘 다 기본값(기간 내 변경분만, 실제 처리).
                     전체점검=user_settings.get('obs_full_scan', False),
                     적용=user_settings.get('obs_apply', True),
+                    # 거래완료·삭제만 따라잡기 기간을 따로 받는다(없으면 갱신 기간과 같음 — 수동 전체점검 등).
+                    거래완료_기준일수=user_settings.get('거래완료_기준일수'),
                 )
                 o_ok, o_end, o_skip, o_err, o_nf, o_price, o_autofix, o_del = obs_worker.run()
+                counts['조치필요목록'].extend(obs_worker.조치필요_목록)
                 counts['complete'] += o_ok; counts['end'] += o_end + o_del; counts['skip'] += o_skip; counts['error'] += o_err
                 # 총건수 = 처리 대상이었던 매물 수. 갱신/비공개/삭제 성공 + 건너뜀 + 실패 + 미등록의 합과 같다
                 # (오방/당근과 같은 검산 원칙 — 오방과 달리 '재등록' 같은 부가 지표가 없다).
@@ -983,6 +996,7 @@ def run_platform_workers(obangData, target_mode, user_settings, progress_callbac
                 progress_callback('obs', 100, 100, f"✅ 오부사 업데이트 완료 V \n{counts['오부사_요약']}", 'determinate')
             except Exception:
                 counts['error'] += 1
+                counts['오부사_예외'] = True
                 counts['오부사_요약'] = "❌ 실행 오류 — 로그 확인 필요(오방·당근 결과에는 영향 없음)"
                 print(f"[❌ 오부사 실행 오류]\n{traceback.format_exc()}")
         else:
@@ -1219,14 +1233,25 @@ def load_unattended_settings():
     cursor = conn.cursor()
     cursor.execute("SELECT config_key, config_value FROM pr_config WHERE config_group='auto_update'")
     rows = dict(cursor.fetchall())
-    cursor.close(); conn.close()
+    cursor.close()
 
     required = ('obang', 'carrot', 'before_day', 'run_mode')
     missing = [key for key in required if key not in rows]
     if missing:
+        conn.close()
         raise ValueError(f"pr_config(auto_update)에 필수 항목이 없습니다: {missing}")
 
+    # [2026-11-08] 거래완료·삭제 처리 기간은 "마지막으로 실패 없이 마친 실행일"부터 따라잡는다(util/property_utils.py::
+    # 거래완료_처리_시작일_계산). 설정을 읽는 이 연결로 같이 읽어 새 접속 코드를 만들지 않는다.
+    오늘 = datetime.datetime.now().date()
+    거래완료_시작일, 거래완료_상한적용, 거래완료_저장기준일 = 거래완료_처리_시작일_계산(conn, 오늘, int(rows['before_day']))
+    conn.close()
+
     return {
+        '거래완료_시작일': 거래완료_시작일,
+        '거래완료_기준일수': (오늘 - 거래완료_시작일).days,
+        '거래완료_상한적용': 거래완료_상한적용,
+        '거래완료_저장기준일': 거래완료_저장기준일,
         'obang': rows['obang'] == 'Y',
         'carrot': rows['carrot'] == 'Y',
         # [2026-10-03 신규] 오부사는 필수 항목(required)이 아니다 — 환경설정 카드에 이 값이 아직 없으면
@@ -1287,9 +1312,15 @@ def run_unattended(log_path):
 
     before_day = user_settings['before_day']
     target_mode = user_settings['mode']
+    오늘 = datetime.datetime.now().date()
+    따라잡기_일수 = user_settings['거래완료_기준일수'] - before_day
+    if 따라잡기_일수 > 0:
+        log(f"⏪ 거래완료·삭제 처리 기간을 {user_settings['거래완료_시작일']}부터로 늘려 따라잡습니다 "
+            f"(마지막으로 실패 없이 마친 실행일 {user_settings['거래완료_저장기준일']}, 기본 기간보다 {따라잡기_일수}일 더)"
+            + (" — 상한(30일)에 걸려 더 오래된 건은 수동 전체점검이 필요합니다" if user_settings['거래완료_상한적용'] else ""))
 
     try:
-        obangData = obang_data(before_day, user_settings['obang'], user_settings['carrot'])
+        obangData = obang_data(before_day, user_settings['obang'], user_settings['carrot'], 거래완료_시작일=user_settings['거래완료_시작일'])
     except Exception:
         log(f"❌ DB 데이터 수집 실패 — 실행 중단:\n{traceback.format_exc()}")
         write_run_log('error', 'DB 데이터 수집 실패 — 로그 파일 확인 필요')
@@ -1308,6 +1339,28 @@ def run_unattended(log_path):
         summary = f"[모드: {counts.get('작업모드', '?')}] 🟠오방 — {counts.get('오방_요약')} | 🥕당근 — {counts.get('당근_요약')} | 🟦오부사 — {counts.get('오부사_요약')}"
         log(f"✅ 무인 업데이트 사이클 완료 — {summary}")
         write_run_log('success', summary)
+
+        # [2026-11-08] 거래완료·삭제를 한 건도 실패 없이 마쳤을 때만 처리 기준일을 오늘로 올린다 — 실패가 있거나 오부사가 중단됐거나
+        # 거래완료·삭제를 안 도는 모드(업데이트만)였으면 올리지 않아, 다음 실행이 그 날짜부터 다시 잡는다. 오부사의 가격·필수항목
+        # 같은 '업데이트' 실패는 사람이 고칠 때까지 며칠씩 남을 수 있어 여기 넣지 않았다(넣으면 기준일이 영영 안 올라 기간이 계속 늘어난다).
+        거래완료삭제_실패 = [x for x in counts['조치필요목록'] if x['구분'] == '거래완료삭제']
+        처리_깨끗 = target_mode in ('all', 'close_only') and not 거래완료삭제_실패 and not counts['오부사_예외']
+        if 처리_깨끗:
+            거래완료_처리_기준일_저장(obangData['DB연결'], 오늘)
+        else:
+            log(f"⏸️ 거래완료·삭제 처리 기준일을 올리지 않았습니다 — 실패 {len(거래완료삭제_실패)}건, 오부사 중단 {counts['오부사_예외']}, 모드 {target_mode}")
+
+        # 사람이 직접 고쳐야 하는 매물은 의뢰 담당자에게, 처리가 밀렸던 사실은 오방센터에 알린다. 알림 실패는 본작업 결과에 영향이 없다.
+        오방센터_알림 = None
+        if 따라잡기_일수 > 0:
+            오방센터_알림 = ('자동업데이트 처리 지연',
+                          f"거래완료·삭제 처리를 {user_settings['거래완료_시작일']}부터 다시 처리했습니다 "
+                          f"(자동업데이트가 빠졌거나 처리에 실패한 건이 있었습니다). 현재 직접 확인이 필요한 매물 {len(counts['조치필요목록'])}건.")
+        try:
+            알림결과 = 자동업데이트_담당자_알림_보내기(obangData['DB연결'], OBANG_SERVICE_TOKEN, counts['조치필요목록'], 오방센터_알림)
+            log(f"🔔 담당자 알림 — 대상 {알림결과['대상수']}건: 보냄 {알림결과['보냄']} / 최근 보낸 알림이라 생략 {알림결과['중복']} / 실패 {알림결과['실패']}")
+        except Exception:
+            log(f"⚠️ 담당자 알림 단계에서 오류(본작업 결과에는 영향 없음):\n{traceback.format_exc()}")
     except Exception:
         # 로그인 세션 만료 등으로 워커가 중간에 실패해도 원인을 로그에 남겨, 나중에 사람이
         # 로그 파일을 확인했을 때 "왜 며칠째 자동화가 안 됐는지" 바로 알 수 있게 한다.
