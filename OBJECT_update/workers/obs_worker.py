@@ -390,7 +390,7 @@ class ObsAutomationWorker:
             cur = conn.cursor(pymysql.cursors.DictCursor)
             cur.execute("""SELECT l.land_totarea, b.building_purpose, b.building_grndflr, b.building_archarea, b.building_totarea,
                     b.building_usedate, b.building_direction, r.room_floor, r.room_rcount, r.room_bcount, r.room_direction,
-                    r.r_direction, r.room_area1, r.room_areatype1
+                    r.r_direction, r.room_area1, r.room_areatype1, b.building_important
                 FROM pr_object o
                 LEFT JOIN pr_land AS l ON l.land_code = COALESCE(
                     (SELECT li.land_code FROM pr_land_group_item li INNER JOIN pr_land il ON il.land_code = li.land_code AND il.land_del = 'N'
@@ -436,7 +436,29 @@ class ObsAutomationWorker:
             보정값['방향'] = 방향
         if (행.get('r_direction') or '').strip():
             보정값['방향기준'] = 행['r_direction'].strip()
+        # 위반건축물: 건물 특징 문구에 '위반없음'이 명시된 경우에만 '위반 아님'의 근거로 삼는다. 문구가 비었거나 다른
+        # 내용이면(위반이 있다는 뜻일 수도 있음) 법정 표시 항목이라 추정하지 않고 값을 넣지 않아 사람이 고르게 한다.
+        if '위반없음' in (행.get('building_important') or ''):
+            보정값['위반아님_근거'] = '위반없음'
         return 보정값
+
+    # 저장 거부가 사이트 안내창(#modal-item_form_checks)이 아니라 브라우저 알림창(alert)으로 올 때의 해결 규칙.
+    # 안내창용 _저장거부_해결규칙은 open_alert_modal 훅으로 (문구, 칸)을 받지만 브라우저 알림창은 그 훅을 거치지 않아
+    # 따로 처리해야 한다 — 이걸 몰라서 10592가 매일 20초 시간 초과로 실패했다(2026-11-09 재현으로 확인).
+    # 키는 알림 문구의 앞부분(뒤에 선택지 안내가 붙어 문구가 바뀌어도 맞도록 시작 문구로 비교한다).
+    _저장거부_알림창_해결규칙 = {
+        '위반건축물 여부를 선택해 주세요': ('라디오', 'is_not_violate', '위반아님_근거'),
+    }
+
+    def _알림창_거부항목_해결(self, 알림문구, 보정값):
+        """ 브라우저 알림창으로 온 저장 거부를 규칙대로 해결한다. :return: 해결했으면 True, 규칙 없음/DB 근거 없음이면 False. """
+        for 시작문구, (방식, 칸id, 값이름) in self._저장거부_알림창_해결규칙.items():
+            if 알림문구.startswith(시작문구):
+                if not 보정값.get(값이름):
+                    return False
+                return bool(self.driver.execute_script(
+                    "var e=document.getElementById(arguments[0]); if(!e) return false; if(!e.checked) e.click(); return e.checked;", 칸id))
+        return False
 
     def _거부항목_해결(self, 문구, 입력칸, 보정값):
         """
@@ -486,23 +508,37 @@ class ObsAutomationWorker:
             저장버튼 = next(b for b in self.driver.find_elements(By.CSS_SELECTOR, '.save_btn') if b.is_displayed())
             self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", 저장버튼)
             저장버튼.click()
-            self._저장후_알림_처리()
+            알림문구 = self._저장후_알림_처리()
             # 저장이 통과하면 목록으로 이동하고, 막히면 같은 화면에 필수항목 안내창이 뜬다. 오부사는 중개대상물
             # 표시·광고법상 필수항목(예: 화장실)이 비어 있는 옛 매물은 가격만 고쳐도 저장을 거부한다.
-            결과 = WebDriverWait(self.driver, 20).until(self._저장_결과_판정)
-            if 결과 == '이동함':
-                return 결과, 해결한
-            거부 = self.driver.execute_script("var r=window.__obsRejects||[]; return r.length? r[r.length-1] : null;")
+            # 일부 거부(위반건축물 여부 등)는 안내창이 아니라 브라우저 알림창으로 온다 — 이때는 안내창이 영영 안 뜨므로
+            # 20초를 기다리지 않고 알림 문구를 거부 사유로 바로 쓴다.
+            if 알림문구:
+                # 알림창이 거부가 아니라 저장 성공 안내일 수도 있어, 잠깐 기다려 목록으로 이동했으면 저장된 것으로 본다.
+                try:
+                    WebDriverWait(self.driver, 3).until(lambda d: '/admin_item/edit/' not in d.current_url)
+                    return '이동함', 해결한
+                except TimeoutException:
+                    pass
+                결과 = 알림문구
+                거부 = [알림문구, '']
+            else:
+                결과 = WebDriverWait(self.driver, 20).until(self._저장_결과_판정)
+                if 결과 == '이동함':
+                    return 결과, 해결한
+                거부 = self.driver.execute_script("var r=window.__obsRejects||[]; return r.length? r[r.length-1] : null;")
             if not 거부 or len(해결한) >= self._저장거부_최대해결횟수 or tuple(거부) in 시도한_항목:
                 return 결과, 해결한   # 어느 항목인지 모르거나, 같은 항목이 되풀이되거나, 너무 길어지면 사람에게 넘긴다
             시도한_항목.add(tuple(거부))
             if 보정값 is None:
                 보정값 = self.DB_보정값_조회(코드)
-            if not self._거부항목_해결(거부[0], 거부[1], 보정값):
+            해결됨 = self._알림창_거부항목_해결(거부[0], 보정값) if 알림문구 else self._거부항목_해결(거부[0], 거부[1], 보정값)
+            if not 해결됨:
                 return 결과, 해결한
             print(f"   [🛠️ 필수항목 자동 입력 - 오부사 {코드}] {거부[0]}({거부[1]}) ← DB/체크")
             해결한.append(거부[0])
-            self.driver.execute_script("$('#modal-item_form_checks').modal('hide');")
+            if not 알림문구:
+                self.driver.execute_script("$('#modal-item_form_checks').modal('hide');")
             time.sleep(0.4)
         return 결과, 해결한
 
@@ -649,13 +685,16 @@ class ObsAutomationWorker:
         return 안내 or False
 
     def _저장후_알림_처리(self):
+        """ 저장 직후 브라우저 알림창이 떠 있으면 닫고 그 문구를 돌려준다(없으면 None). """
         try:
             WebDriverWait(self.driver, 2).until(EC.alert_is_present())
             알림 = self.driver.switch_to.alert
-            print(f"   [🔎 오부사 저장 알림] {알림.text}")
+            문구 = 알림.text
+            print(f"   [🔎 오부사 저장 알림] {문구}")
             알림.accept()
+            return 문구
         except (TimeoutException, NoAlertPresentException):
-            pass
+            return None
 
     def _알림창_정리(self):
         try:
