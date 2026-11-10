@@ -377,7 +377,7 @@ def obang_data(before_day, 오방_선택=True, 당근_선택=True, 강제_새홈
     거래완료_시작 = 거래완료_시작일 or start_date
     거래완료_시작_str = 거래완료_시작.strftime("%Y-%m-%d")
 
-    conn = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', charset='utf8')
+    conn = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', charset='utf8mb4')
     cursor = conn.cursor(pymysql.cursors.DictCursor)
     cursor.execute('USE obangkr;')
 
@@ -638,7 +638,7 @@ def obang_data(before_day, 오방_선택=True, 당근_선택=True, 강제_새홈
     # 테스트 모드(강제_새홈번호_목록)는 지정한 번호만 다뤄야 하므로 삭제 대상을 모으지 않는다.
     # 접속 정보는 이 함수가 이미 연 연결(conn)에서 꺼내 쓴다 — 새 코드에 비밀번호를 또 적지 않기 위함. 워커들이 삭제 직전에 DB를
     # 다시 확인할 때(삭제 허용 조건 ③④) 이 함수를 부른다(obangData['DB연결']).
-    접속정보 = dict(host=conn.host, user=conn.user, password=conn.password, database='obangkr', charset='utf8')
+    접속정보 = dict(host=conn.host, user=conn.user, password=conn.password, database='obangkr', charset='utf8mb4')
     연결생성 = lambda: pymysql.connect(**접속정보)
     삭제매물 = []
     if not 강제_새홈번호_목록:
@@ -685,7 +685,7 @@ def 테스트매물_정보조회(새홈번호_목록):
     그대로 재사용되므로 중복 로직을 새로 만들 필요가 없다.
     """
     if not 새홈번호_목록: return []
-    conn = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', database='obangkr', charset='utf8')
+    conn = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', database='obangkr', charset='utf8mb4')
     cursor = conn.cursor()
     자리표시자 = ",".join(["%s"] * len(새홈번호_목록))
     cursor.execute(f'''
@@ -709,7 +709,7 @@ def 테스트_새홈번호별_오방당근코드_조회(새홈번호_목록):
     오방코드/당근코드만 조회한다(주소/가격 조회는 obang_data()가 이미 하므로 중복하지 않는다).
     """
     if not 새홈번호_목록: return {}, {}
-    conn = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', database='obangkr', charset='utf8')
+    conn = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', database='obangkr', charset='utf8mb4')
     cursor = conn.cursor()
     자리표시자 = ",".join(["%s"] * len(새홈번호_목록))
     cursor.execute(f"SELECT object_code_new, object_code_obang FROM pr_object WHERE object_code_new IN ({자리표시자})", tuple(새홈번호_목록))
@@ -765,7 +765,7 @@ def _당근_검증_오류_pr_error_log기록(message, file=None, line=None, stac
         지문원본 = f"{source}|{file or ''}|{line or ''}|{message[:300]}"
         fingerprint = hashlib.sha1(지문원본.encode('utf-8')).hexdigest()
 
-        conn = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', database='obangkr', charset='utf8')
+        conn = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', database='obangkr', charset='utf8mb4')
         cursor = conn.cursor()
         cursor.execute(
             """INSERT INTO pr_error_log
@@ -1236,7 +1236,7 @@ def load_unattended_settings():
     나스 자체 web_config Flask 앱)은 카드 하나로 통일하며 폐기했다. DB 접속 정보는 obang_data()가
     쓰는 것과 동일하다(같은 운영 DB).
     """
-    conn = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', database='obangkr', charset='utf8')
+    conn = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', database='obangkr', charset='utf8mb4')
     cursor = conn.cursor()
     cursor.execute("SELECT config_key, config_value FROM pr_config WHERE config_group='auto_update'")
     rows = dict(cursor.fetchall())
@@ -1296,7 +1296,7 @@ def run_unattended(log_path):
         # 쓰는 것과 동일한 테이블·컬럼 관례)로 옮겼다 — system 계열 이벤트가 log_target='system'을
         # 쓰는 기존 관례를 그대로 따른다.
         try:
-            conn = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', database='obangkr', charset='utf8')
+            conn = pymysql.connect(host='obangkr.cafe24.com', user='obangkr', password='Ddhqkd!1', database='obangkr', charset='utf8mb4')
             cursor = conn.cursor()
             now = datetime.datetime.now()
             cursor.execute(
