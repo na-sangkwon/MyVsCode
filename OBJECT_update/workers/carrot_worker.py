@@ -194,7 +194,12 @@ class CarrotAutomationWorker:
     # [범위를 이것 하나로 한정한 이유] 그 밖의 알 수 없는 필수 오류는 칸 의미를 모른 채 값을 채우면 광고 내용이 틀어질 수 있어 고치지 않고
     # 저장이 막힌 뒤 사유 보고(_화면_입력오류_문구_수집)로만 남긴다. 항목명이 이미 적혀 있으면(사람이 쓴 의미 있는 값) 건드리지 않는다.
     # 선택자는 2026-11-05 당근 수정 폼 실측: label.seed-checkbox__root(글자 '기타') 안 input[name=includeManageCostOptionV3],
-    # 항목명 칸은 input[name=includeManageCostOptionV3_ETC_customOptionName]. 실패해도 본작업(가격 수정)은 막지 않는다.
+    # 항목명 칸은 [name=includeManageCostOptionV3_ETC_customOptionName]. 실패해도 본작업(가격 수정)은 막지 않는다.
+    # [2026-11-16 수정 — 항목명 칸을 못 찾던 결함] 항목명 칸은 input이 아니라 **textarea**다(2026-11-16 당근 수정폼 실측). 처음엔 input[name=…]으로 찾아서
+    # 늘 null이 되었고, 그러면 "항목명 비어 있음"으로 오판해 **직원이 적어둔 항목명이 있는 '기타'까지 풀어버릴** 위험이 있었다. 이제 태그와 무관하게 name으로 찾고,
+    # 체크됐는데 칸을 못 읽으면(비었는지 확인 불가) 건드리지 않는다.
+    # ⚠️ 동기화: chrome_extension/danggeun_autofill/autofill_core.js::uncheckEmptyEtcManageCostItem()과 OBJECT_reg/daangn.py::관리비포함_기타_빈항목_해제()가
+    # 같은 규칙(같은 선택자)을 쓴다 — 하나를 고치면 나머지도 맞출 것.
     def 관리비포함_기타_빈항목_해제(self, 당근매물번호):
         try:
             판정 = self.브라우저.execute_script("""
@@ -204,11 +209,14 @@ class CarrotAutomationWorker:
                 if (!labels.length) return 'NONE';
                 var box = labels[0].querySelector('input');
                 if (!box.checked) return 'UNCHECKED';
-                var nameInput = document.querySelector("input[name='includeManageCostOptionV3_ETC_customOptionName']");
-                if (nameInput && (nameInput.value || '').trim() !== '') return 'HAS_NAME';
+                var nameInput = document.querySelector("[name='includeManageCostOptionV3_ETC_customOptionName']");
+                if (!nameInput) return 'NAME_UNREADABLE';
+                if ((nameInput.value || '').trim() !== '') return 'HAS_NAME';
                 labels[0].click();   // 실제 클릭 이벤트로 풀어야 폼 상태(React)에도 반영된다
                 return 'CLICKED';
             """)
+            if 판정 == 'NAME_UNREADABLE':
+                print(f"   [⚠️ 경고 - {당근매물번호}] '기타 관리비'가 체크돼 있는데 항목명 칸을 읽지 못해 그대로 뒀습니다(비었는지 확인 불가)")
             if 판정 != 'CLICKED':
                 return False
             time.sleep(0.4)

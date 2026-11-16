@@ -87,6 +87,48 @@ def generate_ai_one_liner(address, object_type):
         print("⚠️  [AI 한줄평 서비스 임시 우회] 공용 모듈 반환 오류로 기존 제목을 대체 사용합니다.")
         return None
 
+def 관리비포함_기타_빈항목_해제(driver):
+    """
+    [2026-11-16 신규 — 사용자 요청 "기타로 넣을 항목이 없는데 기타가 체크돼 있으면 해제"] 수정 폼의 "관리비에 포함 > 기타"가 체크돼 있는데
+    항목명 칸이 비어 있으면 체크를 풀고 결과 상태 글자를 돌려준다. 당근은 그 상태를 "기타 관리비 항목명은 필수 항목입니다" 오류로 막아 저장이 안 된다
+    (본섭 매물 3668133). 등록 코드(위 관리비 구간)는 "기타는 체크 제외"가 방침이라 같은 기준이다.
+    [실측 2026-11-16 당근 수정폼] 선택자: label.seed-checkbox__root(글자 '기타') 안 input[name=includeManageCostOptionV3],
+    항목명 칸은 **textarea**[name=includeManageCostOptionV3_ETC_customOptionName] — input이 아니다. 라벨을 클릭해야 폼 상태(리액트)까지 풀린다.
+    항목명이 적혀 있으면(사람이 쓴 값) 건드리지 않고, 체크됐는데 칸을 못 읽으면 비었는지 확인할 수 없어 건드리지 않는다.
+    ⚠️ 동기화: 같은 규칙을 chrome_extension/danggeun_autofill/autofill_core.js::uncheckEmptyEtcManageCostItem()과
+    OBJECT_update/workers/carrot_worker.py::관리비포함_기타_빈항목_해제()가 쓴다 — 하나를 고치면 나머지도 맞출 것.
+    반환: 'UNCHECKED'(풀었음) | 'FAILED'(풀려 했으나 안 풀림) | 'HAS_NAME' | 'NAME_UNREADABLE' | 'NOT_CHECKED' | 'NO_OPTION' | 'ERROR'
+    """
+    try:
+        판정 = driver.execute_script("""
+            var findEtc = function () {
+                return [].slice.call(document.querySelectorAll('label.seed-checkbox__root')).filter(function (l) {
+                    return (l.textContent || '').trim() === '기타' && l.querySelector("input[name='includeManageCostOptionV3']");
+                })[0];
+            };
+            var label = findEtc();
+            if (!label) return 'NO_OPTION';
+            if (!label.querySelector('input').checked) return 'NOT_CHECKED';
+            var nameBox = document.querySelector("[name='includeManageCostOptionV3_ETC_customOptionName']");
+            if (!nameBox) return 'NAME_UNREADABLE';
+            if ((nameBox.value || '').trim() !== '') return 'HAS_NAME';
+            label.click();   // 실제 클릭 이벤트로 풀어야 폼 상태(React)에도 반영된다
+            return 'CLICKED';
+        """)
+        if 판정 != 'CLICKED':
+            return 판정
+        time.sleep(0.4)
+        풀림 = driver.execute_script("""
+            var l = [].slice.call(document.querySelectorAll('label.seed-checkbox__root')).filter(function (x) {
+                return (x.textContent || '').trim() === '기타' && x.querySelector("input[name='includeManageCostOptionV3']");
+            })[0];
+            return !!l && !l.querySelector('input').checked;
+        """)
+        return 'UNCHECKED' if 풀림 else 'FAILED'
+    except Exception as 오류:
+        print(f"   .. ⚠️ 기타 관리비 점검 실패(수정은 계속 진행) -> {오류}")
+        return 'ERROR'
+
 def macro(data, user):
     """
     당근부동산 자동 매물 등록 (최종 검증 및 정제 완료 완료 버전)
@@ -660,6 +702,14 @@ def macro(data, user):
                 # =================================================================
                 # 🚀 [소장님 요청사항 - 최소 추가] '매물 수정' 버튼 자동 클릭 및 목록 복귀
                 # =================================================================
+                # [2026-11-16 추가] 저장 전에 항목명 없이 체크된 "관리비에 포함 > 기타"를 풀어 둔다 — 당근이 그 상태를 필수 오류로 막아 저장이 안 된다(위 함수 설명 참고).
+                기타관리비_점검결과 = 관리비포함_기타_빈항목_해제(driver)
+                if 기타관리비_점검결과 == 'UNCHECKED':
+                    print("   .. 🧹 [자동 보정] 항목명이 빈 '기타 관리비' 체크를 해제했습니다(저장이 막히는 필수 오류 예방)")
+                    final_report_msg += "\n🧹 항목명 없이 체크돼 있던 '관리비에 포함 > 기타'를 해제했습니다."
+                elif 기타관리비_점검결과 in ('FAILED', 'NAME_UNREADABLE'):
+                    print(f"   .. ⚠️ [기타 관리비] 해제 필요 여부를 처리하지 못했습니다({기타관리비_점검결과}) — 저장이 막히면 화면에서 직접 풀어주세요")
+                    final_report_msg += "\n⚠️ '관리비에 포함 > 기타' 체크를 처리하지 못했습니다 — 저장이 막히면 직접 풀어주세요."
                 try:
                     # 복잡한 스크롤, 대기, 클릭 스크립트 연산을 공용 함수 하나로 압축 교체했습니다.
                     if 텍스트기준_버튼_클릭(driver, "매물 수정"):
