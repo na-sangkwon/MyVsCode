@@ -797,6 +797,48 @@ def _next_button(driver):
     return _find_visible_or_none(driver, By.ID, f'{BASE}_btn_next')  # [2026-10-24] 화면이 다시 그려져도 죽지 않게 — _find_visible_or_none 설명 참고
 
 
+def _ensure_joint_collateral_list_checked(driver):
+    """[2026-11-19 추가 — 사용자 제안] 등기부 발급 시 "공동담보(전세)목록" 추가사항을 항상 체크한다.
+
+    [왜] 이 옵션을 한 번도 체크하지 않아, 공동담보 근저당이 있는 등기부도 PDF에 【공동담보목록】 표가
+    빠져 있었다(NAS 등기부 31건 중 30건 — 전세 안전성 판정이 근저당을 과대 집계할 수 있었음). 공동담보가
+    없는 등기부에서는 체크해도 목록이 안 나올 뿐이라, 있을 때만 체크하는 조건 판단 대신 "항상 체크"로 했다.
+    [추정 — 직접 확인 필요] 옛 deunggi.py(305~316행)가 이 옵션을 등기기록유형과 같은 화면에서 다루려던 흔적이
+    있어 같은 화면에 있다고 보고 찾는다. 체크박스 id는 확인하지 못해 id가 아니라 라벨 글자로 찾는다.
+    못 찾아도 발급은 멈추지 않는다(로그만 남기고 그대로 진행).
+    ⚠️ 이 로직은 chrome_extension/iros_autofill/content_iros.js의 ensureJointCollateralListChecked()와 같은 동작을
+    한다 — 하나를 고치면 반드시 다른 하나도 맞출 것.
+    """
+    try:
+        found = None
+        for box in driver.find_elements(By.CSS_SELECTOR, 'input[type="checkbox"]'):
+            box_id = box.get_attribute('id') or ''
+            labels = driver.find_elements(By.CSS_SELECTOR, f'label[for="{box_id}"]') if box_id else []
+            text = (labels[0].text if labels else '') or (box.find_element(By.XPATH, '..').text or '')
+            if re.search(r'공동담보|전세목록', text):
+                found = (box, labels[0] if labels else None)
+                break
+        if found is None:
+            print('[진행] 공동담보(전세)목록 체크박스를 찾지 못했습니다 — 그대로 진행합니다', flush=True)
+            return 'notfound'
+        box, label = found
+        if box.is_selected():
+            print('[진행] 공동담보(전세)목록은 이미 체크돼 있습니다', flush=True)
+            return 'already'
+        # WebSquare 체크박스는 input을 직접 누르면 안 먹히는 경우가 있어 라벨(없으면 input)을 누른다
+        _click_with_fallback(driver, label or box)
+        _wait_until_ready(driver, box.is_selected, 2.0, label='공동담보(전세)목록 체크')
+        if box.is_selected():
+            print('[진행] 공동담보(전세)목록 체크 완료', flush=True)
+            return 'checked'
+        print('[진행] 공동담보(전세)목록을 체크하지 못했습니다 — 그대로 진행합니다', flush=True)
+        return 'failed'
+    except Exception as e:
+        # 이 옵션은 부가 기능이라 어떤 오류가 나도 발급 자체를 막지 않는다
+        print(f'[진행] 공동담보(전세)목록 체크 중 오류({type(e).__name__}) — 그대로 진행합니다', flush=True)
+        return 'error'
+
+
 def _visible_result_rows(driver):
     tbody = None
     for cid in (f'{BASE}_grd_loc_srch_rslt_body_tbody', f'{BASE}_grd_smpl_srch_rslt_body_tbody'):
@@ -1752,6 +1794,7 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
         print(f'[진행] 등기기록유형 "{wanted}" 선택 완료', flush=True)
     except Exception:
         pass  # 기본값 그대로 진행 — 조회에는 영향 없다
+    _ensure_joint_collateral_list_checked(driver)  # 같은 화면의 추가사항 — 함수 설명 참고
     # [2026-10-24 일부러 고정 대기로 유지] 위 select 선택이 사이트에 반영되기 전에 [다음]을 누르면 **다른 종류의 등기부(현재유효사항 ↔ 말소사항포함
     # 등)를 결제**하게 된다 — 돈이 나가는 문서 종류를 정하는 값이라, 반영 여부를 확실히 알 수 있는 신호를 실제 화면에서 확인하기 전에는
     # 고정 대기를 신호 대기로 바꾸지 않는다(신호 후보: 컴포넌트 값 확인 — 검증되면 바꿀 것).
