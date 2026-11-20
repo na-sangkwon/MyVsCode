@@ -218,6 +218,43 @@ def _start_chrome_process(chrome_options):
             return webdriver.Chrome(options=chrome_options)
 
 
+# [2026-11-20 신규 — 실사용 로그로 원인 확인(일괄발급 bulk_80d1f136c2bc, 2번째 매물)] 도로명주소검색이 0건이라 간편검색 탭을 누르려는 순간 글자 없는 반투명 막
+# (div#_modal.w2modal_popup, display:block)이 탭을 덮고 있었다. 표준 클릭은 "다른 요소가 가려서" 실패했고, 그 다음 ActionChains 클릭은 예외 없이 끝나
+# (실제로는 그 막을 누른 것) 성공으로 오판돼 탭이 안 바뀐 채 진행했다. 막이 일시적인지 계속 남는지는 직접 확인하지 못했다(추정: 사이트 처리 중 막) —
+# 그래서 고정 대기가 아니라 "막이 사라지는 신호"를 최대 max_seconds까지만 기다리고, 끝내 안 사라지면 그 사실을 로그에 남기고 예전처럼 계속 진행한다.
+# [2026-11-20 수정 — 같은 날 실사용 로그로 확인] 처음엔 "화면에 막이 하나라도 보이면" 기다리게 했는데, 등기소는 안내창·열람창·결제확인창처럼 **정상 팝업 뒤에도 항상 막을
+# 깐다** — 그 팝업 안의 버튼([저장]·[확인] 등)을 누를 때마다 5초씩 헛기다렸다(한 번 발급에 7회 ≈ 35초). 그래서 "누르려는 요소의 한가운데를 지금 막 자체가 받고 있을
+# 때"(요소가 막 위에 있으면 해당 없음)만 가린 것으로 본다.
+_ELEMENT_COVERED_BY_MODAL_MASK_JS = """
+var e = arguments[0], r = e.getBoundingClientRect();
+var t = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+return !!(t && t !== e && !e.contains(t) && t.classList && t.classList.contains('w2modal_popup'));
+"""
+
+
+_modal_mask_diagnostic_capture_count = 0  # 이 프로세스(발급 한 번)에서 막 지속 증거를 남긴 횟수 — 같은 상황이 반복돼도 스크린샷이 쌓이지 않게
+
+
+def _wait_for_modal_mask_to_clear(driver, el, max_seconds=5.0):
+    """누르려는 요소 el을 막(.w2modal_popup)이 덮고 있으면 사라질 때까지 기다린다. 덮고 있지 않으면 즉시 돌아와 평소 속도는 그대로다."""
+    try:
+        if not driver.execute_script(_ELEMENT_COVERED_BY_MODAL_MASK_JS, el):
+            return
+    except Exception:
+        return  # 가림 여부를 못 물어보면 예전 동작(바로 클릭)을 유지한다
+    cleared, waited = _wait_until_ready(driver, lambda: not driver.execute_script(_ELEMENT_COVERED_BY_MODAL_MASK_JS, el), max_seconds, report_timeout=False)
+    if cleared:
+        print(f'[진행] 화면을 덮은 모달 막이 {waited:.1f}초 뒤 사라져 클릭을 이어감', flush=True)
+    else:
+        print(f'[진단] 화면을 덮은 모달 막이 {max_seconds:.0f}초가 지나도 안 사라짐 — 그대로 클릭을 시도함(가려서 실패할 수 있음)', flush=True)
+        # [2026-11-20] 일괄발급 bulk_c963c3a0ab1a(도로명주소검색 0건 직후, 경기대로 213)에서 막이 20초 넘게 안 사라졌다 — 막 자체엔 글자가 없어 무엇이 막을 깔았는지(어떤 안내창이
+        # 떠 있는지) 로그로는 알 수 없었다. 그 순간의 떠 있는 창 글자·스크린샷을 남긴다(진단 전용, 한 번 발급에 2번까지만).
+        global _modal_mask_diagnostic_capture_count
+        if _modal_mask_diagnostic_capture_count < 2:
+            _modal_mask_diagnostic_capture_count += 1
+            _capture_stall_diagnostics(driver, ['(모달 막이 안 사라짐)'], 0, stall_label=f'모달막_{_modal_mask_diagnostic_capture_count}번째')
+
+
 def _click_with_fallback(driver, el):
     """클릭 공용 헬퍼. 먼저 Selenium 표준 클릭과 ActionChains 클릭을 시도하고,
     커스텀 위젯/가림 요소 때문에 실패할 때만 마지막 수단으로 DOM click을 사용한다.
@@ -233,25 +270,45 @@ def _click_with_fallback(driver, el):
     alert처럼 클릭 후 처리로는 늦다 — 클릭 자체가 가로막힌다)."""
     _dismiss_cart_payment_reminder_popup_if_present(driver)
     _dismiss_simple_search_unavailable_popup_if_present(driver)  # [2026-11-01] 637695 — 이 안내창이 소재지번검색 탭 클릭을 가렸다
+    _dismiss_dong_ho_required_popup_if_present(driver)  # [2026-11-20] 이 안내창도 다음 탭 클릭을 가린다(아래 함수 주석 참고)
     try:
         driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", el)
     except Exception:
         pass
+    _wait_for_modal_mask_to_clear(driver, el)  # [2026-11-20] 안내창과 달리 닫을 버튼이 없는 처리 중 막 — 누를 요소를 덮고 있으면 사라질 때까지 기다린다(위 _ELEMENT_COVERED_BY_MODAL_MASK_JS 주석). 스크롤 뒤에 확인해야 가림 위치가 정확하다
 
-    for clicker in (
+    # [2026-11-20 추가 — 사용자 요청 "정확한 원인 진단"] 어떤 클릭 방식이 왜 실패해 다음 방식(결국 DOM click)으로 넘어갔는지 남긴다. 예전엔 예외를 삼켜서
+    # "클릭이 안 먹혔다"는 사실만 있고 이유(가림 요소·창 닫힘·alert 등)가 로그에 없었다. 정상 클릭은 로그를 남기지 않아 평소 로그는 늘지 않는다.
+    for click_index, clicker in enumerate((
         lambda: el.click(),
         lambda: ActionChains(driver).move_to_element(el).pause(0.1).click().perform(),
-    ):
+    ), start=1):
         try:
             clicker()
             _dismiss_alert_if_present(driver)
             return
-        except UnexpectedAlertPresentException:
+        except UnexpectedAlertPresentException as alert_error:
+            print(f'[진단] 클릭 방식 {click_index} 중 브라우저 알림창 발생 — 문구="{str(getattr(alert_error, "alert_text", "") or "").replace(chr(10), " ")[:300]}"', flush=True)
             _dismiss_alert_if_present(driver)
             return
-        except Exception:
-            pass
+        except Exception as click_error:
+            first_line = (str(click_error).strip().splitlines() or [''])[0][:420]
+            print(f'[진단] 클릭 방식 {click_index} 실패({type(click_error).__name__}) — {first_line} → 다음 방식으로 넘어감', flush=True)
+            # [2026-11-20] 방식 1이 "다른 요소가 가려서" 실패했다면 방식 2(ActionChains)는 예외 없이 끝나도 그 가린 요소를 누르는 것이라 실제 클릭은 안 된다
+            # (가짜 화면으로 재현 확인) — 이 경우를 로그만 보고 알 수 있게, 지금 버튼 한가운데를 실제로 받는 요소를 함께 남긴다.
+            if click_index == 1:
+                try:
+                    covering = driver.execute_script(
+                        "var e = arguments[0], r = e.getBoundingClientRect(); var t = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);"
+                        "if (!t) return null; if (t === e || e.contains(t)) return 'SELF';"
+                        "var tx = (t.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 120);"
+                        "return t.tagName + (t.id ? '#' + t.id : '') + (typeof t.className === 'string' && t.className ? '.' + t.className.trim().split(/\\s+/).slice(0, 3).join('.') : '') + ' 글자=' + tx;",
+                        el)
+                    print(f'[진단] 지금 그 버튼 한가운데를 받는 요소: {covering}', flush=True)
+                except Exception:
+                    pass
 
+    print('[진단] 표준 클릭 두 가지가 모두 실패해 DOM click(마지막 수단)으로 누름', flush=True)
     driver.execute_script('arguments[0].click();', el)
     _dismiss_alert_if_present(driver)
 
@@ -316,9 +373,22 @@ def _dismiss_alert_if_present(driver):
     [확인]을 누르면 설치 페이지로 이동하는데, 사람이 모르는 프로그램을 자동으로 설치 승인하면 안 되므로
     accept() 대신 dismiss()(취소/닫기)로 무시하고 원래 흐름을 계속 진행한다.
     @return bool alert가 있어서 닫았으면 True, 애초에 없었으면 False
+
+    [2026-11-20 추가 — 사용자 요청 "일괄연장 중 등기부 발급 실패의 정확한 원인 진단"] 닫기 전에 alert의 문구를 진행 로그에 남긴다. 예전엔 문구를 읽지 않고 조용히
+    닫아서, [다음]을 눌러도 화면이 안 넘어간 날(2026-11-20 11:04, 매물 668956)에 사이트가 어떤 안내를 띄웠는지 어디에도 남지 않았다 — 이 함수는 폴링 루프와 클릭마다
+    불려서, alert가 있으면 거의 항상 여기서 먼저 걷히기 때문이다.
     """
     try:
-        driver.switch_to.alert.dismiss()
+        alert = driver.switch_to.alert
+    except Exception:
+        return False
+    try:
+        alert_text = (alert.text or '').replace('\n', ' ').strip()
+    except Exception:
+        alert_text = '(문구를 읽지 못함)'
+    print(f'[진단] 브라우저 알림창을 닫음(취소) — 문구="{alert_text[:300]}"', flush=True)
+    try:
+        alert.dismiss()
         return True
     except Exception:
         return False
@@ -420,6 +490,36 @@ def _dismiss_road_search_no_result_popup_if_present(driver):
             print('[진행] "도로명 등기부 검색결과 없음" 안내창 확인 클릭에 실패해 그대로 진행', flush=True)
             return False
     time.sleep(0.5)
+    return True
+
+
+# [2026-11-20 신규 — 일괄발급 3회 연속 같은 매물(집합건물 원동 789-10, 도로명 경기대로 213)에서 실패, 스크린샷으로 확인] 동·호 정보가 없는 집합건물을 도로명주소검색에서
+# 동/호 칸을 비운 채 [검색]하면 등기소가 "동, 호 중 하나는 반드시 입력하셔야 합니다." 안내창(+화면 전체 막)을 띄우고 검색 자체를 거절한다. 위 "도로명 등기부 검색결과가
+# 존재하지 않습니다" 안내창과 문구가 달라 코드가 모르는 창이었고, 이 창이 남아 다음 탭(간편검색) 클릭을 계속 가렸다. 결과는 "0건"과 같은 취급이다(검색이 안 된 것이므로).
+DONG_HO_REQUIRED_NOTICE_MARKER = '동, 호 중 하나는 반드시 입력하셔야 합니다'
+
+
+def _dismiss_dong_ho_required_popup_if_present(driver):
+    """"동, 호 중 하나는 반드시 입력하셔야 합니다" 안내창이 떠 있으면 [확인]으로 닫고 True, 없으면 False. 안내문 글자로 그 창만 가려내므로 다른 창은 건드리지 않는다.
+    @return bool 안내창이 있어서 닫았으면 True"""
+    try:
+        button = _find_notice_popup_confirm_button(driver, DONG_HO_REQUIRED_NOTICE_MARKER)
+    except UnexpectedAlertPresentException:
+        _dismiss_alert_if_present(driver)
+        return False
+    if button is None:
+        return False
+    print('[진행] "동, 호 중 하나는 반드시 입력하셔야 합니다" 안내창 발견 — 동·호 정보 없이 도로명주소검색을 해서 등기소가 검색을 거절함, [확인]으로 닫고 다음 검색방법으로 넘어감', flush=True)
+    try:
+        button.click()
+    except Exception:
+        try:
+            driver.execute_script('arguments[0].click();', button)
+        except Exception:
+            print('[진행] 동·호 필수 안내창의 [확인]을 누르지 못함 — 그대로 진행', flush=True)
+            return False
+    _wait_until_ready(driver, lambda: _find_notice_popup_confirm_button(driver, DONG_HO_REQUIRED_NOTICE_MARKER) is None, 2.0,
+                      label='동·호 필수 안내창 닫힘')
     return True
 
 
@@ -569,6 +669,66 @@ def _diag_snapshot(driver):
     except Exception as e:
         parts.append(f'본문=(확인불가:{e})')
     return ' / '.join(parts)
+
+
+# [2026-11-20 신규 — 사용자 요청 "일괄연장 중 등기부 발급 실패의 정확한 원인 진단"] [다음]을 눌렀는데 화면 제목이 안 바뀌는(정체) 순간의 증거를 남긴다.
+# 배경: 2026-11-20 11:04 매물 668956이 "(주민)등록번호 공개여부 확인" 화면에서 [다음]을 5번 눌러도 안 넘어가 실패했는데, 같은 매물·같은 화면이 11:12에는 한 번에
+# 통과해 원인을 확정하지 못했다(진행 로그에는 제목과 클릭 시간뿐이었다). 아래는 그 순간 화면이 어떤 상태였는지(팝업·버튼 상태·버튼을 가린 요소·스크린샷)를 남긴다.
+# 이 함수는 진단 전용이라 어떤 오류가 나도 발급 흐름을 막지 않는다(호출부가 결과를 쓰지 않는다).
+_STALL_DIAG_JS = r"""
+var btnId = arguments[0];
+function vis(e) {
+  if (!e) return false;
+  var r = e.getBoundingClientRect(), s = getComputedStyle(e);
+  return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none' && s.opacity !== '0';
+}
+function desc(e) { return e ? (e.tagName + (e.id ? '#' + e.id : '') + (e.className && typeof e.className === 'string' ? '.' + e.className.trim().split(/\s+/).slice(0, 3).join('.') : '')) : null; }
+var out = {url: location.href, ready: document.readyState, active: desc(document.activeElement)};
+var btn = document.getElementById(btnId);
+if (btn) {
+  var r = btn.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+  var top = document.elementFromPoint(cx, cy);
+  out.btn = {visible: vis(btn), disabled: !!btn.disabled || btn.getAttribute('aria-disabled') || null, cls: String(btn.className).slice(0, 90),
+             rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)],
+             hit: desc(top), hitIsBtn: !!top && (top === btn || btn.contains(top)), viewport: [innerWidth, innerHeight]};
+} else { out.btn = null; }
+var pops = [];
+document.querySelectorAll('[role="dialog"], [id*="popup"], [id*="Popup"], [class*="popup"], [class*="layer"], [class*="alert"], [class*="modal"], [class*="w2window"], [class*="message"]').forEach(function (e) {
+  if (!vis(e)) return;
+  var t = (e.innerText || '').replace(/\s+/g, ' ').trim();
+  if (t) pops.push(desc(e) + ' : ' + t.slice(0, 220));
+});
+out.popups = pops.slice(0, 6);
+var checks = [];
+document.querySelectorAll('input[type="checkbox"], input[type="radio"]').forEach(function (e) {
+  if (!vis(e) && !(e.parentElement && vis(e.parentElement))) return;
+  var lab = (document.querySelector('label[for="' + e.id + '"]') || {}).textContent || (e.parentElement ? e.parentElement.textContent : '');
+  checks.push((e.checked ? '[v] ' : '[ ] ') + String(lab || e.id).replace(/\s+/g, ' ').trim().slice(0, 40));
+});
+out.inputs = checks.slice(0, 12);
+return JSON.stringify(out);
+"""
+
+
+def _capture_stall_diagnostics(driver, titles, stall_number, stall_label=None):
+    # stall_label: 로그·파일명에 "N회째" 대신 쓸 이름(정체가 아닌 다른 순간의 증거를 남길 때 — 예: 모달 막이 안 사라질 때)
+    label = stall_label or f'{stall_number}회째'
+    try:
+        raw = driver.execute_script(_STALL_DIAG_JS, f'{BASE}_btn_next')
+        print(f'[진단-정체 {label}] 화면제목={titles} / 상태={raw}', flush=True)
+    except Exception as e:
+        print(f'[진단-정체 {label}] 화면 상태를 읽지 못함({type(e).__name__}): {str(e).strip().splitlines()[0][:160] if str(e).strip() else ""}', flush=True)
+    try:
+        # 스크린샷은 이 자식 프로세스의 임시폴더(끝나면 지워짐)가 아니라 PC에 계속 남는 위치에 둔다 — 로컬도우미 PC 사본 폴더와 같은 이름 아래 iros_diag
+        base_dir = os.path.join(os.environ.get('LOCALAPPDATA') or tempfile.gettempdir(), 'Prorealtor', 'iros_diag')
+        os.makedirs(base_dir, exist_ok=True)
+        path = os.path.join(base_dir, f'정체_{time.strftime("%Y%m%d_%H%M%S")}_{label}.png')
+        if driver.save_screenshot(path):
+            print(f'[진단-정체 {label}] 화면 스크린샷 저장: {path}', flush=True)
+        else:
+            print(f'[진단-정체 {label}] 스크린샷 저장 실패(저장 함수가 False 반환)', flush=True)
+    except Exception as e:
+        print(f'[진단-정체 {label}] 스크린샷 저장 실패({type(e).__name__}): {str(e).strip().splitlines()[0][:160] if str(e).strip() else ""}', flush=True)
 
 
 # [2026-10-20 신규 — 사용자 요청 "등기부등본 발급 속도 개선", 실측 근거] 화면의 버튼·링크(500여 개)를 웹드라이버로 하나씩
@@ -891,6 +1051,87 @@ def _squash(s):
     return re.sub(r'\s', '', s or '')
 
 
+# [2026-11-20 신규 — 매물 111613 실화면 진단으로 확인] 집합건물 도로명주소검색 결과는 "한 줄이 곧 선택할 대상"이 아닐 수 있다 — 같은 도로명주소에 건물이 여러 개
+# (예: 오산로 379의 궐동 9-3·9-21·9-22·9-23·9-27)면 건물마다 한 줄씩만 나오는데, 이 건물 줄에는 선택 라디오가 없고 [전유] 버튼만 있다. 호실 줄(제3층 제302호 등)은
+# [전유]를 눌러 펼쳐야 나타나고, 라디오는 호실 줄에만 있다. 예전엔 건물 줄의 선택칸을 눌러 [전유]만 열고 호실은 고르지 않은 채 [다음]을 눌러 "열람발급할 부동산을
+# 선택하시기 바랍니다" 안내창이 계속 떴다(재시도도 같은 [전유]만 또 눌렀다). 그래서 "줄이 실제로 제공하는 것(라디오/[전유] 버튼)"으로 종류를 판별하고, 건물 줄이면
+# 펼쳐서 호실 줄을 고르는 일을 이 두 함수가 맡는다. 호실 줄이 바로 나오는 기존 경로(라디오 있는 줄)는 이 함수들을 거치지 않는다.
+def _is_building_row_needing_unit_expansion(tr):
+    """선택 라디오가 없고 [전유] 버튼만 있는 줄(= 펼쳐야 호실이 나오는 건물 줄)이면 True. 줄 종류를 가정하지 않고 선택칸 안에 실제로 있는 입력으로 판별한다."""
+    try:
+        cell = tr.find_element(By.CSS_SELECTOR, 'td[data-col_id="rad_sel"]')
+    except (NoSuchElementException, StaleElementReferenceException):
+        return False
+    if cell.find_elements(By.CSS_SELECTOR, 'input[type="radio"]'):
+        return False
+    return bool(cell.find_elements(By.CSS_SELECTOR, 'input[type="button"]'))
+
+
+def _unit_name_from_row_address(addr_text):
+    """호실 줄 주소("제3층 제302호")에서 호 이름("302")만 뽑는다. 층("제3층")은 '호'로 끝나지 않으므로 걸리지 않는다. 못 뽑으면 ''."""
+    m = re.search(r'제(\S+?)호', addr_text or '')
+    return _squash(m.group(1)) if m else ''
+
+
+def _resolve_unit_row_under_building_row(driver, building_row, loc):
+    """건물 줄의 [전유]를 눌러 호실을 펼치고, 찾는 호(loc['room_no'])와 이름이 같은 호실 줄을 **정확히 한 줄** 골라 돌려준다.
+
+    호실 줄은 펼친 건물 줄 바로 아래부터 다음 건물 줄(= 선택 라디오 없는 줄) 전까지다(실화면 DOM 순서로 확인). 층은 비교하지 않는다 — 이 함수가 받는 조건에 층이
+    없고, 호 앞자리로 층을 추정하면 지하·동별 번호 체계에서 틀릴 수 있어서다. 같은 호 이름이 두 줄 이상이면 어느 쪽인지 알 수 없으므로 고르지 않고 실패시킨다.
+    @return (호실 줄, '') 성공 / (None, 실패 사유) 실패 — 사유에 건물 주소와 후보 호실 이름들을 담아 로그만으로 원인을 알 수 있게 한다."""
+    want = _squash(str(loc.get('room_no') or ''))
+    want = re.sub(r'^제', '', want)
+    want = re.sub(r'호$', '', want)
+    addr_cell = _find_row_addr_cell(building_row)
+    building_addr = addr_cell.text.strip() if addr_cell is not None else ''
+    unique_in_row = re.search(r'\d{4}-\d{4}-\d{6}', building_row.text or '')
+    building_unique_no = unique_in_row.group(0) if unique_in_row else ''
+    if not want:
+        return None, f'건물 줄({building_addr})만 나오고 찾을 호 정보가 없어 호실을 고르지 못했습니다.'
+    if not building_unique_no:
+        return None, f'건물 줄({building_addr})의 고유번호를 읽지 못해 호실 줄의 위치를 특정하지 못했습니다.'
+
+    def _unit_rows_under_building():
+        """건물 줄 아래 호실 줄들. 펼쳐지는 순간 화면이 다시 그려져 줄 요소가 낡을 수 있으므로 고유번호로 건물 줄을 매번 새로 찾는다."""
+        rows = _visible_result_rows(driver)
+        units = []
+        inside = False
+        for tr in rows:
+            is_building = _is_building_row_needing_unit_expansion(tr)
+            if not inside:
+                if is_building and building_unique_no in (tr.text or ''):
+                    inside = True
+                continue
+            if is_building:
+                break
+            units.append(tr)
+        return units
+
+    if not _unit_rows_under_building():
+        button = building_row.find_element(By.CSS_SELECTOR, 'td[data-col_id="rad_sel"] input[type="button"]')
+        print(f'[진행] 건물 줄({building_addr}) — 선택 라디오가 없고 [전유] 버튼만 있어 호실을 펼침', flush=True)
+        _click_with_fallback(driver, button)
+        _wait_until_ready(driver, lambda: bool(_unit_rows_under_building()), 5.0, label='[전유] 호실 펼침')
+    units = _unit_rows_under_building()
+    if not units:
+        return None, f'건물 줄({building_addr})의 [전유]를 눌렀지만 호실 줄이 나타나지 않았습니다.'
+
+    candidates = []
+    matched_units = []
+    for tr in units:
+        uaddr = _find_row_addr_cell(tr)
+        utext = uaddr.text.strip() if uaddr is not None else (tr.text or '').strip()
+        name = _unit_name_from_row_address(utext)
+        candidates.append(name or f'({utext[:20]})')
+        if name and name == want:
+            matched_units.append(tr)
+    if len(matched_units) != 1:
+        return None, (f'건물 줄({building_addr})의 호실 {len(units)}개 중 호 "{want}"와 같은 줄이 {len(matched_units)}건입니다(정확히 1건이어야 합니다). '
+                      f'호실 이름들={candidates[:30]}')
+    print(f'[진행] 호실 줄 특정 — 건물 {building_addr}의 {want}호 (호실 {len(units)}개 중 1건)', flush=True)
+    return matched_units[0], ''
+
+
 # [2026-09-13 추가 — 사용자 발견 "검색어로 숫자와 한글만 사용 가능하다는 게 핵심"] 인터넷등기소
 # 간편검색은 주소에 영문자가 섞이면 검색결과 0건을 낸다(매물 490302로 재현 — "F2418A호" 그대로
 # 넣으면 0건, 발음 그대로 한글로 바꾼 "에프2418에이호"로 넣으면 1건 정확히 매칭). core/lib/
@@ -938,7 +1179,12 @@ def _row_matches_target(addr_text, payload):
     room_digits = _squash(loc.get('room_no'))
     if room_digits == '':
         return True
-    return ('제' + room_digits + '호') in addr or (room_digits + '호') in addr
+    # [2026-11-20 수정 — 일괄발급 bulk_4c2427938bc5 3번째 매물(101동 B102호)로 확인] 등기소는 영문 호수를 한글로 표기한다("B102" → "제비102호") —
+    # 결제까지 끝난 뒤 열람 목록에서 "이번 물건을 찾지 못했습니다"로 멈췄다(원본 영문만 찾았기 때문, 추정 — 실제 목록 줄 글자는 로그에 없어 직접 확인 못 함).
+    # 간편검색 입력 때와 같은 변환표(_convert_alphabet_to_korean_for_search)로 한글 표기도 함께 대조한다. 영문이 없으면 두 값이 같아 동작 변화 없음.
+    # ⚠️ [동기화 경고] chrome_extension/iros_autofill/content_iros.js::rowMatchesTarget()도 같은 호수 대조를 한다 — 하나 고치면 다른 하나도 맞출 것.
+    room_candidates = {room_digits, _convert_alphabet_to_korean_for_search(room_digits)}
+    return any(('제' + room + '호') in addr or (room + '호') in addr for room in room_candidates)
 
 
 def _is_stuck_on_security_page(driver):
@@ -1182,9 +1428,22 @@ def _search_via_simple_search(driver, wait, payload, property_category, loc, _fa
         return d.find_element(By.ID, f'{BASE}_tac_rlrg_appl_tab_tab_smpl_srch_tabHTML')
     tab = wait.until(_find_smpl_srch_tab)
     print('[진행] 간편검색 탭 찾음, 클릭', flush=True)
-    _click_with_fallback(driver, tab)
-    time.sleep(0.5)
-    _guard_not_stuck_on_security_page(driver)
+
+    # [2026-11-20] 도로명주소검색 탭(_search_via_road_name)과 같은 방식 — 클릭이 막에 가려 헛돌아도 예외 없이 끝나는 경우가 실제로 있었으므로(위 _VISIBLE_MODAL_MASK_JS
+    # 주석), 고정 0.5초 대신 "간편검색 주소 입력칸이 나타났는지"로 탭 전환을 확인하고 안 됐으면 재클릭한다. 신호가 오면 즉시 진행하므로 평소엔 더 빠르다.
+    smpl_input_selector = f'#{BASE}_sbx_smpl_swrd___input'
+    for attempt in range(3):
+        _click_with_fallback(driver, tab)
+        _wait_until_ready(driver, lambda: bool(_find_first_visible(driver, [smpl_input_selector])), 1.5,
+                          label='간편검색 탭 전환', report_timeout=False)
+        _guard_not_stuck_on_security_page(driver)
+        if _find_first_visible(driver, [smpl_input_selector]):
+            break
+        print(f'[진행] 간편검색 탭 전환이 안 된 것으로 보임({attempt + 1}/3) — 안내창 확인 후 재시도', flush=True)
+        _dismiss_cart_payment_reminder_popup_if_present(driver)
+        tab = wait.until(_find_smpl_srch_tab)
+    else:
+        return _fail('간편검색 탭으로 전환하지 못했습니다(재시도 3회 소진).')
     print('[진행] 간편검색 탭 진입 확인', flush=True)
 
     # search_address(원본 주소 문자열)는 core/lib/lib_document_issue.php::getIrosIssuePayload()와
@@ -1401,6 +1660,35 @@ def _search_via_road_address(driver, wait, payload, property_category, road_loc,
     return _click_search_button(driver, _fail)
 
 
+# [2026-11-20 신규 — 사용자 결정 "A안", 일괄발급 원동 789-10 효성빌딩(집합건물, 호 정보 없는 건물 단위 매물)] 집합건물 등기부는 호마다 따로 있어서, 호 정보 없이 검색하면
+# 같은 건물의 호들(제101호·제201호·…)이 후보로 줄줄이 나온다(실제 5건 확인). 어느 호든 건물 표시(표제부)는 같으므로, 건물 단위 매물이면 사람에게 묻지 않고
+# 가장 낮은 호를 자동 선택한다. ⚠️ 이 판단은 "건물 표시 확인용이라 어느 호든 같다"는 사용자 전제에 의존한다 — 호별로 소유자가 다르므로 소유자 확인이 목적인 호출에는 쓰면 안 된다.
+# 반드시 아래를 모두 만족할 때만 고른다: ①호 정보(room_no)가 없음 ②후보 전부가 층·호 표기를 뺀 주소(도로명·건물명·지번)가 똑같음 — 하나라도 다른 건물이 섞이면 None(=사람이 선택).
+_UNIT_FLOOR_PATTERN = re.compile(r'제(지)?(\d+)층')
+_UNIT_ROOM_PATTERN = re.compile(r'제[A-Za-z가-힣]{0,3}(\d+)호')
+
+
+def _pick_lowest_unit_when_all_same_building(address_texts):
+    """검색결과 주소 문자열들(예: "경기도 오산시 경기대로 213 효성빌딩 제2층 제201호 [원동 789-10]")이 전부 같은 건물의 서로 다른 호이면, 가장 낮은(층, 호 순) 호의
+    인덱스를, 아니면 None. 층·호 표기를 못 읽는 후보가 하나라도 있으면 None — 근거 없이 고르지 않는다."""
+    if len(address_texts) < 2:
+        return None
+    building_keys = set()
+    unit_orders = []
+    for text in address_texts:
+        squashed = _squash(text)
+        floor_match = _UNIT_FLOOR_PATTERN.search(squashed)
+        room_match = _UNIT_ROOM_PATTERN.search(squashed)
+        if not floor_match or not room_match:
+            return None
+        building_keys.add(_UNIT_ROOM_PATTERN.sub('', _UNIT_FLOOR_PATTERN.sub('', squashed)))
+        floor_number = int(floor_match.group(2)) * (-1 if floor_match.group(1) else 1)  # "제지1층"(지하)은 음수로 — 가장 낮은 층으로 취급
+        unit_orders.append((floor_number, int(room_match.group(1))))
+    if len(building_keys) != 1 or len(set(unit_orders)) != len(unit_orders):
+        return None  # 건물이 섞였거나, 같은 호가 중복(같은 호를 구분할 근거가 없음)이면 사람이 고른다
+    return unit_orders.index(min(unit_orders))
+
+
 def _wait_for_human_to_pick_property(driver, candidate_count, timeout_seconds=300):
     """검색결과가 여러 건이라 좁히기(시군구·지번·동 표시)로도 하나로 못 골랐을 때, 사람이 브라우저
     창에서 직접 체크박스를 선택하고 [다음]을 눌러 다음 화면(등기기록유형 선택)으로 넘어가길 기다린다.
@@ -1564,6 +1852,7 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
                             and road_loc_used.get('road_name') and road_loc_used.get('road_building_no'))
     if not rows and road_search_was_used:
         _dismiss_road_search_no_result_popup_if_present(driver)
+        _dismiss_dong_ho_required_popup_if_present(driver)  # [2026-11-20] 동·호 없는 집합건물은 "0건" 안내창 대신 이 창이 뜬다(위 DONG_HO_REQUIRED_NOTICE_MARKER 주석)
         road_address_text = ' '.join(p for p in [road_loc_used.get('sido'), road_loc_used.get('sigungu'),
                                                  road_loc_used.get('road_name'), road_loc_used.get('road_building_no')] if p)
         if property_category == '집합건물':
@@ -1672,6 +1961,15 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
                 print(f'[진행] 검색결과 {len(matched)}건 — 동 표시("{dongName}")로 {len(narrowed)}건으로 좁힘', flush=True)
                 matched = narrowed
 
+    # [2026-11-20] 호 정보 없는 건물 단위 집합건물 매물 — 후보가 전부 같은 건물의 호들이면 가장 낮은 호를 자동 선택한다(위 _pick_lowest_unit_when_all_same_building 주석 참고).
+    # 어느 호를 골랐는지는 아래 결제대상 표 확인 줄("등기상 주소 … 확인 완료")에 그 호가 그대로 찍힌다.
+    if len(matched) > 1 and property_category == '집합건물' and not loc.get('room_no'):
+        candidate_addresses = [(_find_row_addr_cell(tr).text if _find_row_addr_cell(tr) is not None else '') for tr in matched]
+        lowest_index = _pick_lowest_unit_when_all_same_building(candidate_addresses)
+        if lowest_index is not None:
+            print(f'[진행] 검색결과 {len(matched)}건이 모두 같은 건물의 서로 다른 호 — 호 정보가 없는 건물 단위 매물이라 가장 낮은 호를 자동 선택: {candidate_addresses[lowest_index].strip()}', flush=True)
+            matched = [matched[lowest_index]]
+
     if len(matched) == 0:
         # [2026-10-07 진단 추가 — 오류로그 #2103/#2110] 이 지점은 "검색결과는 있는데 부동산구분이 찾는 구분과 다른
         # 줄뿐"일 때 도달한다(위 matched 계산). 구분이 어긋난 이유(예: 집합건물로 찾았는데 등기소엔 일반건물로
@@ -1698,6 +1996,15 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
             return _fail(f'검색결과가 {len(matched)}건이라 자동으로 고르지 못했고, 담당자 선택도 시간 내에 끝나지 않았습니다.')
     else:
         row = matched[0]
+        # [2026-11-20 추가 — 매물 111613] 고른 줄이 [전유] 버튼만 있는 건물 줄이면 호실을 펼쳐 찾는 호의 줄로 바꾼다 — 이후 선택·고유번호 대조는 전부 그 호실 줄 기준이다.
+        # 건물 줄은 라디오가 없어 "클릭하지 않음"(아래 len(rows)==1 판단)이 성립하지 않으므로 호실 줄로 바뀐 경우엔 반드시 직접 선택한다.
+        resolved_unit_row_from_building = False
+        if _is_building_row_needing_unit_expansion(row):
+            unit_row, unit_fail_reason = _resolve_unit_row_under_building_row(driver, row, loc)
+            if unit_row is None:
+                return _fail(unit_fail_reason, owner_masked)
+            row = unit_row
+            resolved_unit_row_from_building = True
         # [2026-09-07 추가 — 사용자 요청] 소유자 대조 — 등기소는 소유자를 "지**"처럼 가려서 보여준다
         # (content_iros.js에서 라이브로 확인된 사실, 2026-08-23). 완전일치 검사는 애초에 불가능하므로,
         # 담당자가 눈으로 대조할 수 있게 값만 그대로 돌려준다(자동 판정/중단에는 쓰지 않는다).
@@ -1732,8 +2039,17 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
                 print(f'[진행] 부동산 선택 클릭 실패({type(e).__name__}) — execute_script 방식으로 재시도', flush=True)
                 _click_with_fallback(driver, sel_cell)
             time.sleep(0.5)
+            # [2026-11-20 추가 — 매물 111613] 라디오가 실제로 체크됐는지 직접 읽는다(실화면 실험으로 체크 전 False → 클릭 후 True로 읽히는 것 확인). 안 됐으면 라디오 자체를
+            # 한 번 더 누른다 — 안내창은 [다음] 뒤에야 알려주므로, 선택 자체가 실패한 경우를 그 전에 잡는다. 이미 체크된 라디오를 다시 눌러도 체크는 유지된다.
+            try:
+                radio_in_cell = sel_cell.find_element(By.CSS_SELECTOR, 'input[type="radio"]')
+                if not radio_in_cell.is_selected():
+                    print('[진행] 부동산 선택 클릭 뒤에도 라디오가 체크되지 않아 라디오를 직접 한 번 더 누름', flush=True)
+                    _click_with_fallback(driver, radio_in_cell)
+            except (NoSuchElementException, StaleElementReferenceException):
+                pass
 
-        if len(rows) == 1:
+        if len(rows) == 1 and not resolved_unit_row_from_building:
             print('[진행] 부동산 선택 — 검색결과 원본이 1건이라 사이트가 이미 선택한 상태로 보고 클릭하지 않음', flush=True)
         else:
             print(f'[진행] 부동산 선택 — 원본 검색결과 {len(rows)}건 중 조건에 맞는 1건을 좁혔으므로 직접 클릭', flush=True)
@@ -1812,6 +2128,7 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
     titles_deadline = time.time() + 18
     printed_titles = None
     was_loading = False
+    stall_count_in_loop = 0   # [2026-11-20] [다음] 뒤 제목이 안 바뀐 횟수 — 아래 진단 기록용
     while time.time() < titles_deadline:
         _guard_not_stuck_on_security_page(driver)
         titles = _visible_section_titles(driver)
@@ -1847,6 +2164,11 @@ def _verify_register_target_body(driver, payload, property_category, loc, _fail,
         click_seconds = time.time() - click_started_at
         wait_started_at = time.time()
         changed_after = _wait_for_section_titles_to_change(driver, titles)  # [2026-10-20] 예전 고정 1.5초 대기 — 함수 설명 참고
+        if changed_after is None:
+            # [2026-11-20] 제목이 안 바뀌었다 = 이번 [다음]이 안 먹혔을 수 있다 — 첫 두 번만 그 순간의 화면 증거를 남긴다(_capture_stall_diagnostics 참고).
+            stall_count_in_loop += 1
+            if stall_count_in_loop <= 2:
+                _capture_stall_diagnostics(driver, titles, stall_count_in_loop)
         # [2026-10-20 측정용 기록] 예전 코드는 클릭 뒤 무조건 1.5초를 기다렸다 — 이번에 실제로 기다린 시간과 나란히 남긴다
         print(f'[측정] {titles} [다음] 클릭 {click_seconds:.2f}초(등기소 처리) · 제목 변화 '
               f'{"없음(1.5초 기다림)" if changed_after is None else f"{changed_after:.2f}초 뒤"} · '
@@ -1983,6 +2305,75 @@ def _handle_duplicate_payment_screen(driver):
     _click_with_fallback(driver, move_btn)
     time.sleep(1)
     return True
+
+
+# [2026-11-20 신규 — 일괄연장 실패(bulk_95fbea3f2981)로 확인, 등기소 실화면 3회 관찰] 일괄발급은 결제대상 여러 건을 한 번에 [결제]하는데, 그중 일부가 오늘 이미 결제만 하고
+# 열람 못 한 건이면 등기소가 "중복결제 확인" 팝업을 띄운다: "[이동](중단하고 그 처리 화면으로) / 팝업창을 닫기(중복되는 건을 삭제하고 다시 결제) / [결제계속](중복 그대로 결제)".
+# 실제로 관찰한 사실: ①팝업을 [X]로 닫아도 결제대상 표의 줄은 그대로 남는다(자동으로 안 빠진다 — 안내문과 다름) ②[결제계속]은 같은 문서에 돈이 두 번 나간다(절대 안 누른다)
+# ③단건용 처리([이동])는 첫 줄만 보고 나머지 건을 버린다. 그래서 일괄은 이미 결제된 건의 체크를 풀고 나머지 건만 결제한다 — 이미 결제된 건은 결제 뒤 열람 단계에서
+# 미열람 목록으로 받는다(그 목록에 함께 나오는지는 실화면 확인 전 — 안 나오면 그 건만 열람 실패로 남고 결제는 정상).
+_UNIQUE_NO_PATTERN = re.compile(r'\d{4}-\d{4}-\d{6}')
+
+
+def _read_duplicate_payment_popup_unique_nos(driver):
+    """열려 있는 "중복결제 확인" 팝업이 이미 결제됐다고 알려 주는 부동산 고유번호 집합(못 읽으면 빈 집합)."""
+    try:
+        tbody = driver.find_element(By.CSS_SELECTOR, '[id^="mf_wfm_potal_main_wfm_content"][id$="grd_dup_bpay_list_body_tbody"]')
+    except NoSuchElementException:
+        return set()
+    unique_nos = set()
+    for tr in tbody.find_elements(By.TAG_NAME, 'tr'):
+        if 'display: none' in (tr.get_attribute('style') or ''):
+            continue
+        unique_nos.update(_UNIQUE_NO_PATTERN.findall(tr.text or ''))
+    return unique_nos
+
+
+def _close_duplicate_payment_popup(driver):
+    """"중복결제 확인" 팝업을 [X 창닫기]로 닫는다(결제계속·이동이 아님). 닫혔으면 True. 닫기 버튼은 a.w2window_close(실화면에서 확인) — 헤더 감싸개(_header_control)는
+    눌러도 안 닫혔다(2026-11-20 관찰)."""
+    for el in driver.find_elements(By.CSS_SELECTOR, 'a.w2window_close'):
+        try:
+            if not el.is_displayed():
+                continue
+        except StaleElementReferenceException:
+            continue
+        _click_with_fallback(driver, el)
+        closed, _ = _wait_until_ready(driver, lambda: not _is_duplicate_payment_popup_visible(driver), 4.0, label='중복결제 확인 팝업 닫힘')
+        if closed:
+            return True
+    return False
+
+
+def _split_cart_into_already_paid_and_unpaid(driver, already_paid_unique_nos):
+    """결제대상 표에서 이미 결제된 건의 체크를 풀고(삭제하지 않는다 — 되돌릴 수 있게), 결제 대상으로 남은 건의 고유번호 목록을 돌려준다. 표를 못 읽으면 None.
+    체크 상태를 실제로 확인해서(풀었다고 가정하지 않음) 돌려주므로, 호출부는 이 값으로 "정말 결제 안 된 건만 체크됐는지" 검증한 뒤에만 결제한다."""
+    try:
+        tbody = driver.find_element(By.ID, f'{BASE}_grd_bpay_obj_list_body_tbody')
+    except NoSuchElementException:
+        return None
+    still_checked_unique_nos = []
+    for tr in tbody.find_elements(By.TAG_NAME, 'tr'):
+        if 'display: none' in (tr.get_attribute('style') or ''):
+            continue
+        found = _UNIQUE_NO_PATTERN.search(tr.text or '')
+        if not found:
+            continue
+        unique_no = found.group(0)
+        try:
+            checkbox = tr.find_element(By.CSS_SELECTOR, 'td[data-col_id="chk_sel"] input[type="checkbox"]')
+            label = tr.find_element(By.CSS_SELECTOR, 'td[data-col_id="chk_sel"] label')
+        except NoSuchElementException:
+            return None
+        should_be_checked = unique_no not in already_paid_unique_nos
+        if checkbox.is_selected() != should_be_checked:
+            _click_with_fallback(driver, label)
+            time.sleep(0.3)
+        if checkbox.is_selected() != should_be_checked:
+            return None   # 체크를 원하는 상태로 못 바꿨다 — 호출부가 중단한다(잘못 결제하지 않게)
+        if should_be_checked:
+            still_checked_unique_nos.append(unique_no)
+    return still_checked_unique_nos
 
 
 def _is_captcha_required(driver):
@@ -2637,10 +3028,12 @@ def _fill_login_popup_if_present(driver, credentials):
     return {'shown': True, 'ok': True}
 
 
-def _route_after_payment_click(driver, credentials, wait_seconds=15):
+def _route_after_payment_click(driver, credentials, wait_seconds=15, leave_duplicate_popup_open=False):
     """content_iros.js::routeAfterPaymentClick() 이식 — [결제] 클릭 후 나타나는 화면을 판별해
     분기한다. 로그인 팝업 → 결제 준비 화면 순으로 이어질 수 있어 재귀적으로 부른다.
-    @return 'payment-prep' | 'duplicate-handled' | None(예상 못한 화면)
+    leave_duplicate_popup_open: [2026-11-20 신규] True면 "중복결제 확인" 팝업을 [이동]으로 처리하지 않고 열어 둔 채 'duplicate-popup-open'을 돌려준다 —
+        일괄발급은 여러 건 중 일부만 이미 결제된 경우가 있어 호출부가 직접 처리해야 한다(아래 _split_cart_into_already_paid_and_unpaid 설명). 단건 발급은 기본값(False) 그대로.
+    @return 'payment-prep' | 'duplicate-handled' | 'duplicate-popup-open' | None(예상 못한 화면)
     """
     deadline = time.time() + wait_seconds
     screen = None
@@ -2661,8 +3054,10 @@ def _route_after_payment_click(driver, credentials, wait_seconds=15):
         login_result = _fill_login_popup_if_present(driver, credentials)
         if not login_result.get('ok'):
             return None
-        return _route_after_payment_click(driver, credentials, wait_seconds=15)
+        return _route_after_payment_click(driver, credentials, wait_seconds=15, leave_duplicate_popup_open=leave_duplicate_popup_open)
     if screen == 'duplicate':
+        if leave_duplicate_popup_open:
+            return 'duplicate-popup-open'
         if _handle_duplicate_payment_screen(driver):
             return 'duplicate-handled'
         return None
@@ -3595,30 +3990,61 @@ def issue_real_estate_registers_bulk(items, credentials, options=None):
         _click_with_fallback(driver, pay_btn)
         time.sleep(1)
 
-        routed = _route_after_payment_click(driver, credentials=credentials)
+        routed = _route_after_payment_click(driver, credentials=credentials, leave_duplicate_popup_open=True)
         print(f'[진행] 결제 클릭 후 라우팅 결과 = {routed}', flush=True)
-        if routed != 'payment-prep':
+
+        # [2026-11-20 신규] 일부(또는 전부)가 오늘 이미 결제된 건이면 "중복결제 확인" 팝업이 뜬다 — 이미 결제된 건은 다시 결제하지 않고, 나머지만 결제한다(위 _read_duplicate_payment_popup_unique_nos 설명).
+        # 돈이 걸린 분기라, 체크 상태·결제 대상 구성을 모두 확인한 뒤에만 진행하고 조금이라도 어긋나면 결제 전에 중단한다.
+        payment_needed = True
+        if routed == 'duplicate-popup-open':
+            already_paid_unique_nos = _read_duplicate_payment_popup_unique_nos(driver)
+            print(f'[진행] 중복결제 확인 — 이미 결제된 건 {sorted(already_paid_unique_nos)}', flush=True)
+            if not already_paid_unique_nos:
+                return _fail_all(f'중복결제 확인 팝업의 이미 결제된 건을 읽지 못했습니다(돈이 걸리기 전이라 안전합니다) | {_diag_snapshot(driver)}')
+            item_unique_nos = [r.get('unique_no') or '' for r in results]
+            expected_unpaid_unique_nos = sorted({u for u in item_unique_nos if u and u not in already_paid_unique_nos})
+            if '' in item_unique_nos:
+                return _fail_all('일부 매물의 부동산 고유번호를 확인하지 못해 이미 결제된 건과 구분할 수 없습니다(돈이 걸리기 전이라 안전합니다).')
+            if not expected_unpaid_unique_nos:
+                # 전부 이미 결제된 건 — 새로 결제할 게 없다. [이동]으로 그 처리 화면(미열람 목록)으로 가서 열람·저장만 한다.
+                print('[진행] 모든 건이 이미 결제돼 있음 — 결제 없이 [이동]으로 열람 단계로 감', flush=True)
+                if not _handle_duplicate_payment_screen(driver):
+                    return _fail_all(f'이미 결제된 건의 [이동]을 누르지 못했습니다 | {_diag_snapshot(driver)}')
+                payment_needed = False
+            else:
+                if not _close_duplicate_payment_popup(driver):
+                    return _fail_all(f'중복결제 확인 팝업을 닫지 못했습니다(돈이 걸리기 전이라 안전합니다) | {_diag_snapshot(driver)}')
+                remaining = _split_cart_into_already_paid_and_unpaid(driver, already_paid_unique_nos)
+                if remaining is None or sorted(set(remaining)) != expected_unpaid_unique_nos or len(remaining) != len(set(remaining)):
+                    return _fail_all(f'이미 결제된 건의 체크를 풀지 못했거나 결제 대상 구성이 예상과 다릅니다(예상 {expected_unpaid_unique_nos}, 실제 {remaining}) — 돈이 걸리기 전이라 안전합니다 | {_diag_snapshot(driver)}')
+                print(f'[진행] 이미 결제된 건은 제외하고 {len(remaining)}건만 결제합니다 — {remaining}', flush=True)
+                _click_with_fallback(driver, driver.find_element(By.ID, f'{BASE}_btn_bpay'))
+                time.sleep(1)
+                routed = _route_after_payment_click(driver, credentials=credentials, leave_duplicate_popup_open=True)
+                print(f'[진행] 결제 클릭 후 라우팅 결과(이미 결제된 건 제외) = {routed}', flush=True)
+        if payment_needed and routed != 'payment-prep':
             return _fail_all(f'결제 화면 진입 중 예상하지 못한 화면이 나타났습니다 — {routed} | {_diag_snapshot(driver)}')
 
-        prep = _prepare_payment_screen(driver, credentials)
-        if not prep.get('ready'):
-            return _fail_all(f'{prep.get("message", "결제 준비를 마치지 못했습니다.")} | {_diag_snapshot(driver)}')
-        print('[진행] 결제수단(선불전자지급수단) 정보 입력 완료', flush=True)
+        if payment_needed:
+            prep = _prepare_payment_screen(driver, credentials)
+            if not prep.get('ready'):
+                return _fail_all(f'{prep.get("message", "결제 준비를 마치지 못했습니다.")} | {_diag_snapshot(driver)}')
+            print('[진행] 결제수단(선불전자지급수단) 정보 입력 완료', flush=True)
 
-        # [실제 결제 클릭 — issue_real_estate_register()와 동일한 이유로 표준 click() 우선 시도]
-        print('[진행] [결제] 버튼(실제 결제) 클릭 — 진짜 마우스 클릭 시도', flush=True)
-        pay_btn2 = driver.find_element(By.ID, f'{BASE}_btn_bpay')
-        try:
-            pay_btn2.click()
-        except Exception as e:
-            print(f'[진행] 표준 click() 실패({type(e).__name__}) — execute_script 방식으로 재시도', flush=True)
-            _click_with_fallback(driver, pay_btn2)
+            # [실제 결제 클릭 — issue_real_estate_register()와 동일한 이유로 표준 click() 우선 시도]
+            print('[진행] [결제] 버튼(실제 결제) 클릭 — 진짜 마우스 클릭 시도', flush=True)
+            pay_btn2 = driver.find_element(By.ID, f'{BASE}_btn_bpay')
+            try:
+                pay_btn2.click()
+            except Exception as e:
+                print(f'[진행] 표준 click() 실패({type(e).__name__}) — execute_script 방식으로 재시도', flush=True)
+                _click_with_fallback(driver, pay_btn2)
 
-        finish = _finish_after_payment_confirm(driver)
-        print('[진행] 결제 확정 처리 결과 —', finish, flush=True)
-        if not finish.get('ok'):
-            return _fail_all(f'결제확정 처리 실패 — {finish.get("message", "")} | {_diag_snapshot(driver)}')
-        print('[진행] 결제 확정 완료', flush=True)
+            finish = _finish_after_payment_confirm(driver)
+            print('[진행] 결제 확정 처리 결과 —', finish, flush=True)
+            if not finish.get('ok'):
+                return _fail_all(f'결제확정 처리 실패 — {finish.get("message", "")} | {_diag_snapshot(driver)}')
+            print('[진행] 결제 확정 완료', flush=True)
 
         # [열람·다운로드] 결제는 이미 끝났으므로 여기부터는 개별 건 실패가 있어도 최상위 실패로 보지
         # 않는다(위 docstring 참고). _wait_for_download()는 "다운로드 폴더 안의 파일 아무거나 하나"를
